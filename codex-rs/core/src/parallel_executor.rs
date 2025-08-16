@@ -190,6 +190,7 @@ where
 mod tests {
     use super::*;
     use crate::rate_limiter::RateLimitConfig;
+    use serde_json::json;
     
     #[tokio::test]
     async fn test_sequential_execution() {
