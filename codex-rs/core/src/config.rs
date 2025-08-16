@@ -1108,7 +1108,7 @@ disable_response_storage = true
             include_plan_tool: false,
             internal_originator: None,
             custom_commands: vec![],
-            parallel_execution: None,
+            parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -1177,7 +1177,7 @@ disable_response_storage = true
             include_plan_tool: false,
             internal_originator: None,
             custom_commands: vec![],
-            parallel_execution: None,
+            parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
