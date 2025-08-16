@@ -1,0 +1,304 @@
+name: Release
+
+on:
+  # タグプッシュ時の自動実行
+  push:
+    tags:
+      - 'v*'
+  
+  # 手動リリース
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Pre-release'
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: 'Draft release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ビルドジョブ
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            use_cross: false
+          
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux-aarch64
+            use_cross: true
+          
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            use_cross: false
+          
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            use_cross: false
+          
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            use_cross: false
+          
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            platform: windows-aarch64
+            use_cross: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        shell: bash
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+      
+      - name: Install cross-compilation tools
+        if: matrix.use_cross == true
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-release-
+            ${{ runner.os }}-cargo-registry-
+      
+      - name: Build release (native)
+        if: matrix.use_cross != true
+        working-directory: codex-rs
+        run: |
+          cargo build --release --target ${{ matrix.target }} --workspace
+      
+      - name: Build release (cross)
+        if: matrix.use_cross == true
+        working-directory: codex-rs
+        run: |
+          cross build --release --target ${{ matrix.target }} --workspace
+      
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
+        working-directory: codex-rs
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          ARCHIVE_NAME="codex-${VERSION}-${{ matrix.platform }}.tar.gz"
+          
+          mkdir -p release
+          
+          # バイナリをコピー
+          cp target/${{ matrix.target }}/release/codex release/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/codex-exec release/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/codex-tui release/ 2>/dev/null || true
+          
+          # READMEとライセンスをコピー
+          cp ../README.md release/ 2>/dev/null || true
+          cp ../LICENSE release/ 2>/dev/null || true
+          cp ../NOTICE release/ 2>/dev/null || true
+          
+          # アーカイブ作成
+          cd release
+          tar czf ../${ARCHIVE_NAME} *
+          cd ..
+          
+          # チェックサム生成
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 ${ARCHIVE_NAME} > ${ARCHIVE_NAME}.sha256
+          fi
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+      
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: codex-rs
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.get_version.outputs.version }}"
+          $ARCHIVE_NAME = "codex-${VERSION}-${{ matrix.platform }}.zip"
+          
+          New-Item -ItemType Directory -Force -Path release
+          
+          # バイナリをコピー
+          Copy-Item "target\${{ matrix.target }}\release\codex.exe" release\ -ErrorAction SilentlyContinue
+          Copy-Item "target\${{ matrix.target }}\release\codex-exec.exe" release\ -ErrorAction SilentlyContinue
+          Copy-Item "target\${{ matrix.target }}\release\codex-tui.exe" release\ -ErrorAction SilentlyContinue
+          
+          # READMEとライセンスをコピー
+          Copy-Item "..\README.md" release\ -ErrorAction SilentlyContinue
+          Copy-Item "..\LICENSE" release\ -ErrorAction SilentlyContinue
+          Copy-Item "..\NOTICE" release\ -ErrorAction SilentlyContinue
+          
+          # アーカイブ作成
+          Compress-Archive -Path release\* -DestinationPath $ARCHIVE_NAME
+          
+          # チェックサム生成
+          Get-FileHash $ARCHIVE_NAME -Algorithm SHA256 | Format-List Hash | Out-File "${ARCHIVE_NAME}.sha256"
+          
+          echo "archive_name=${ARCHIVE_NAME}" >> $env:GITHUB_OUTPUT
+      
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            codex-rs/codex-*.tar.gz
+            codex-rs/codex-*.tar.gz.sha256
+            codex-rs/codex-*.zip
+            codex-rs/codex-*.zip.sha256
+          retention-days: 1
+
+  # リリース作成ジョブ
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            PRERELEASE="${{ inputs.prerelease }}"
+            DRAFT="${{ inputs.draft }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+            PRERELEASE="false"
+            DRAFT="false"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          echo "draft=$DRAFT" >> $GITHUB_OUTPUT
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec cp {} release-files/ \;
+          ls -la release-files/
+      
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          
+          cat > release-notes.md << 'EOF'
+          ## Codex CLI - Extended Resource Integration ${{ steps.get_version.outputs.version }}
+          
+          ### 📦 Installation
+          
+          Download the appropriate archive for your platform and extract it:
+          
+          #### Linux/macOS
+          ```bash
+          tar xzf codex-${{ steps.get_version.outputs.version }}-<platform>.tar.gz
+          ./codex --version
+          ```
+          
+          #### Windows
+          ```powershell
+          Expand-Archive codex-${{ steps.get_version.outputs.version }}-windows-x86_64.zip
+          .\codex.exe --version
+          ```
+          
+          ### 🎯 Available Binaries
+          
+          Each archive contains:
+          - `codex` - Main CLI binary
+          - `codex-exec` - Execution engine binary
+          - `codex-tui` - Terminal UI binary
+          
+          ### 📝 Checksums
+          
+          SHA256 checksums are provided for each archive file to verify integrity.
+          
+          ### 🔧 Supported Platforms
+          
+          - Linux x86_64
+          - Linux aarch64 (ARM64)
+          - macOS x86_64 (Intel)
+          - macOS aarch64 (Apple Silicon)
+          - Windows x86_64
+          - Windows aarch64 (ARM64)
+          
+          ### 📚 Documentation
+          
+          See the [README](https://github.com/${{ github.repository }}/blob/main/README.md) for usage instructions and configuration details.
+          
+          ---
+          
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/...${VERSION}
+          EOF
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body_path: release-notes.md
+          draft: ${{ steps.get_version.outputs.draft }}
+          prerelease: ${{ steps.get_version.outputs.prerelease }}
+          files: release-files/*
+          fail_on_unmatched_files: false
+          generate_release_notes: false
+      
+      - name: Release Summary
+        run: |
+          echo "## 🎉 Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.get_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pre-release**: ${{ steps.get_version.outputs.prerelease }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Draft**: ${{ steps.get_version.outputs.draft }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Release Assets" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          ls -lh release-files/ | tail -n +2 | awk '{print "- `" $9 "` (" $5 ")"}' >> $GITHUB_STEP_SUMMARY
