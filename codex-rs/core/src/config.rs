@@ -1053,6 +1053,8 @@ disable_response_storage = true
                 base_instructions: None,
                 include_plan_tool: false,
                 internal_originator: None,
+                custom_commands: vec![],
+                parallel_execution: None,
             },
             o3_profile_config
         );
@@ -1105,6 +1107,8 @@ disable_response_storage = true
             base_instructions: None,
             include_plan_tool: false,
             internal_originator: None,
+            custom_commands: vec![],
+            parallel_execution: None,
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -1172,6 +1176,8 @@ disable_response_storage = true
             base_instructions: None,
             include_plan_tool: false,
             internal_originator: None,
+            custom_commands: vec![],
+            parallel_execution: None,
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);

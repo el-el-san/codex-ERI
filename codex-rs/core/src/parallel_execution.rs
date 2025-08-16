@@ -268,6 +268,9 @@ mod tests {
                 content: "cargo build".to_string(),
                 parallel: false,
                 depends_on: vec![],
+                accepts_args: false,
+                arg_placeholder: None,
+                force_high_reasoning: false,
             },
             CustomCommand {
                 name: "test".to_string(),
@@ -276,6 +279,9 @@ mod tests {
                 content: "cargo test".to_string(),
                 parallel: true,
                 depends_on: vec!["build".to_string()],
+                accepts_args: false,
+                arg_placeholder: None,
+                force_high_reasoning: false,
             },
             CustomCommand {
                 name: "lint".to_string(),
@@ -284,6 +290,9 @@ mod tests {
                 content: "cargo clippy".to_string(),
                 parallel: true,
                 depends_on: vec!["build".to_string()],
+                accepts_args: false,
+                arg_placeholder: None,
+                force_high_reasoning: false,
             },
         ];
         
@@ -310,6 +319,9 @@ mod tests {
             content: "grep pattern".to_string(),
             parallel: true,
             depends_on: vec![],
+            accepts_args: false,
+            arg_placeholder: None,
+            force_high_reasoning: false,
         };
         
         let sequential_cmd = CustomCommand {
@@ -319,6 +331,9 @@ mod tests {
             content: "echo test > file.txt".to_string(),
             parallel: false,
             depends_on: vec![],
+            accepts_args: false,
+            arg_placeholder: None,
+            force_high_reasoning: false,
         };
         
         assert!(is_custom_command_parallel(&parallel_cmd));
@@ -335,6 +350,9 @@ mod tests {
                 content: "echo a".to_string(),
                 parallel: false,
                 depends_on: vec!["b".to_string()],
+                accepts_args: false,
+                arg_placeholder: None,
+                force_high_reasoning: false,
             },
             CustomCommand {
                 name: "b".to_string(),
@@ -343,6 +361,9 @@ mod tests {
                 content: "echo b".to_string(),
                 parallel: false,
                 depends_on: vec!["a".to_string()],
+                accepts_args: false,
+                arg_placeholder: None,
+                force_high_reasoning: false,
             },
         ];
         
