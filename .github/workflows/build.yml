@@ -204,11 +204,17 @@ jobs:
           cargo test --target ${{ matrix.target }} --workspace
       
       - name: Run tests (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && matrix.target != 'aarch64-pc-windows-msvc'
         working-directory: codex-rs
         shell: pwsh
         run: |
           cargo test --target ${{ matrix.target }} --workspace
+      
+      - name: Skip tests for Windows ARM64 (cross-compilation)
+        if: matrix.os == 'windows-latest' && matrix.target == 'aarch64-pc-windows-msvc'
+        run: |
+          echo "Skipping tests for Windows ARM64 cross-compilation target"
+          echo "Tests cannot be run on x86_64 host for ARM64 binaries"
       
       - name: Prepare artifacts (Unix)
         if: matrix.os != 'windows-latest'
