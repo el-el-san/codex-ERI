@@ -150,8 +150,16 @@ mod tests {
         let limiter = RateLimiter::new(config);
         
         let start = Instant::now();
-        let _permit1 = limiter.acquire().await;
+        
+        // Acquire and drop first permit
+        {
+            let _permit1 = limiter.acquire().await;
+            // permit1 is dropped here
+        }
+        
+        // Now we can acquire the second permit
         let _permit2 = limiter.acquire().await;
+        
         let elapsed = start.elapsed();
         
         // Should have at least min_delay_ms between calls
