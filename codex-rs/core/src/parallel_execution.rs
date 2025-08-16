@@ -195,7 +195,6 @@ impl ParallelExecutionInfo {
 mod tests {
     use super::*;
     use serde_json::json;
-    use serde_json::json;
     
     #[tokio::test]
     async fn test_parallel_group_identification() {
