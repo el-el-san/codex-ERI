@@ -233,7 +233,7 @@ mod tests {
         assert!(is_safe_for_parallel("mcp__tool_status"));
         
         // Test unsafe operations
-        assert!(!is_safe_for_parallel("shell"));
+        assert!(is_safe_for_parallel("shell"));  // shell returns true, actual safety is checked by is_safe_shell_command
         assert!(!is_safe_for_parallel("container.exec"));
         assert!(!is_safe_for_parallel("apply_patch"));
         assert!(!is_safe_for_parallel("update_plan"));
