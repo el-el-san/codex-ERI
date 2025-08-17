@@ -51,46 +51,36 @@
   - config.tomlで並列実行数を調整可能（デフォルト: 5）
   - 読み取り専用操作の自動並列化
 
-## インストールとビルド
+## インストール
 
-### 必要な環境
-- Rust 1.70以降
-- Git
+### ビルド済みバイナリのダウンロード（推奨）
 
-### ビルド手順
+最新リリースから、お使いのプラットフォーム用のビルド済みバイナリをダウンロードできます：
 
-```bash
-# リポジトリのクローン
-git clone https://github.com/el-el-san/codex
-cd codex/codex-rs
+📦 **[最新リリースはこちら](https://github.com/el-el-san/codex-ERI/releases/latest)**
 
-# 標準的なビルド
-cargo build --release --workspace
+#### 対応プラットフォーム
+- **Linux** (x86_64)
+- **macOS** (x86_64, ARM64)
+- **Windows** (x86_64)
+- **Android** (ARM64/Termux)
 
-```
+#### インストール手順
 
-### バイナリの所在
-
-ビルド完了後、実行可能バイナリは以下の場所に生成されます：
-
-```
-codex-rs/target/release/
-├── codex      # メインCLIバイナリ
-├── codex-exec # 実行エンジンバイナリ
-└── codex-tui  # TUI版バイナリ
-```
-
-### インストール（オプション）
-
-```bash
-# システムパスにインストール
-cargo install --path cli/
-cargo install --path exec/
-cargo install --path tui/
-
-# または直接実行
-./target/release/codex 
-```
+1. [リリースページ](https://github.com/el-el-san/codex-ERI/releases/latest)から対応するバイナリをダウンロード
+2. ダウンロードしたファイルを解凍
+3. バイナリに実行権限を付与（Linux/macOS）:
+   ```bash
+   chmod +x codex codex-exec codex-tui
+   ```
+4. パスの通った場所に配置するか、直接実行:
+   ```bash
+   # パスに追加
+   sudo mv codex codex-exec codex-tui /usr/local/bin/
+   
+   # または直接実行
+   ./codex
+   ```
 
 ## 基本的な使い方
 
@@ -172,5 +162,54 @@ content = "現在のコードベースを分析して問題点を指摘してく
 **並列実行オプション:**
 - `parallel`: trueの場合、他のコマンドと並列実行可能
 - `depends_on`: 指定したコマンドの完了を待ってから実行
+
+## GitHub Actions ワークフロー
+
+### 自動ビルド＆リリース
+
+このプロジェクトは、GitHub Actionsを使用して自動的にビルドとリリースを行います。
+
+#### ワークフロー構成
+
+**`.github/workflows/build.yml`** - マルチプラットフォームビルド
+- **トリガー**: プルリクエスト、mainブランチへのプッシュ
+- **ビルド対象**: 
+  - Linux (x86_64)
+  - macOS (x86_64, ARM64)
+  - Windows (x86_64)
+  - Android (ARM64/Termux)
+- **成果物**: 各プラットフォーム用のバイナリをアーティファクトとして保存
+
+**`.github/workflows/release.yml`** - 自動リリース
+- **トリガー**: `v*`形式のタグプッシュ（例: `v1.0.0`）
+- **処理内容**:
+  1. 全プラットフォーム向けビルド実行
+  2. ビルド済みバイナリを圧縮
+  3. GitHubリリースの自動作成
+  4. バイナリのアップロード
+
+#### リリース手順
+
+新しいバージョンをリリースする場合：
+
+```bash
+# バージョンタグを作成
+git tag v1.0.0
+
+# タグをプッシュ（自動リリースがトリガーされます）
+git push origin v1.0.0
+```
+
+GitHub Actionsが自動的に：
+1. 全プラットフォーム向けのビルドを実行
+2. リリースページを作成
+3. ビルド済みバイナリをアップロード
+
+#### ワークフローの特徴
+
+- **並列ビルド**: 各プラットフォームのビルドを並列実行で高速化
+- **クロスコンパイル**: ARM64版macOSとAndroid版は専用のツールチェーンを使用
+- **自動テスト**: ビルド後に基本的な動作確認を実行（一部プラットフォーム）
+- **キャッシュ活用**: Rust依存関係をキャッシュしてビルド時間を短縮
 
 
