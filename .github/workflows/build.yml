@@ -21,6 +21,7 @@ on:
           - all
           - linux-x86_64
           - linux-aarch64
+          - android-aarch64
           - macos-x86_64
           - macos-aarch64
           - windows-x86_64
@@ -95,6 +96,9 @@ jobs:
               linux-aarch64)
                 matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"}]}'
                 ;;
+              android-aarch64)
+                matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"}]}'
+                ;;
               macos-x86_64)
                 matrix='{"include":[{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"}]}'
                 ;;
@@ -110,7 +114,7 @@ jobs:
             esac
           else
             # 全プラットフォーム
-            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
+            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
           fi
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
@@ -141,6 +145,50 @@ jobs:
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      
+      - name: Install Android NDK for ARM64
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          # Android NDK r26c for API level 24 (Android 7.0)
+          NDK_VERSION="26.3.11579264"
+          ANDROID_API_LEVEL="24"
+          
+          # Install Android SDK command-line tools
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          
+          # Download and install Android NDK
+          mkdir -p $HOME/android-ndk
+          cd $HOME/android-ndk
+          wget -q https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
+          unzip -q android-ndk-r26c-linux.zip
+          
+          # Set up environment variables
+          export ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r26c
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          
+          # Set up Rust Android target
+          rustup target add aarch64-linux-android
+          
+          # Configure cargo for Android cross-compilation
+          mkdir -p $HOME/.cargo
+          cat >> $HOME/.cargo/config.toml << EOF
+          [target.aarch64-linux-android]
+          ar = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          
+          [env]
+          CC_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          CXX_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++"
+          AR_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          EOF
+          
+          # Export environment variables for the build
+          echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++" >> $GITHUB_ENV
+          echo "AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
       
       - name: Cache cleanup
         if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
@@ -192,7 +240,7 @@ jobs:
           )
       
       - name: Run tests (Unix - non-cross)
-        if: matrix.os != 'windows-latest' && matrix.target != 'aarch64-unknown-linux-gnu'
+        if: matrix.os != 'windows-latest' && matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'aarch64-linux-android'
         working-directory: codex-rs
         run: |
           cargo test --target ${{ matrix.target }} --workspace
@@ -202,6 +250,12 @@ jobs:
         run: |
           echo "Skipping tests for Linux ARM64 cross-compilation target"
           echo "Tests cannot be run on x86_64 host for ARM64 binaries"
+      
+      - name: Skip tests for Android ARM64 (cross-compilation)
+        if: matrix.target == 'aarch64-linux-android'
+        run: |
+          echo "Skipping tests for Android ARM64 cross-compilation target"
+          echo "Tests cannot be run on x86_64 host for Android ARM64 binaries"
       
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest' && matrix.target != 'aarch64-pc-windows-msvc'
