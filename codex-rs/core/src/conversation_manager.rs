@@ -67,7 +67,7 @@ impl ConversationManager {
                 msg: EventMsg::SessionConfigured(session_configured),
             } if id == init_id => session_configured,
             _ => {
-                return Err(CodexErr::UnexpectedEvent(format!("Expected SessionConfigured as first event, got: {:?}", event)));
+                return Err(anyhow::anyhow!("Expected SessionConfigured as first event, got: {:?}", event).into());
             }
         };
 
@@ -92,6 +92,6 @@ impl ConversationManager {
         conversations
             .get(&conversation_id)
             .cloned()
-            .ok_or_else(|| CodexErr::UnexpectedEvent(format!("Conversation not found: {}", conversation_id)))
+            .ok_or_else(|| anyhow::anyhow!("Conversation not found: {}", conversation_id).into())
     }
 }
