@@ -156,9 +156,9 @@ jobs:
       - name: Install Android NDK for ARM64
         if: matrix.target == 'aarch64-linux-android'
         run: |
-          # Android NDK r26c for API level 24 (Android 7.0)
+          # Android NDK r26c for API level 28 (Android 9.0) - Better OpenSSL compatibility
           NDK_VERSION="26.3.11579264"
-          ANDROID_API_LEVEL="24"
+          ANDROID_API_LEVEL="28"
           
           # Install Android SDK command-line tools
           sudo apt-get update
@@ -173,30 +173,28 @@ jobs:
           # Set up environment variables
           export ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r26c
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          
+          # Install cargo-ndk for better Android integration
+          cargo install cargo-ndk
           
           # Set up Rust Android target
           rustup target add aarch64-linux-android
           
-          # Configure cargo for Android cross-compilation
-          mkdir -p $HOME/.cargo
-          cat > $HOME/.cargo/config.toml << EOF
-          [target.aarch64-linux-android]
-          ar = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-          EOF
+          # Set environment variables for OpenSSL vendored build
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
           
-          # Verify the configuration
-          echo "Cargo config created:"
-          cat $HOME/.cargo/config.toml
-          echo "Checking if NDK tools exist:"
-          ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang
-          ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          # OpenSSL specific environment variables
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
           
-          # Export environment variables for the build
+          # Set CC and AR for proper cross-compilation
           echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
           echo "CXX_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++" >> $GITHUB_ENV
           echo "AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
       
       - name: Cache cleanup
         if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
@@ -234,22 +232,26 @@ jobs:
           if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
             echo "Android build environment:"
             echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
             echo "CC_aarch64_linux_android=$CC_aarch64_linux_android"
-            echo "Cargo config:"
-            cat $HOME/.cargo/config.toml || true
+            echo "OPENSSL_STATIC=$OPENSSL_STATIC"
             echo "Rustup targets:"
             rustup target list --installed
+            echo "cargo-ndk version:"
+            cargo ndk --version || echo "cargo-ndk not found"
           fi
           
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
             if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-              cargo build --release --target ${{ matrix.target }} --workspace -vv
+              # Use cargo-ndk for Android builds
+              cargo ndk --platform 28 -t aarch64-linux-android build --release --workspace
             else
               cargo build --release --target ${{ matrix.target }} --workspace
             fi
           else
             if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-              cargo build --target ${{ matrix.target }} --workspace -vv
+              # Use cargo-ndk for Android builds
+              cargo ndk --platform 28 -t aarch64-linux-android build --workspace
             else
               cargo build --target ${{ matrix.target }} --workspace
             fi
