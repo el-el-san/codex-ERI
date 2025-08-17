@@ -221,7 +221,6 @@ impl McpClient {
         _env: Option<HashMap<String, String>>,
     ) -> std::io::Result<Self> {
         use reqwest::Client;
-        use futures::stream::StreamExt;
         use std::sync::Arc;
         use tokio::sync::RwLock;
         
@@ -279,7 +278,7 @@ impl McpClient {
                                                 Ok(JSONRPCMessage::Error(err)) => {
                                                     Self::dispatch_error(err, &pending_clone).await;
                                                 }
-                                                Ok(JSONRPCMessage::Notification(notification)) => {
+                                                Ok(JSONRPCMessage::Notification(_notification)) => {
                                                     info!("<- notification: {}", body);
                                                 }
                                                 Ok(other) => {
