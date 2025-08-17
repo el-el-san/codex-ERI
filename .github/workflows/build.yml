@@ -131,10 +131,17 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Setup Rust
+        if: matrix.target != 'aarch64-linux-android'
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.setup.outputs.rust_version }}
           target: ${{ matrix.target }}
+      
+      - name: Setup Rust (Android)
+        if: matrix.target == 'aarch64-linux-android'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.setup.outputs.rust_version }}
       
       - name: Install Linux ARM64 cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -172,17 +179,18 @@ jobs:
           
           # Configure cargo for Android cross-compilation
           mkdir -p $HOME/.cargo
-          cat >> $HOME/.cargo/config.toml << EOF
+          cat > $HOME/.cargo/config.toml << EOF
           [target.aarch64-linux-android]
           ar = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-          
-          [env]
-          CC_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-          CXX_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++"
-          AR_aarch64_linux_android = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
           EOF
+          
+          # Verify the configuration
+          echo "Cargo config created:"
+          cat $HOME/.cargo/config.toml
+          echo "Checking if NDK tools exist:"
+          ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang
+          ls -la $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
           
           # Export environment variables for the build
           echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
@@ -222,10 +230,29 @@ jobs:
         if: matrix.os != 'windows-latest'
         working-directory: codex-rs
         run: |
+          # Show environment for Android debugging
+          if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
+            echo "Android build environment:"
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+            echo "CC_aarch64_linux_android=$CC_aarch64_linux_android"
+            echo "Cargo config:"
+            cat $HOME/.cargo/config.toml || true
+            echo "Rustup targets:"
+            rustup target list --installed
+          fi
+          
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
-            cargo build --release --target ${{ matrix.target }} --workspace
+            if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
+              cargo build --release --target ${{ matrix.target }} --workspace -vv
+            else
+              cargo build --release --target ${{ matrix.target }} --workspace
+            fi
           else
-            cargo build --target ${{ matrix.target }} --workspace
+            if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
+              cargo build --target ${{ matrix.target }} --workspace -vv
+            else
+              cargo build --target ${{ matrix.target }} --workspace
+            fi
           fi
       
       - name: Build (Windows)
