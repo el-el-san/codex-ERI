@@ -88,6 +88,10 @@ pub enum CodexErr {
     #[error("codex-linux-sandbox was required but not provided")]
     LandlockSandboxExecutableNotProvided,
 
+    /// General error for unexpected conditions
+    #[error("{0}")]
+    General(String),
+
     // -----------------------------------------------------------------
     // Automatic conversions for common external error types
     // -----------------------------------------------------------------

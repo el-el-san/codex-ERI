@@ -9,7 +9,6 @@ use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex_conversation::CodexConversation;
 use crate::config::Config;
-use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
@@ -67,7 +66,7 @@ impl ConversationManager {
                 msg: EventMsg::SessionConfigured(session_configured),
             } if id == init_id => session_configured,
             _ => {
-                return Err(anyhow::anyhow!("Expected SessionConfigured as first event, got: {:?}", event).into());
+                return Err(CodexErr::General(format!("Expected SessionConfigured as first event, got: {:?}", event)));
             }
         };
 
@@ -92,6 +91,6 @@ impl ConversationManager {
         conversations
             .get(&conversation_id)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Conversation not found: {}", conversation_id).into())
+            .ok_or_else(|| CodexErr::General(format!("Conversation not found: {}", conversation_id)))
     }
 }
