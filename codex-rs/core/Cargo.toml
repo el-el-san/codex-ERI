@@ -74,6 +74,10 @@ openssl-sys = { version = "*", features = ["vendored"] }
 [target.aarch64-unknown-linux-gnu.dependencies]
 openssl-sys = { version = "*", features = ["vendored"] }
 
+# Build OpenSSL from source for Android ARM64 (Termux)
+[target.aarch64-linux-android.dependencies]
+openssl-sys = { version = "*", features = ["vendored"] }
+
 [dev-dependencies]
 assert_cmd = "2"
 core_test_support = { path = "tests/common" }
