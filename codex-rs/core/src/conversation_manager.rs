@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use codex_login::CodexAuth;
+use crate::error::CodexErr;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
