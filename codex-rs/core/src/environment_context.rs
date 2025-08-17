@@ -67,7 +67,7 @@ impl Display for EnvironmentContext {
             self.cwd.to_string_lossy()
         )?;
         writeln!(f, "Approval policy: {}", self.approval_policy)?;
-        writeln!(f, "Sandbox mode: {}", self.sandbox_mode)?;
+        writeln!(f, "Sandbox mode: {:?}", self.sandbox_mode)?;
         writeln!(f, "Network access: {}", self.network_access)?;
         Ok(())
     }

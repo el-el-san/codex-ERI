@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
-use crate::codex::INITIAL_SUBMIT_ID;
 use crate::codex_conversation::CodexConversation;
 use crate::config::Config;
 use crate::error::CodexErr;
@@ -51,10 +50,12 @@ impl ConversationManager {
         config: Config,
         auth: Option<CodexAuth>,
     ) -> CodexResult<NewConversation> {
+        let ctrl_c = Arc::new(tokio::sync::Notify::new());
         let CodexSpawnOk {
             codex,
             session_id: conversation_id,
-        } = Codex::spawn(config, auth).await?;
+            init_id,
+        } = Codex::spawn(config, auth, ctrl_c).await?;
 
         // The first event must be `SessionInitialized`. Validate and forward it
         // to the caller so that they can display it in the conversation
@@ -64,9 +65,9 @@ impl ConversationManager {
             Event {
                 id,
                 msg: EventMsg::SessionConfigured(session_configured),
-            } if id == INITIAL_SUBMIT_ID => session_configured,
+            } if id == init_id => session_configured,
             _ => {
-                return Err(CodexErr::SessionConfiguredNotFirstEvent);
+                return Err(CodexErr::UnexpectedEvent(format!("Expected SessionConfigured as first event, got: {:?}", event)));
             }
         };
 
@@ -91,6 +92,6 @@ impl ConversationManager {
         conversations
             .get(&conversation_id)
             .cloned()
-            .ok_or_else(|| CodexErr::ConversationNotFound(conversation_id))
+            .ok_or_else(|| CodexErr::UnexpectedEvent(format!("Conversation not found: {}", conversation_id)))
     }
 }
