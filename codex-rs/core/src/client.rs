@@ -369,7 +369,7 @@ async fn process_sse<S>(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
-                let event = CodexErr::Stream(e.to_string());
+                let event = CodexErr::Stream(e.to_string(), None);
                 let _ = tx_event.send(Err(event)).await;
                 return;
             }
@@ -389,6 +389,7 @@ async fn process_sse<S>(
                         let _ = tx_event
                             .send(Err(CodexErr::Stream(
                                 "stream closed before response.completed".into(),
+                                None,
                             )))
                             .await;
                     }
@@ -397,7 +398,7 @@ async fn process_sse<S>(
             }
             Err(_) => {
                 let _ = tx_event
-                    .send(Err(CodexErr::Stream("idle timeout waiting for SSE".into())))
+                    .send(Err(CodexErr::Stream("idle timeout waiting for SSE".into(), None)))
                     .await;
                 return;
             }
@@ -481,7 +482,7 @@ async fn process_sse<S>(
                         .unwrap_or("response.failed event received");
 
                     let _ = tx_event
-                        .send(Err(CodexErr::Stream(error.to_string())))
+                        .send(Err(CodexErr::Stream(error.to_string(), None)))
                         .await;
                 }
             }
@@ -725,7 +726,7 @@ mod tests {
         matches!(events[0], Ok(ResponseEvent::OutputItemDone(_)));
 
         match &events[1] {
-            Err(CodexErr::Stream(msg)) => {
+            Err(CodexErr::Stream(msg, _)) => {
                 assert_eq!(msg, "stream closed before response.completed")
             }
             other => panic!("unexpected second event: {other:?}"),
