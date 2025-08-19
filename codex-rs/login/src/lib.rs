@@ -25,6 +25,8 @@ pub use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
 
 mod token_data;
+pub mod pkce;
+pub mod server;
 
 const SOURCE_FOR_PYTHON_SERVER: &str = include_str!("./login_with_chatgpt.py");
 
