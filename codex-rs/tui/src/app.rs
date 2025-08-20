@@ -471,6 +471,12 @@ impl App<'_> {
                         widget.apply_file_search_result(query, matches);
                     }
                 }
+                AppEvent::StartCommitAnimation => {
+                    // TODO: Implement commit animation start
+                }
+                AppEvent::StopCommitAnimation => {
+                    // TODO: Implement commit animation stop
+                }
             }
         }
         terminal.clear()?;
