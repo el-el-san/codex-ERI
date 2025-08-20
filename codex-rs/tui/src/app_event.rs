@@ -7,6 +7,7 @@ use crate::app::ChatWidgetArgs;
 use crate::slash_command::SlashCommand;
 use codex_core::custom_command::CustomCommand;
 
+#[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum AppEvent {
     CodexEvent(Event),
@@ -24,6 +25,12 @@ pub(crate) enum AppEvent {
 
     /// Request to exit the application gracefully.
     ExitRequest,
+
+    /// Start the commit animation.
+    StartCommitAnimation,
+
+    /// Stop the commit animation.
+    StopCommitAnimation,
 
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
