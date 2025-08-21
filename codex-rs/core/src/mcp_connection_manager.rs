@@ -165,12 +165,12 @@ impl McpConnectionManager {
 
             join_set.spawn(async move {
                 let (transport, args, env) = match cfg {
-                    McpServerConfig::Stdio { command, args, env } => {
+                    McpServerConfig::Stdio { command, args, env, .. } => {
                         let mut all_args = vec![OsString::from(command)];
                         all_args.extend(args.into_iter().map(OsString::from));
                         (McpTransport::Stdio, all_args, env)
                     }
-                    McpServerConfig::Http { url, env } => {
+                    McpServerConfig::Http { url, env, .. } => {
                         (McpTransport::Http { url }, vec![], env)
                     }
                 };
