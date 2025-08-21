@@ -20,6 +20,7 @@ mod chat_composer_history;
 mod command_popup;
 mod file_search_popup;
 mod live_ring_widget;
+mod mcp_popup;
 mod popup_consts;
 mod scroll_state;
 mod selection_popup_common;

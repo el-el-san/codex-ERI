@@ -215,6 +215,49 @@ impl App<'_> {
                     self.pending_history_lines.extend(lines);
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
+                AppEvent::ShowMcpPopup => {
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.show_mcp_popup();
+                    }
+                }
+                AppEvent::ToggleMcpServer { server_name } => {
+                    // Handle MCP server toggle
+                    let config_path = self.config.codex_home.join("config.toml");
+                    let mcp_config_manager = codex_core::McpConfigManager::new(config_path);
+                    
+                    match mcp_config_manager.toggle_server(&server_name) {
+                        Ok(new_state) => {
+                            let status = if new_state { "enabled" } else { "disabled" };
+                            tracing::info!("MCP server '{}' is now {}", server_name, status);
+                            
+                            // Notify that server state changed
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.add_diff_output(format!(
+                                    "MCP server '{}' is now {}. Restart Codex to apply changes.",
+                                    server_name, status
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to toggle MCP server '{}': {}", server_name, e);
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                widget.add_diff_output(format!(
+                                    "Failed to toggle MCP server '{}': {}",
+                                    server_name, e
+                                ));
+                            }
+                        }
+                    }
+                }
+                AppEvent::RefreshMcpConnections => {
+                    // This would require restarting the core agent, which is complex
+                    // For now, just inform the user to restart
+                    if let AppState::Chat { widget } = &mut self.app_state {
+                        widget.add_diff_output(
+                            "Please restart Codex to apply MCP server changes.".to_string()
+                        );
+                    }
+                }
                 AppEvent::RequestRedraw => {
                     self.schedule_redraw();
                 }
@@ -356,6 +399,10 @@ impl App<'_> {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.add_status_output();
                         }
+                    }
+                    SlashCommand::Mcp => {
+                        // Show MCP server management popup
+                        self.app_event_tx.send(AppEvent::ShowMcpPopup);
                     }
                     SlashCommand::Prompts => {
                         if let AppState::Chat { widget } = &mut self.app_state {

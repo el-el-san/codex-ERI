@@ -64,4 +64,9 @@ pub(crate) enum AppEvent {
     /// Onboarding: result of login_with_chatgpt.
     OnboardingAuthComplete(Result<(), String>),
     OnboardingComplete(ChatWidgetArgs),
+    
+    /// MCP server management events
+    ShowMcpPopup,
+    ToggleMcpServer { server_name: String },
+    RefreshMcpConnections,
 }
