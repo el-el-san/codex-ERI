@@ -121,7 +121,7 @@ impl McpPopup {
         self.servers
             .iter()
             .enumerate()
-            .map(|(idx, server)| {
+            .map(|(_idx, server)| {
                 let status = if !server.enabled {
                     "[OFF]"
                 } else if server.connected {
