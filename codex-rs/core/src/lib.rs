@@ -35,6 +35,8 @@ mod flags;
 pub mod git_info;
 mod is_safe_command;
 mod mcp_connection_manager;
+mod mcp_config_manager;
+pub use mcp_config_manager::McpConfigManager;
 mod mcp_tool_call;
 pub mod message_history;
 mod model_provider_info;

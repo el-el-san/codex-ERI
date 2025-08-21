@@ -47,7 +47,7 @@ impl Default for ParallelExecutionConfig {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum McpServerConfig {
     Stdio {
@@ -56,12 +56,34 @@ pub enum McpServerConfig {
         args: Vec<String>,
         #[serde(default)]
         env: Option<HashMap<String, String>>,
+        #[serde(default = "default_mcp_enabled")]
+        enabled: bool,
     },
     Http {
         url: String,
         #[serde(default)]
         env: Option<HashMap<String, String>>,
+        #[serde(default = "default_mcp_enabled")]
+        enabled: bool,
     },
+}
+
+fn default_mcp_enabled() -> bool { true }
+
+impl McpServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            McpServerConfig::Stdio { enabled, .. } => *enabled,
+            McpServerConfig::Http { enabled, .. } => *enabled,
+        }
+    }
+
+    pub fn set_enabled(&mut self, value: bool) {
+        match self {
+            McpServerConfig::Stdio { enabled, .. } => *enabled = value,
+            McpServerConfig::Http { enabled, .. } => *enabled = value,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]

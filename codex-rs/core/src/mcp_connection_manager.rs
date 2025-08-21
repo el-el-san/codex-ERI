@@ -99,6 +99,9 @@ pub(crate) struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
+    
+    /// Server configuration for tracking enabled state
+    server_configs: HashMap<String, McpServerConfig>,
 }
 
 impl McpConnectionManager {
@@ -141,6 +144,12 @@ impl McpConnectionManager {
             let mut join_set = JoinSet::new();
             
             for (server_name, cfg) in batch {
+            // Skip disabled servers
+            if !cfg.is_enabled() {
+                info!("Skipping disabled MCP server: {}", server_name);
+                continue;
+            }
+            
             // Validate server name before spawning
             if !is_valid_mcp_server_name(&server_name) {
                 let error = anyhow::anyhow!(
@@ -240,8 +249,13 @@ impl McpConnectionManager {
         let all_tools = list_all_tools(&clients).await?;
 
         let tools = qualify_tools(all_tools);
+        
+        // Store server configs for later reference
+        let server_configs = servers.into_iter()
+            .map(|(name, cfg)| (name.clone(), cfg.clone()))
+            .collect();
 
-        Ok((Self { clients, tools }, errors))
+        Ok((Self { clients, tools, server_configs }, errors))
     }
 
     /// Returns a single map that contains **all** tools. Each key is the
@@ -296,6 +310,24 @@ impl McpConnectionManager {
         self.tools
             .get(tool_name)
             .map(|tool| (tool.server_name.clone(), tool.tool_name.clone()))
+    }
+    
+    /// Get information about all MCP servers and their status
+    pub fn get_server_info(&self) -> Vec<(String, McpServerConfig, bool, usize)> {
+        let mut info = Vec::new();
+        
+        for (name, config) in &self.server_configs {
+            let is_connected = self.clients.contains_key(name);
+            let tool_count = self.tools
+                .values()
+                .filter(|tool| tool.server_name == *name)
+                .count();
+            
+            info.push((name.clone(), config.clone(), is_connected, tool_count));
+        }
+        
+        info.sort_by(|a, b| a.0.cmp(&b.0));
+        info
     }
 }
 
