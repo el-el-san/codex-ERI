@@ -795,23 +795,35 @@ impl ChatWidget<'_> {
     /// Show the MCP popup
     pub fn show_mcp_popup(&mut self) {
         self.show_mcp_popup = true;
-        // TODO: Get actual MCP server info from the agent
-        let servers = vec![
-            McpServerInfo {
-                name: "imagen4_fast".to_string(),
-                url_or_cmd: "https://kamui-code.ai/t2i/fal/imagen4/fast".to_string(),
-                enabled: true,
-                connected: true,
-                tool_count: 5,
-            },
-            McpServerInfo {
-                name: "t2i_kamui_imagen3".to_string(),
-                url_or_cmd: "https://kamui-code.ai/t2i/google/imagen".to_string(),
-                enabled: false,
-                connected: false,
-                tool_count: 3,
-            },
-        ];
+        
+        // Load MCP server info from config
+        let mut servers = Vec::new();
+        
+        // Get all MCP servers from config
+        if let Some(mcp_servers) = self.config.mcp_servers.as_ref() {
+            for (name, config) in mcp_servers {
+                let (url_or_cmd, enabled) = match config {
+                    codex_core::config_types::McpServerConfig::Http { url, enabled, .. } => {
+                        (url.clone(), *enabled)
+                    }
+                    codex_core::config_types::McpServerConfig::Stdio { command, enabled, .. } => {
+                        (command.clone(), *enabled)
+                    }
+                };
+                
+                servers.push(McpServerInfo {
+                    name: name.clone(),
+                    url_or_cmd,
+                    enabled,
+                    connected: enabled, // For now, assume connected if enabled
+                    tool_count: 0, // TODO: Get actual tool count from MCP manager
+                });
+            }
+        }
+        
+        // Sort servers by name for consistent display
+        servers.sort_by(|a, b| a.name.cmp(&b.name));
+        
         self.mcp_popup = Some(McpPopup::new(servers));
         self.request_redraw();
     }
