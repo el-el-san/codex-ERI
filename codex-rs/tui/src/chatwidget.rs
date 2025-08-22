@@ -816,25 +816,6 @@ impl ChatWidget<'_> {
         self.request_redraw();
     }
     
-    /// Add diff output to the history
-    pub fn add_diff_output(&mut self, text: String) {
-        use ratatui::text::Line;
-        let lines = text.lines().map(|line| Line::from(line.to_string())).collect();
-        self.app_event_tx.send(AppEvent::InsertHistory(lines));
-        self.request_redraw();
-    }
-    
-    /// Add status output to the history
-    pub fn add_status_output(&mut self) {
-        // TODO: Implement status output
-        self.add_diff_output("Status output not yet implemented".to_string());
-    }
-    
-    /// Add prompts output to the history
-    pub fn add_prompts_output(&mut self) {
-        // TODO: Implement prompts output
-        self.add_diff_output("Prompts output not yet implemented".to_string());
-    }
 }
 
 impl ChatWidget<'_> {
