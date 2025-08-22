@@ -800,14 +800,14 @@ impl ChatWidget<'_> {
         let mut servers = Vec::new();
         
         // Get all MCP servers from config
-        if let Some(mcp_servers) = self.config.mcp_servers.as_ref() {
+        if let Some(ref mcp_servers) = self.config.mcp_servers {
             for (name, config) in mcp_servers {
                 let (url_or_cmd, enabled) = match config {
                     codex_core::config_types::McpServerConfig::Http { url, enabled, .. } => {
-                        (url.clone(), *enabled)
+                        (url.clone(), enabled)
                     }
                     codex_core::config_types::McpServerConfig::Stdio { command, enabled, .. } => {
-                        (command.clone(), *enabled)
+                        (command.clone(), enabled)
                     }
                 };
                 
