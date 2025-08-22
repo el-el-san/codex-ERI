@@ -947,7 +947,9 @@ impl WidgetRef for &ChatWidget<'_> {
                 // Calculate popup area (centered, 60% width, fixed height for scrollable view)
                 let popup_width = (area.width as f32 * 0.6) as u16;
                 // Add 2 for borders (top and bottom)
-                let popup_height = (popup.calculate_required_height() + 2).min(area.height - 4);
+                let required_height = popup.calculate_required_height();
+                let popup_height = (required_height + 2).min(area.height - 4);
+                eprintln!("DEBUG: required_height={}, popup_height={}, area.height={}", required_height, popup_height, area.height);
                 let popup_x = (area.width - popup_width) / 2;
                 let popup_y = (area.height - popup_height) / 2;
                 
@@ -974,6 +976,7 @@ impl WidgetRef for &ChatWidget<'_> {
                     width: popup_area.width - 2,
                     height: popup_area.height - 2,
                 };
+                eprintln!("DEBUG: popup_area.height={}, inner_area.height={}", popup_area.height, inner_area.height);
                 popup.render_ref(inner_area, buf);
             }
         }
