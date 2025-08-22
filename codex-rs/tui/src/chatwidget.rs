@@ -799,6 +799,9 @@ impl ChatWidget<'_> {
         // Load MCP server info from config
         let mut servers = Vec::new();
         
+        // Debug: Log the number of MCP servers in config
+        eprintln!("DEBUG: Found {} MCP servers in config", self.config.mcp_servers.len());
+        
         // Get all MCP servers from config
         for (name, config) in &self.config.mcp_servers {
             let (url_or_cmd, enabled) = match config {
@@ -810,6 +813,8 @@ impl ChatWidget<'_> {
                 }
             };
             
+            eprintln!("DEBUG: Adding server: {} (enabled: {})", name, enabled);
+            
             servers.push(McpServerInfo {
                 name: name.clone(),
                 url_or_cmd,
@@ -818,6 +823,8 @@ impl ChatWidget<'_> {
                 tool_count: 0, // TODO: Get actual tool count from MCP manager
             });
         }
+        
+        eprintln!("DEBUG: Total servers loaded: {}", servers.len());
         
         // Sort servers by name for consistent display
         servers.sort_by(|a, b| a.name.cmp(&b.name));
