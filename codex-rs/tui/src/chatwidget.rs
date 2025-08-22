@@ -800,25 +800,23 @@ impl ChatWidget<'_> {
         let mut servers = Vec::new();
         
         // Get all MCP servers from config
-        if let Some(ref mcp_servers) = self.config.mcp_servers {
-            for (name, config) in mcp_servers {
-                let (url_or_cmd, enabled) = match config {
-                    codex_core::config_types::McpServerConfig::Http { url, enabled, .. } => {
-                        (url.clone(), enabled)
-                    }
-                    codex_core::config_types::McpServerConfig::Stdio { command, enabled, .. } => {
-                        (command.clone(), enabled)
-                    }
-                };
-                
-                servers.push(McpServerInfo {
-                    name: name.clone(),
-                    url_or_cmd,
-                    enabled,
-                    connected: enabled, // For now, assume connected if enabled
-                    tool_count: 0, // TODO: Get actual tool count from MCP manager
-                });
-            }
+        for (name, config) in &self.config.mcp_servers {
+            let (url_or_cmd, enabled) = match config {
+                codex_core::config_types::McpServerConfig::Http { url, enabled, .. } => {
+                    (url.clone(), *enabled)
+                }
+                codex_core::config_types::McpServerConfig::Stdio { command, enabled, .. } => {
+                    (command.clone(), *enabled)
+                }
+            };
+            
+            servers.push(McpServerInfo {
+                name: name.clone(),
+                url_or_cmd,
+                enabled,
+                connected: enabled, // For now, assume connected if enabled
+                tool_count: 0, // TODO: Get actual tool count from MCP manager
+            });
         }
         
         // Sort servers by name for consistent display
