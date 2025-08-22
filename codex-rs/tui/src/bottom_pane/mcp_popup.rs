@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
