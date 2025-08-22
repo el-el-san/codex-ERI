@@ -937,9 +937,10 @@ impl WidgetRef for &ChatWidget<'_> {
         // Render MCP popup if visible
         if self.show_mcp_popup {
             if let Some(ref popup) = self.mcp_popup {
-                // Calculate popup area (centered, 60% width, dynamic height)
+                // Calculate popup area (centered, 60% width, fixed height for scrollable view)
                 let popup_width = (area.width as f32 * 0.6) as u16;
-                let popup_height = popup.calculate_required_height().min(area.height - 4);
+                // Add 2 for borders (top and bottom)
+                let popup_height = (popup.calculate_required_height() + 2).min(area.height - 4);
                 let popup_x = (area.width - popup_width) / 2;
                 let popup_y = (area.height - popup_height) / 2;
                 

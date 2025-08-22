@@ -112,7 +112,8 @@ impl McpPopup {
 
     /// Calculate required height for the popup
     pub fn calculate_required_height(&self) -> u16 {
-        self.servers.len().clamp(1, MAX_POPUP_ROWS) as u16
+        // Always show MAX_POPUP_ROWS height to allow for proper scrolling view
+        MAX_POPUP_ROWS as u16
     }
 
     /// Convert servers to display rows
