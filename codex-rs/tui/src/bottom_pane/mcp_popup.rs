@@ -152,7 +152,8 @@ impl McpPopup {
 impl WidgetRef for McpPopup {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let rows = self.to_display_rows();
-        let max_results = MAX_POPUP_ROWS.min(self.servers.len());
+        // Always use MAX_POPUP_ROWS to ensure consistent popup height
+        let max_results = MAX_POPUP_ROWS;
         render_rows(area, buf, &rows, &self.state, max_results);
     }
 }
