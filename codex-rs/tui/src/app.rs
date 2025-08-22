@@ -216,11 +216,9 @@ impl App<'_> {
                     self.app_event_tx.send(AppEvent::RequestRedraw);
                 }
                 AppEvent::ShowMcpPopup => {
-                    // Show MCP server status as text output for now
+                    // Show MCP popup
                     if let AppState::Chat { widget } = &mut self.app_state {
-                        widget.add_diff_output(
-                            "MCP server management UI is under development.\nUse config.toml to manage servers for now.".to_string()
-                        );
+                        widget.show_mcp_popup();
                     }
                 }
                 AppEvent::ToggleMcpServer { server_name } => {

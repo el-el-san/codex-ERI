@@ -48,6 +48,7 @@ use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
+use crate::bottom_pane::mcp_popup::{McpPopup, McpServerInfo};
 use crate::history_cell::CommandOutput;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PatchEventType;
@@ -82,6 +83,8 @@ pub(crate) struct ChatWidget<'a> {
     current_stream: Option<StreamKind>,
     stream_header_emitted: bool,
     live_max_rows: u16,
+    mcp_popup: Option<McpPopup>,
+    show_mcp_popup: bool,
 }
 
 struct UserMessage {
@@ -228,6 +231,8 @@ impl ChatWidget<'_> {
             current_stream: None,
             stream_header_emitted: false,
             live_max_rows: 3,
+            mcp_popup: None,
+            show_mcp_popup: false,
         }
     }
 
@@ -242,6 +247,55 @@ impl ChatWidget<'_> {
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
         if key_event.kind == KeyEventKind::Press {
             self.bottom_pane.clear_ctrl_c_quit_hint();
+        }
+        
+        // Handle MCP popup keyboard events
+        if self.show_mcp_popup {
+            if let Some(ref mut popup) = self.mcp_popup {
+                use crossterm::event::{KeyCode, KeyModifiers};
+                match key_event {
+                    KeyEvent {
+                        code: KeyCode::Esc,
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    } => {
+                        self.show_mcp_popup = false;
+                        self.mcp_popup = None;
+                        self.request_redraw();
+                        return;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Up,
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    } => {
+                        popup.move_up();
+                        self.request_redraw();
+                        return;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Down,
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    } => {
+                        popup.move_down();
+                        self.request_redraw();
+                        return;
+                    }
+                    KeyEvent {
+                        code: KeyCode::Enter,
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    } => {
+                        if let Some((server_name, new_state)) = popup.toggle_selected() {
+                            self.app_event_tx.send(AppEvent::ToggleMcpServer { server_name });
+                        }
+                        self.request_redraw();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         match self.bottom_pane.handle_key_event(key_event) {
@@ -737,6 +791,50 @@ impl ChatWidget<'_> {
         let [_, bottom_pane_area] = self.layout_areas(area);
         self.bottom_pane.cursor_pos(bottom_pane_area)
     }
+    
+    /// Show the MCP popup
+    pub fn show_mcp_popup(&mut self) {
+        self.show_mcp_popup = true;
+        // TODO: Get actual MCP server info from the agent
+        let servers = vec![
+            McpServerInfo {
+                name: "imagen4_fast".to_string(),
+                url_or_cmd: "https://kamui-code.ai/t2i/fal/imagen4/fast".to_string(),
+                enabled: true,
+                connected: true,
+                tool_count: 5,
+            },
+            McpServerInfo {
+                name: "t2i_kamui_imagen3".to_string(),
+                url_or_cmd: "https://kamui-code.ai/t2i/google/imagen".to_string(),
+                enabled: false,
+                connected: false,
+                tool_count: 3,
+            },
+        ];
+        self.mcp_popup = Some(McpPopup::new(servers));
+        self.request_redraw();
+    }
+    
+    /// Add diff output to the history
+    pub fn add_diff_output(&mut self, text: String) {
+        use ratatui::text::Line;
+        let lines = text.lines().map(|line| Line::from(line.to_string())).collect();
+        self.app_event_tx.send(AppEvent::InsertHistory(lines));
+        self.request_redraw();
+    }
+    
+    /// Add status output to the history
+    pub fn add_status_output(&mut self) {
+        // TODO: Implement status output
+        self.add_diff_output("Status output not yet implemented".to_string());
+    }
+    
+    /// Add prompts output to the history
+    pub fn add_prompts_output(&mut self) {
+        // TODO: Implement prompts output
+        self.add_diff_output("Prompts output not yet implemented".to_string());
+    }
 }
 
 impl ChatWidget<'_> {
@@ -843,6 +941,42 @@ impl WidgetRef for &ChatWidget<'_> {
         (&self.bottom_pane).render(bottom_pane_area, buf);
         if let Some(cell) = &self.active_history_cell {
             cell.render_ref(active_cell_area, buf);
+        }
+        
+        // Render MCP popup if visible
+        if self.show_mcp_popup {
+            if let Some(ref popup) = self.mcp_popup {
+                // Calculate popup area (centered, 60% width, dynamic height)
+                let popup_width = (area.width as f32 * 0.6) as u16;
+                let popup_height = popup.calculate_required_height().min(area.height - 4);
+                let popup_x = (area.width - popup_width) / 2;
+                let popup_y = (area.height - popup_height) / 2;
+                
+                let popup_area = Rect {
+                    x: area.x + popup_x,
+                    y: area.y + popup_y,
+                    width: popup_width,
+                    height: popup_height,
+                };
+                
+                // Draw border and background
+                use ratatui::widgets::{Block, Borders};
+                use ratatui::style::{Style, Color};
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" MCP Servers ")
+                    .style(Style::default().bg(Color::Black));
+                block.render_ref(popup_area, buf);
+                
+                // Render popup content inside the border
+                let inner_area = Rect {
+                    x: popup_area.x + 1,
+                    y: popup_area.y + 1,
+                    width: popup_area.width - 2,
+                    height: popup_area.height - 2,
+                };
+                popup.render_ref(inner_area, buf);
+            }
         }
     }
 }
