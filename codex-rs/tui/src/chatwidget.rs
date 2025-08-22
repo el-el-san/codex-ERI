@@ -970,11 +970,17 @@ impl WidgetRef for &ChatWidget<'_> {
                 block.render_ref(popup_area, buf);
                 
                 // Render popup content inside the border
+                // Ensure we have enough height for borders
+                let inner_height = if popup_area.height > 2 {
+                    popup_area.height - 2
+                } else {
+                    0
+                };
                 let inner_area = Rect {
                     x: popup_area.x + 1,
                     y: popup_area.y + 1,
-                    width: popup_area.width - 2,
-                    height: popup_area.height - 2,
+                    width: popup_area.width.saturating_sub(2),
+                    height: inner_height,
                 };
                 eprintln!("DEBUG: popup_area.height={}, inner_area.height={}", popup_area.height, inner_area.height);
                 popup.render_ref(inner_area, buf);
