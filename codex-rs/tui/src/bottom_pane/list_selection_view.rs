@@ -99,8 +99,8 @@ impl ListSelectionView {
     }
 }
 
-impl BottomPaneView for ListSelectionView {
-    fn handle_key_event(&mut self, _pane: &mut BottomPane, key_event: KeyEvent) {
+impl<'a> BottomPaneView<'a> for ListSelectionView {
+    fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
         match key_event {
             KeyEvent {
                 code: KeyCode::Up, ..
@@ -125,7 +125,7 @@ impl BottomPaneView for ListSelectionView {
         self.complete
     }
 
-    fn on_ctrl_c(&mut self, _pane: &mut BottomPane) -> CancellationEvent {
+    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
         self.complete = true;
         CancellationEvent::Handled
     }
