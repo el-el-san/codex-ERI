@@ -29,3 +29,9 @@ mod config_summary;
 pub use config_summary::create_config_summary_entries;
 // Shared fuzzy matcher (used by TUI selection popups and other UI filtering)
 pub mod fuzzy_match;
+
+// Approval presets that pair approval and sandbox policies
+pub mod approval_presets;
+
+// Model presets that pair model slugs with reasoning efforts
+pub mod model_presets;
