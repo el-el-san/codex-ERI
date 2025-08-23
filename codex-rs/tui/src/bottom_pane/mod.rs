@@ -19,6 +19,7 @@ mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
 mod file_search_popup;
+mod list_selection_view;
 mod live_ring_widget;
 pub(crate) mod mcp_popup;
 mod popup_consts;
