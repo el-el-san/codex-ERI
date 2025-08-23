@@ -948,15 +948,20 @@ impl WidgetRef for &ChatWidget<'_> {
                 let popup_width = (area.width as f32 * 0.6) as u16;
                 // Add 2 for borders (top and bottom)
                 let required_height = popup.calculate_required_height();
-                // For small areas, use all available space. For larger areas, use required height
-                let popup_height = if area.height <= 15 {
-                    // Small terminal: use all available height
+                
+                // Always try to show the full popup height (10 rows + 2 borders = 12)
+                // If terminal is smaller, use all available space
+                let desired_popup_height = required_height + 2; // 10 + 2 = 12
+                let popup_height = if area.height < desired_popup_height {
+                    // Terminal too small: use all available height
                     area.height
                 } else {
-                    // Normal terminal: use required height + borders
-                    (required_height + 2).min(area.height.saturating_sub(2))
+                    // Terminal large enough: use desired height
+                    desired_popup_height
                 };
-                eprintln!("DEBUG: required_height={}, popup_height={}, area.height={}", required_height, popup_height, area.height);
+                
+                eprintln!("DEBUG: Terminal area.height={}, required_height={}, popup_height={}", area.height, required_height, popup_height);
+                
                 let popup_x = (area.width - popup_width) / 2;
                 let popup_y = (area.height.saturating_sub(popup_height)) / 2;
                 
