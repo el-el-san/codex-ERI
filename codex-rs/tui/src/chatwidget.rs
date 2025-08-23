@@ -944,23 +944,29 @@ impl WidgetRef for &ChatWidget<'_> {
         // Render MCP popup if visible
         if self.show_mcp_popup {
             if let Some(ref popup) = self.mcp_popup {
-                // Calculate popup area (centered, 60% width, fixed height for scrollable view)
-                let popup_width = (area.width as f32 * 0.6) as u16;
-                // Add 2 for borders (top and bottom)
+                // Calculate popup area (centered, 80% width for better visibility)
+                let popup_width = (area.width as f32 * 0.8) as u16;
                 let required_height = popup.calculate_required_height();
                 
-                // Always try to show the full popup height (10 rows + 2 borders = 12)
-                // If terminal is smaller, use all available space
-                let desired_popup_height = required_height + 2; // 10 + 2 = 12
-                let popup_height = if area.height < desired_popup_height {
-                    // Terminal too small: use all available height
-                    area.height
+                // For small terminals (<=10 rows), skip borders to maximize content
+                // For larger terminals, add borders for better appearance
+                let use_borders = area.height > 10;
+                
+                let popup_height = if use_borders {
+                    // Large terminal: use required height + borders
+                    let desired_height = required_height + 2;
+                    if area.height < desired_height {
+                        area.height
+                    } else {
+                        desired_height
+                    }
                 } else {
-                    // Terminal large enough: use desired height
-                    desired_popup_height
+                    // Small terminal: use all available height, no borders
+                    area.height.min(required_height)
                 };
                 
-                eprintln!("DEBUG: Terminal area.height={}, required_height={}, popup_height={}", area.height, required_height, popup_height);
+                eprintln!("DEBUG: Terminal area.height={}, required_height={}, popup_height={}, use_borders={}", 
+                         area.height, required_height, popup_height, use_borders);
                 
                 let popup_x = (area.width - popup_width) / 2;
                 let popup_y = (area.height.saturating_sub(popup_height)) / 2;
@@ -972,30 +978,40 @@ impl WidgetRef for &ChatWidget<'_> {
                     height: popup_height,
                 };
                 
-                // Draw border and background
-                use ratatui::widgets::{Block, Borders};
-                use ratatui::style::{Style, Color};
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(" MCP Servers ")
-                    .style(Style::default().bg(Color::Black));
-                block.render_ref(popup_area, buf);
-                
-                // Render popup content inside the border
-                // Ensure we have enough height for borders
-                let inner_height = if popup_area.height > 2 {
-                    popup_area.height - 2
+                if use_borders {
+                    // Draw border and background for large terminals
+                    use ratatui::widgets::{Block, Borders};
+                    use ratatui::style::{Style, Color};
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .title(" MCP Servers ")
+                        .style(Style::default().bg(Color::Black));
+                    block.render_ref(popup_area, buf);
+                    
+                    // Render popup content inside the border
+                    let inner_area = Rect {
+                        x: popup_area.x + 1,
+                        y: popup_area.y + 1,
+                        width: popup_area.width.saturating_sub(2),
+                        height: popup_area.height.saturating_sub(2),
+                    };
+                    eprintln!("DEBUG: popup_area.height={}, inner_area.height={}", popup_area.height, inner_area.height);
+                    popup.render_ref(inner_area, buf);
                 } else {
-                    0
-                };
-                let inner_area = Rect {
-                    x: popup_area.x + 1,
-                    y: popup_area.y + 1,
-                    width: popup_area.width.saturating_sub(2),
-                    height: inner_height,
-                };
-                eprintln!("DEBUG: popup_area.height={}, inner_area.height={}", popup_area.height, inner_area.height);
-                popup.render_ref(inner_area, buf);
+                    // No borders for small terminals - use full area
+                    // Draw simple background
+                    use ratatui::style::{Style, Color};
+                    for y in popup_area.y..popup_area.y + popup_area.height {
+                        for x in popup_area.x..popup_area.x + popup_area.width {
+                            if let Some(cell) = buf.cell_mut((x, y)) {
+                                cell.set_style(Style::default().bg(Color::Black));
+                            }
+                        }
+                    }
+                    
+                    eprintln!("DEBUG: No borders - using full area. height={}", popup_area.height);
+                    popup.render_ref(popup_area, buf);
+                }
             }
         }
     }
