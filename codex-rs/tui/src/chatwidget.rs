@@ -799,9 +799,6 @@ impl ChatWidget<'_> {
         // Load MCP server info from config
         let mut servers = Vec::new();
         
-        // Debug: Log the number of MCP servers in config
-        eprintln!("DEBUG: Found {} MCP servers in config", self.config.mcp_servers.len());
-        
         // Get all MCP servers from config
         for (name, config) in &self.config.mcp_servers {
             let (url_or_cmd, enabled) = match config {
@@ -813,8 +810,6 @@ impl ChatWidget<'_> {
                 }
             };
             
-            eprintln!("DEBUG: Adding server: {} (enabled: {})", name, enabled);
-            
             servers.push(McpServerInfo {
                 name: name.clone(),
                 url_or_cmd,
@@ -823,8 +818,6 @@ impl ChatWidget<'_> {
                 tool_count: 0, // TODO: Get actual tool count from MCP manager
             });
         }
-        
-        eprintln!("DEBUG: Total servers loaded: {}", servers.len());
         
         // Sort servers by name for consistent display
         servers.sort_by(|a, b| a.name.cmp(&b.name));
@@ -965,8 +958,6 @@ impl WidgetRef for &ChatWidget<'_> {
                     area.height.min(required_height)
                 };
                 
-                eprintln!("DEBUG: Terminal area.height={}, required_height={}, popup_height={}, use_borders={}", 
-                         area.height, required_height, popup_height, use_borders);
                 
                 let popup_x = (area.width - popup_width) / 2;
                 let popup_y = (area.height.saturating_sub(popup_height)) / 2;
@@ -995,7 +986,6 @@ impl WidgetRef for &ChatWidget<'_> {
                         width: popup_area.width.saturating_sub(2),
                         height: popup_area.height.saturating_sub(2),
                     };
-                    eprintln!("DEBUG: popup_area.height={}, inner_area.height={}", popup_area.height, inner_area.height);
                     popup.render_ref(inner_area, buf);
                 } else {
                     // No borders for small terminals - use full area
@@ -1009,7 +999,6 @@ impl WidgetRef for &ChatWidget<'_> {
                         }
                     }
                     
-                    eprintln!("DEBUG: No borders - using full area. height={}", popup_area.height);
                     popup.render_ref(popup_area, buf);
                 }
             }
