@@ -28,6 +28,7 @@ import http.server
 import json
 import os
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -113,10 +114,46 @@ def main() -> None:
     with httpd:
         eprint(f"Starting local login server on {URL_BASE}")
         if not args.no_browser:
-            try:
-                webbrowser.open(auth_url, new=1, autoraise=True)
-            except Exception as e:
-                eprint(f"Failed to open browser: {e}")
+            opened = False
+            
+            # 1. Termux環境の検出と対応
+            if os.path.exists('/data/data/com.termux/files'):
+                try:
+                    subprocess.run(['termux-open-url', auth_url], check=True, capture_output=True)
+                    opened = True
+                except:
+                    pass
+            
+            # 2. WSL環境の検出と対応
+            if not opened and os.name == 'posix':
+                try:
+                    with open('/proc/version', 'r') as f:
+                        if 'microsoft' in f.read().lower():
+                            # WSL2/WSL1の両方で動作
+                            try:
+                                subprocess.run(['cmd.exe', '/c', 'start', auth_url], check=True, capture_output=True)
+                                opened = True
+                            except:
+                                # wslviewがインストールされている場合
+                                try:
+                                    subprocess.run(['wslview', auth_url], check=True, capture_output=True)
+                                    opened = True
+                                except:
+                                    pass
+                except:
+                    pass
+            
+            # 3. 標準のwebbrowser.openを試行
+            if not opened:
+                try:
+                    webbrowser.open(auth_url, new=1, autoraise=True)
+                    opened = True
+                except Exception as e:
+                    eprint(f"Failed to open browser: {e}")
+            
+            # 4. いずれも失敗した場合はメッセージを表示
+            if not opened:
+                eprint(f"Could not open browser automatically.")
 
         eprint(
             f". If your browser did not open, navigate to this URL to authenticate: \n\n{auth_url}"
