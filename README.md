@@ -64,6 +64,7 @@
   - `config.toml`で任意のコマンドを事前承認リストに追加
   - セキュリティを保ちながら頻繁に使うコマンドの自動実行
   - 完全一致による厳密なセキュリティ（引数も含めて完全一致が必要）
+  - **ワイルドカード対応**: `*`を使用して任意の引数を許可可能
 - **セッション内承認**:
   - TUIで「このセッションで許可」を選択すると、そのセッション中は自動承認
   - `ReviewDecision::ApprovedForSession`による動的な承認管理
@@ -189,24 +190,33 @@ content = "現在のコードベースを分析して問題点を指摘してく
 approval_policy = "untrusted"  # 信頼されていないコマンドは承認を求める
 
 # ユーザー定義の信頼コマンドリスト
-# 完全一致（引数も含む）で自動承認されます
+# 完全一致または「*」ワイルドカードで自動承認されます
 trusted_commands = [
-    ["npm", "install"],           # npm install のみ承認
-    ["npm", "run", "build"],       # npm run build のみ承認
-    ["yarn", "install"],           # yarn install のみ承認
-    ["yarn", "build"],             # yarn build のみ承認
-    ["make", "clean"],             # make clean のみ承認
-    ["docker", "ps", "-a"],        # docker ps -a のみ承認
-    ["cargo", "build"],            # cargo build のみ承認
-    ["cargo", "test"],             # cargo test のみ承認
-    ["python", "-m", "pytest"],    # python -m pytest のみ承認
+    ["npm", "install"],           # npm install のみ承認（完全一致）
+    ["npm", "run", "build"],       # npm run build のみ承認（完全一致）
+    ["yarn", "install"],           # yarn install のみ承認（完全一致）
+    ["yarn", "build"],             # yarn build のみ承認（完全一致）
+    ["make", "clean"],             # make clean のみ承認（完全一致）
+    ["docker", "ps", "-a"],        # docker ps -a のみ承認（完全一致）
+    ["cargo", "build"],            # cargo build のみ承認（完全一致）
+    ["cargo", "test"],             # cargo test のみ承認（完全一致）
+    ["python", "-m", "pytest"],    # python -m pytest のみ承認（完全一致）
+    
+    # ワイルドカード「*」を使用した例
+    ["printf", "*"],               # printf と任意の引数を承認
+    ["echo", "*"],                 # echo と任意の引数を承認
+    ["npm", "run", "*"],           # npm run と任意のスクリプト名を承認
+    ["cargo", "*"],                # cargo と任意のサブコマンドを承認
 ]
 ```
 
 **重要な注意事項：**
-- 各コマンドは引数も含めて**完全一致**する必要があります
-- 例：`["npm", "install"]`は`npm install`のみを承認し、`npm install express`は承認しません
-- これにより、意図しないコマンドの実行を防ぎ、セキュリティを確保します
+- **完全一致**: 引数も含めて完全に一致するコマンドのみ承認
+  - 例：`["npm", "install"]`は`npm install`のみを承認し、`npm install express`は承認しません
+- **ワイルドカード「*」**: 最後の要素として`"*"`を指定すると、それ以降の任意の引数を承認
+  - 例：`["printf", "*"]`は`printf hello`、`printf "\n---\n"`などすべて承認
+  - 例：`["npm", "run", "*"]`は`npm run build`、`npm run test`などすべて承認
+- これにより、柔軟性とセキュリティのバランスを保ちます
 
 **動作の仕組み：**
 1. ハードコード済みの安全コマンド（`ls`, `cat`, `grep`等）は常に自動承認

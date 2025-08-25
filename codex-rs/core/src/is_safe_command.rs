@@ -4,7 +4,26 @@ use crate::bash::try_parse_word_only_commands_sequence;
 /// Check if a command is known to be safe, either from hardcoded list or user-defined trusted commands
 pub fn is_known_safe_command(command: &[String], trusted_commands: &[Vec<String>]) -> bool {
     // First check user-defined trusted commands
-    if trusted_commands.iter().any(|trusted| trusted == command) {
+    // Support wildcard "*" for any arguments
+    if trusted_commands.iter().any(|trusted| {
+        // Exact match
+        if trusted == command {
+            return true;
+        }
+        
+        // Check for wildcard pattern
+        if trusted.len() >= 2 && trusted.last() == Some(&"*".to_string()) {
+            // Pattern like ["printf", "*"] matches any command starting with "printf"
+            let pattern_base = &trusted[..trusted.len() - 1];
+            if !pattern_base.is_empty() 
+                && command.len() >= pattern_base.len() 
+                && &command[..pattern_base.len()] == pattern_base {
+                return true;
+            }
+        }
+        
+        false
+    }) {
         return true;
     }
     
@@ -26,7 +45,7 @@ pub fn is_known_safe_command(command: &[String], trusted_commands: &[Vec<String>
                         && all_commands
                             .iter()
                             .all(|cmd| {
-                                trusted_commands.iter().any(|trusted| trusted == cmd) 
+                                is_command_trusted(cmd, trusted_commands) 
                                 || is_safe_to_call_with_exec(cmd)
                             })
                     {
@@ -38,6 +57,29 @@ pub fn is_known_safe_command(command: &[String], trusted_commands: &[Vec<String>
     }
 
     false
+}
+
+// Helper function to check if a command matches trusted commands with wildcard support
+fn is_command_trusted(command: &[String], trusted_commands: &[Vec<String>]) -> bool {
+    trusted_commands.iter().any(|trusted| {
+        // Exact match
+        if trusted == command {
+            return true;
+        }
+        
+        // Check for wildcard pattern
+        if trusted.len() >= 2 && trusted.last() == Some(&"*".to_string()) {
+            // Pattern like ["printf", "*"] matches any command starting with "printf"
+            let pattern_base = &trusted[..trusted.len() - 1];
+            if !pattern_base.is_empty() 
+                && command.len() >= pattern_base.len() 
+                && &command[..pattern_base.len()] == pattern_base {
+                return true;
+            }
+        }
+        
+        false
+    })
 }
 
 // Check if a command is a safe curl command (download-only, no data upload)
@@ -572,5 +614,39 @@ mod tests {
         // Test that trusted commands work in bash -lc context
         assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "npm install"]), &trusted_commands));
         assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "yarn build && ls"]), &trusted_commands));
+    }
+
+    #[test]
+    fn test_wildcard_trusted_commands() {
+        // Test wildcard support in trusted commands
+        let trusted_commands: Vec<Vec<String>> = vec![
+            vec_str(&["printf", "*"]),  // Allow printf with any arguments
+            vec_str(&["echo", "*"]),     // Allow echo with any arguments
+            vec_str(&["npm", "run", "*"]), // Allow npm run with any script
+            vec_str(&["cargo", "*"]),    // Allow any cargo command
+        ];
+
+        // Test wildcard matches
+        assert!(is_known_safe_command(&vec_str(&["printf", "hello"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["printf", "\\n--- top files ---\\n"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["printf", "%s", "test"]), &trusted_commands));
+        
+        assert!(is_known_safe_command(&vec_str(&["echo", "hello world"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["echo", "-n", "test"]), &trusted_commands));
+        
+        assert!(is_known_safe_command(&vec_str(&["npm", "run", "build"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["npm", "run", "test"]), &trusted_commands));
+        
+        assert!(is_known_safe_command(&vec_str(&["cargo", "build"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["cargo", "test", "--release"]), &trusted_commands));
+        
+        // Test that non-matching patterns are rejected
+        assert!(!is_known_safe_command(&vec_str(&["npm", "install"]), &trusted_commands));
+        assert!(!is_known_safe_command(&vec_str(&["yarn", "build"]), &trusted_commands));
+        assert!(!is_known_safe_command(&vec_str(&["ls"]), &trusted_commands));
+        
+        // Test that trusted commands with wildcards work in bash -lc context
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "printf 'hello world'"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "cargo build && cargo test"]), &trusted_commands));
     }
 }
