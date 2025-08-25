@@ -260,6 +260,7 @@ pub(crate) struct Session {
     codex_linux_sandbox_exe: Option<PathBuf>,
     user_shell: shell::Shell,
     show_raw_agent_reasoning: bool,
+    trusted_commands: Vec<Vec<String>>,
 }
 
 impl Session {
@@ -920,6 +921,7 @@ async fn submission_loop(
                     disable_response_storage,
                     user_shell: default_shell,
                     show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+                    trusted_commands: config.trusted_commands.clone(),
                 }));
 
                 // Patch restored state into the newly created session.
@@ -2204,6 +2206,7 @@ async fn handle_container_exec_with_params(
                     sess.approval_policy,
                     &sess.sandbox_policy,
                     &state.approved_commands,
+                    &sess.trusted_commands,
                     params.with_escalated_permissions.unwrap_or(false),
                 )
             };
