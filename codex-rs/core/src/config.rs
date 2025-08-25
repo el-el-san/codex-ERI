@@ -1062,6 +1062,7 @@ disable_response_storage = true
                 include_plan_tool: false,
                 internal_originator: None,
                 custom_commands: vec![],
+                trusted_commands: vec![],
                 parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
             },
             o3_profile_config
@@ -1116,6 +1117,7 @@ disable_response_storage = true
             include_plan_tool: false,
             internal_originator: None,
             custom_commands: vec![],
+            trusted_commands: vec![],
             parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 
@@ -1185,6 +1187,7 @@ disable_response_storage = true
             include_plan_tool: false,
             internal_originator: None,
             custom_commands: vec![],
+            trusted_commands: vec![],
             parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 

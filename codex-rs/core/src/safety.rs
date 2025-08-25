@@ -301,11 +301,13 @@ mod tests {
         let approved: HashSet<Vec<String>> = HashSet::new();
         let request_escalated_privileges = true;
 
+        let trusted_commands: Vec<Vec<String>> = vec![];
         let safety_check = assess_command_safety(
             &command,
             approval_policy,
             &sandbox_policy,
             &approved,
+            &trusted_commands,
             request_escalated_privileges,
         );
 
@@ -320,11 +322,13 @@ mod tests {
         let approved: HashSet<Vec<String>> = HashSet::new();
         let request_escalated_privileges = false;
 
+        let trusted_commands: Vec<Vec<String>> = vec![];
         let safety_check = assess_command_safety(
             &command,
             approval_policy,
             &sandbox_policy,
             &approved,
+            &trusted_commands,
             request_escalated_privileges,
         );
 
