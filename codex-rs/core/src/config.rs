@@ -137,6 +137,9 @@ pub struct Config {
 
     /// Custom slash commands defined by the user.
     pub custom_commands: Vec<CustomCommand>,
+
+    /// User-defined trusted commands that should be auto-approved
+    pub trusted_commands: Vec<Vec<String>>,
     
     /// Parallel execution configuration
     pub parallel_execution: crate::config_types::ParallelExecutionConfig,
@@ -396,6 +399,10 @@ pub struct ConfigToml {
     /// Custom slash commands defined by the user.
     #[serde(default)]
     pub custom_commands: Vec<CustomCommand>,
+
+    /// User-defined trusted commands that should be auto-approved
+    #[serde(default)]
+    pub trusted_commands: Vec<Vec<String>>,
     
     #[serde(default)]
     pub parallel_execution: crate::config_types::ParallelExecutionConfig,
@@ -663,6 +670,7 @@ impl Config {
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             tui: cfg.tui.unwrap_or_default(),
             custom_commands: cfg.custom_commands,
+            trusted_commands: cfg.trusted_commands,
             parallel_execution: cfg.parallel_execution,
             codex_linux_sandbox_exe,
 
