@@ -70,17 +70,19 @@ pub fn assess_patch_safety(
 /// true:
 ///
 /// - the user has explicitly approved the command
-/// - the command is on the "known safe" list
+/// - the command is on the "known safe" list or user-defined trusted commands list
 /// - `DangerFullAccess` was specified and `UnlessTrusted` was not
 pub fn assess_command_safety(
     command: &[String],
     approval_policy: AskForApproval,
     sandbox_policy: &SandboxPolicy,
     approved: &HashSet<Vec<String>>,
+    trusted_commands: &[Vec<String>],
     with_escalated_permissions: bool,
 ) -> SafetyCheck {
     // A command is "trusted" because either:
-    // - it belongs to a set of commands we consider "safe" by default, or
+    // - it belongs to a set of commands we consider "safe" by default,
+    // - it's in the user-defined trusted commands list, or
     // - the user has explicitly approved the command for this session
     //
     // Currently, whether a command is "trusted" is a simple boolean, but we
@@ -88,11 +90,11 @@ pub fn assess_command_safety(
     // should be run inside a sandbox or not. (This could be something the user
     // defines as part of `execpolicy`.)
     //
-    // For example, when `is_known_safe_command(command)` returns `true`, it
+    // For example, when `is_known_safe_command(command, trusted_commands)` returns `true`, it
     // would probably be fine to run the command in a sandbox, but when
     // `approved.contains(command)` is `true`, the user may have approved it for
     // the session _because_ they know it needs to run outside a sandbox.
-    if is_known_safe_command(command) || approved.contains(command) {
+    if is_known_safe_command(command, trusted_commands) || approved.contains(command) {
         return SafetyCheck::AutoApprove {
             sandbox_type: SandboxType::None,
         };

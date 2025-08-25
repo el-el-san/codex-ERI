@@ -142,9 +142,6 @@ Determines when the user should be prompted to approve whether Codex can execute
 # Codex has hardcoded logic that defines a set of "trusted" commands.
 # Setting the approval_policy to `untrusted` means that Codex will prompt the
 # user before running a command not in the "trusted" set.
-#
-# See https://github.com/openai/codex/issues/1260 for the plan to enable
-# end-users to define their own trusted commands.
 approval_policy = "untrusted"
 ```
 
@@ -167,6 +164,31 @@ Alternatively, you can have the model run until it is done, and never ask to run
 # something out. Note the `exec` subcommand always uses this mode.
 approval_policy = "never"
 ```
+
+## trusted_commands
+
+Defines a list of user-specific commands that should be automatically approved when `approval_policy` is set to `"untrusted"`. This allows you to extend the built-in list of safe commands with your own commonly used commands.
+
+```toml
+# Define commands that should be auto-approved (exact match required)
+trusted_commands = [
+    ["npm", "install"],
+    ["npm", "run", "build"],
+    ["yarn", "install"],
+    ["yarn", "build"],
+    ["make", "clean"],
+    ["docker", "ps", "-a"],
+    ["cargo", "build"],
+    ["cargo", "test"],
+    ["python", "-m", "pytest"],
+]
+```
+
+Note that each command must match exactly, including all arguments. For example, `["npm", "install"]` will auto-approve `npm install` but not `npm install express`. This ensures security by only approving precisely the commands you've explicitly trusted.
+
+When using `approval_policy = "untrusted"`, commands are auto-approved if they are either:
+1. In the built-in list of safe commands (like `ls`, `cat`, `grep`, etc.)
+2. In your `trusted_commands` list
 
 ## profiles
 

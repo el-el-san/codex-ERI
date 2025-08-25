@@ -1,7 +1,13 @@
 use crate::bash::try_parse_bash;
 use crate::bash::try_parse_word_only_commands_sequence;
 
-pub fn is_known_safe_command(command: &[String]) -> bool {
+/// Check if a command is known to be safe, either from hardcoded list or user-defined trusted commands
+pub fn is_known_safe_command(command: &[String], trusted_commands: &[Vec<String>]) -> bool {
+    // First check user-defined trusted commands
+    if trusted_commands.iter().any(|trusted| trusted == command) {
+        return true;
+    }
+    
     if is_safe_to_call_with_exec(command) {
         return true;
     }
@@ -19,7 +25,10 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
                     if !all_commands.is_empty()
                         && all_commands
                             .iter()
-                            .all(|cmd| is_safe_to_call_with_exec(cmd))
+                            .all(|cmd| {
+                                trusted_commands.iter().any(|trusted| trusted == cmd) 
+                                || is_safe_to_call_with_exec(cmd)
+                            })
                     {
                         return true;
                     }
@@ -363,58 +372,60 @@ mod tests {
 
     #[test]
     fn bash_lc_safe_examples() {
-        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "ls"])));
-        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "ls -1"])));
+        let empty_trusted: Vec<Vec<String>> = vec![];
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "ls"]), &empty_trusted));
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "ls -1"]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "git status"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "grep -R \"Cargo.toml\" -n"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "sed -n 1,5p file.txt"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "sed -n '1,5p' file.txt"
-        ])));
+        ]), &empty_trusted));
 
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "find . -name file.txt"
-        ])));
+        ]), &empty_trusted));
     }
 
     #[test]
     fn bash_lc_safe_examples_with_operators() {
+        let empty_trusted: Vec<Vec<String>> = vec![];
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "grep -R \"Cargo.toml\" -n || true"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "ls && pwd"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "echo 'hi' ; ls"
-        ])));
+        ]), &empty_trusted));
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
             "-lc",
             "ls | wc -l"
-        ])));
+        ]), &empty_trusted));
     }
 
     #[test]
@@ -499,40 +510,67 @@ mod tests {
 
     #[test]
     fn bash_lc_unsafe_examples() {
+        let empty_trusted: Vec<Vec<String>> = vec![];
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "git", "status"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "git", "status"]), &empty_trusted),
             "Four arg version is not known to be safe."
         );
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "'git status'"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "'git status'"]), &empty_trusted),
             "The extra quoting around 'git status' makes it a program named 'git status' and is therefore unsafe."
         );
 
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "find . -name file.txt -delete"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "find . -name file.txt -delete"]), &empty_trusted),
             "Unsafe find option should not be auto-approved."
         );
 
         // Disallowed because of unsafe command in sequence.
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls && rm -rf /"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls && rm -rf /"]), &empty_trusted),
             "Sequence containing unsafe command must be rejected"
         );
 
         // Disallowed because of parentheses / subshell.
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "(ls)"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "(ls)"]), &empty_trusted),
             "Parentheses (subshell) are not provably safe with the current parser"
         );
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls || (pwd && echo hi)"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls || (pwd && echo hi)"]), &empty_trusted),
             "Nested parentheses are not provably safe with the current parser"
         );
 
         // Disallowed redirection.
         assert!(
-            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls > out.txt"])),
+            !is_known_safe_command(&vec_str(&["bash", "-lc", "ls > out.txt"]), &empty_trusted),
             "> redirection should be rejected"
         );
+    }
+
+    #[test]
+    fn test_user_defined_trusted_commands() {
+        // Test that user-defined trusted commands are recognized as safe
+        let trusted_commands: Vec<Vec<String>> = vec![
+            vec_str(&["npm", "install"]),
+            vec_str(&["yarn", "build"]),
+            vec_str(&["make", "clean"]),
+            vec_str(&["docker", "ps", "-a"]),
+        ];
+
+        // Test exact matches
+        assert!(is_known_safe_command(&vec_str(&["npm", "install"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["yarn", "build"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["make", "clean"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["docker", "ps", "-a"]), &trusted_commands));
+
+        // Test that variations are not matched
+        assert!(!is_known_safe_command(&vec_str(&["npm", "run"]), &trusted_commands));
+        assert!(!is_known_safe_command(&vec_str(&["yarn", "install"]), &trusted_commands));
+        assert!(!is_known_safe_command(&vec_str(&["docker", "ps"]), &trusted_commands));
+
+        // Test that trusted commands work in bash -lc context
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "npm install"]), &trusted_commands));
+        assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "yarn build && ls"]), &trusted_commands));
     }
 }
