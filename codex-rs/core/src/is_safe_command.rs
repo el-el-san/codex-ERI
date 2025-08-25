@@ -265,13 +265,14 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
         // Rust
         Some("cargo") if command.get(1).map(String::as_str) == Some("check") => true,
 
-        // Special-case `sed -n {N|M,N}p FILE`
+        // Special-case `sed -n {N|M,N}p [FILE]`
+        // Support both with file (4 args) and stdin (3 args)
         Some("sed")
             if {
-                command.len() == 4
+                (command.len() == 3 || command.len() == 4)
                     && command.get(1).map(String::as_str) == Some("-n")
                     && is_valid_sed_n_arg(command.get(2).map(String::as_str))
-                    && command.get(3).map(String::is_empty) == Some(false)
+                    && (command.len() == 3 || command.get(3).map(String::is_empty) == Some(false))
             } =>
         {
             true
@@ -643,7 +644,7 @@ mod tests {
         // Test that non-matching patterns are rejected
         assert!(!is_known_safe_command(&vec_str(&["npm", "install"]), &trusted_commands));
         assert!(!is_known_safe_command(&vec_str(&["yarn", "build"]), &trusted_commands));
-        assert!(!is_known_safe_command(&vec_str(&["ls"]), &trusted_commands));
+        assert!(!is_known_safe_command(&vec_str(&["docker", "run"]), &trusted_commands));
         
         // Test that trusted commands with wildcards work in bash -lc context
         assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "printf 'hello world'"]), &trusted_commands));
