@@ -252,7 +252,7 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
         }
 
         // Curl - use the shared safe curl check logic
-        Some("curl") => is_safe_curl_command(command)
+        Some("curl") => is_safe_curl_command(command),
 
         // Git
         Some("git") => matches!(
