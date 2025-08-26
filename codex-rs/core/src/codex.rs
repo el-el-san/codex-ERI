@@ -1852,10 +1852,10 @@ async fn execute_parallel_items(
             }
             Err(e) => {
                 failed_count += 1;
+                eprintln!("[Parallel Execution] Tool failed: {:?}", e);
                 if first_error.is_none() {
                     first_error = Some(e);
                 }
-                eprintln!("[Parallel Execution] Tool failed: {:?}", e);
             }
         }
     }
