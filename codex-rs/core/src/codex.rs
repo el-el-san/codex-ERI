@@ -269,6 +269,10 @@ impl Session {
             .map(PathBuf::from)
             .map_or_else(|| self.cwd.clone(), |p| self.cwd.join(p))
     }
+    
+    pub(crate) fn trusted_commands(&self) -> &[Vec<String>] {
+        &self.trusted_commands
+    }
 }
 
 /// Mutable state of the agent
@@ -1733,8 +1737,7 @@ async fn process_batch(
     }
     
     // Check if items can be executed in parallel
-    let trusted_commands = &sess.state.lock().unwrap().config.trusted_commands;
-    if can_execute_parallel(&items, trusted_commands).await {
+    if can_execute_parallel(&items, sess.trusted_commands()).await {
         // Log parallel execution attempt with timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
