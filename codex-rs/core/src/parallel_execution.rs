@@ -3,6 +3,7 @@
 use crate::models::ResponseItem;
 use crate::custom_command::CustomCommand;
 use crate::rate_limiter::{RateLimiter, RateLimitConfig};
+use crate::is_safe_command::is_known_safe_command;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde_json::Value;
@@ -15,7 +16,7 @@ lazy_static::lazy_static! {
 }
 
 /// Checks if a set of items can be executed in parallel
-pub async fn can_execute_parallel(items: &[ResponseItem]) -> bool {
+pub async fn can_execute_parallel(items: &[ResponseItem], trusted_commands: &[Vec<String>]) -> bool {
     // Check if rate limiter allows parallel execution
     let limiter = RATE_LIMITER.read().await;
     if !limiter.is_parallel_enabled() {
@@ -47,7 +48,7 @@ pub async fn can_execute_parallel(items: &[ResponseItem]) -> bool {
         match item {
             ResponseItem::FunctionCall { name, arguments, .. } => {
                 if name == "shell" {
-                    is_safe_shell_command(arguments)
+                    is_safe_shell_command(arguments, trusted_commands)
                 } else {
                     is_safe_for_parallel(name)
                 }
@@ -93,19 +94,23 @@ pub fn is_safe_for_parallel(function_name: &str) -> bool {
 }
 
 /// Determine if a shell tool call is read-only and thus safe to parallelize
-pub fn is_safe_shell_command(arguments: &str) -> bool {
+pub fn is_safe_shell_command(arguments: &str, trusted_commands: &[Vec<String>]) -> bool {
     // Expect JSON string with shape { "command": ["cmd", ...] }
     if let Ok(val) = serde_json::from_str::<Value>(arguments) {
-        if let Some(first_cmd) = val
+        if let Some(command_array) = val
             .get("command")
             .and_then(|c| c.as_array())
-            .and_then(|arr| arr.get(0))
-            .and_then(|v| v.as_str())
         {
-            return matches!(
-                first_cmd,
-                "cat" | "ls" | "grep" | "head" | "tail" | "wc" | "find" | "pwd" | "echo"
-            );
+            // Convert JSON array to Vec<String>
+            let command_vec: Vec<String> = command_array
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            
+            if !command_vec.is_empty() {
+                // Use the existing is_known_safe_command function for comprehensive safety check
+                return is_known_safe_command(&command_vec, trusted_commands);
+            }
         }
     }
     false
@@ -168,13 +173,13 @@ pub struct ParallelExecutionInfo {
 }
 
 impl ParallelExecutionInfo {
-    pub fn from_items(items: &[ResponseItem]) -> Self {
+    pub fn from_items(items: &[ResponseItem], trusted_commands: &[Vec<String>]) -> Self {
         let parallelizable = items
             .iter()
             .filter(|item| match item {
                 ResponseItem::FunctionCall { name, arguments, .. } => {
                     if name == "shell" {
-                        is_safe_shell_command(arguments)
+                        is_safe_shell_command(arguments, trusted_commands)
                     } else {
                         is_safe_for_parallel(name)
                     }
@@ -214,7 +219,8 @@ mod tests {
             },
         ];
         
-        assert!(can_execute_parallel(&items).await);
+        let trusted_commands: Vec<Vec<String>> = vec![];
+        assert!(can_execute_parallel(&items, &trusted_commands).await);
     }
     
     #[test]
@@ -241,20 +247,29 @@ mod tests {
 
     #[test]
     fn test_is_safe_shell_command() {
+        let trusted_commands: Vec<Vec<String>> = vec![];
+        
         // Safe read-only shell commands
         let args = json!({"command": ["ls", "-la"]}).to_string();
-        assert!(is_safe_shell_command(&args));
+        assert!(is_safe_shell_command(&args, &trusted_commands));
 
         let args = json!({"command": ["cat", "file.txt"]}).to_string();
-        assert!(is_safe_shell_command(&args));
+        assert!(is_safe_shell_command(&args, &trusted_commands));
 
         // Unsafe shell command (rm)
         let args = json!({"command": ["rm", "-rf", "/tmp/x"]}).to_string();
-        assert!(!is_safe_shell_command(&args));
+        assert!(!is_safe_shell_command(&args, &trusted_commands));
 
         // Missing/invalid structure
-        assert!(!is_safe_shell_command("{}"));
-        assert!(!is_safe_shell_command("not json"));
+        assert!(!is_safe_shell_command("{}", &trusted_commands));
+        assert!(!is_safe_shell_command("not json", &trusted_commands));
+        
+        // Test with trusted commands
+        let trusted_commands: Vec<Vec<String>> = vec![
+            vec!["rm".to_string(), "-rf".to_string(), "/tmp/x".to_string()],
+        ];
+        let args = json!({"command": ["rm", "-rf", "/tmp/x"]}).to_string();
+        assert!(is_safe_shell_command(&args, &trusted_commands));
     }
     
     #[test]

@@ -82,6 +82,38 @@ fn is_command_trusted(command: &[String], trusted_commands: &[Vec<String>]) -> b
     })
 }
 
+// List of dangerous header names that should be blocked for security
+const DANGEROUS_CURL_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+    "x-access-token",
+    "x-secret-key",
+    "api-key",
+    "apikey",
+    "auth",
+    "authentication",
+    "bearer",
+    "token",
+    "x-csrf-token",
+    "x-xsrf-token",
+];
+
+// Helper function to check if a header is dangerous
+fn is_dangerous_header(header_value: &str) -> bool {
+    // Parse the header to extract the key part (before ':')
+    if let Some(colon_pos) = header_value.find(':') {
+        let header_name = header_value[..colon_pos].trim().to_lowercase();
+        DANGEROUS_CURL_HEADERS.contains(&header_name.as_str())
+    } else {
+        // If no colon found, it's malformed, consider it dangerous
+        true
+    }
+}
+
 // Check if a command is a safe curl command (download-only, no data upload)
 pub fn is_safe_curl_command(command: &[String]) -> bool {
     if command.is_empty() {
@@ -94,13 +126,43 @@ pub fn is_safe_curl_command(command: &[String]) -> bool {
     }
     
     // Check for unsafe options
-    let has_unsafe_option = command.iter().any(|arg| {
-        arg == "-d" || arg.starts_with("--data")
-        || arg == "-F" || arg.starts_with("--form")
-        || arg == "-T" || arg.starts_with("--upload-file")
-        || arg == "-X" || arg.starts_with("--request")
-        || arg == "-u" || arg.starts_with("--user")
-        || arg == "-H" || arg.starts_with("--header")
+    let has_unsafe_option = command.iter().enumerate().any(|(idx, arg)| {
+        // Data upload options
+        if arg == "-d" || arg.starts_with("--data")
+            || arg == "-F" || arg.starts_with("--form")
+            || arg == "-T" || arg.starts_with("--upload-file") {
+            return true;
+        }
+        
+        // Check HTTP method
+        if arg == "-X" || arg == "--request" {
+            // Check the next argument for the method
+            if let Some(method) = command.get(idx + 1) {
+                let method_upper = method.to_uppercase();
+                if method_upper != "GET" && method_upper != "HEAD" {
+                    return true;
+                }
+            }
+        }
+        
+        // Check headers for dangerous content
+        if arg == "-H" || arg == "--header" {
+            // Check the next argument for the header value
+            if let Some(header) = command.get(idx + 1) {
+                if is_dangerous_header(header) {
+                    return true;
+                }
+            }
+        } else if arg.starts_with("--header=") {
+            // Handle --header=value format
+            let header_value = &arg[9..];
+            if is_dangerous_header(header_value) {
+                return true;
+            }
+        }
+        
+        // Authentication options
+        arg == "-u" || arg.starts_with("--user")
         || arg.starts_with("--cookie")
         || arg.starts_with("--basic")
         || arg.starts_with("--digest")
@@ -189,72 +251,8 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
             })
         }
 
-        // Curl - only allow safe download patterns
-        Some("curl") => {
-            // Dangerous curl options that can have side effects
-            const UNSAFE_CURL_OPTIONS: &[&str] = &[
-                // Options that can upload/send data
-                "-d", "--data", "--data-raw", "--data-binary", "--data-ascii", "--data-urlencode",
-                "-F", "--form", "--form-string",
-                "-T", "--upload-file",
-                "--upload",
-                "-X", "--request", // Can be used for POST, PUT, DELETE etc
-                
-                // Options that execute commands or write to arbitrary locations
-                "--config", "-K", // Can read config from arbitrary files
-                "--dump-header", "-D", // Writes headers to file
-                "--trace", "--trace-ascii", "--trace-time", // Write debug info to files
-                "--netrc-file", // Read credentials from file
-                
-                // Authentication options that might expose credentials
-                "-u", "--user",
-                "--proxy-user",
-                "--oauth2-bearer",
-                
-                // Options that modify system state
-                "--create-dirs", // Creates directories
-                "--ftp-create-dirs",
-                "-c", "--cookie-jar", // Writes cookies to file
-                
-                // Protocol-specific dangerous options
-                "--ftp-method",
-                "--ftp-pasv",
-                "--ftp-port",
-                "--mail-from",
-                "--mail-rcpt",
-            ];
-            
-            // Check for unsafe options
-            let has_unsafe_option = command.iter().any(|arg| {
-                // Check exact matches
-                if UNSAFE_CURL_OPTIONS.contains(&arg.as_str()) {
-                    return true;
-                }
-                
-                // Check for options with = syntax (e.g., --data=value)
-                for &opt in UNSAFE_CURL_OPTIONS {
-                    if arg.starts_with(&format!("{opt}=")) {
-                        return true;
-                    }
-                }
-                
-                // Block any POST/PUT/DELETE/PATCH methods
-                if let Some(prev_idx) = command.iter().position(|a| a == arg) {
-                    if prev_idx > 0 {
-                        let prev_arg = &command[prev_idx - 1];
-                        if (prev_arg == "-X" || prev_arg == "--request") 
-                            && !matches!(arg.to_uppercase().as_str(), "GET" | "HEAD") {
-                            return true;
-                        }
-                    }
-                }
-                
-                false
-            });
-            
-            // Only allow if there are no unsafe options
-            !has_unsafe_option
-        }
+        // Curl - use the shared safe curl check logic
+        Some("curl") => is_safe_curl_command(command)
 
         // Git
         Some("git") => matches!(
@@ -649,5 +647,31 @@ mod tests {
         // Test that trusted commands with wildcards work in bash -lc context
         assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "printf 'hello world'"]), &trusted_commands));
         assert!(is_known_safe_command(&vec_str(&["bash", "-lc", "cargo build && cargo test"]), &trusted_commands));
+    }
+
+    #[test]
+    fn test_curl_safe_headers() {
+        // Test that safe headers are allowed
+        assert!(is_safe_curl_command(&vec_str(&["curl", "-H", "Accept: application/json", "https://example.com"])));
+        assert!(is_safe_curl_command(&vec_str(&["curl", "-H", "User-Agent: MyApp/1.0", "https://example.com"])));
+        assert!(is_safe_curl_command(&vec_str(&["curl", "-H", "Content-Type: text/plain", "https://example.com"])));
+        assert!(is_safe_curl_command(&vec_str(&["curl", "--header", "Accept-Language: en-US", "https://example.com"])));
+        assert!(is_safe_curl_command(&vec_str(&["curl", "--header=Accept: text/html", "https://example.com"])));
+        
+        // Test that dangerous headers are blocked
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-H", "Authorization: Bearer token123", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-H", "Cookie: sessionid=abc123", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-H", "X-API-Key: secret", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "--header", "Proxy-Authorization: Basic abc", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "--header=X-Auth-Token: secret", "https://example.com"])));
+        
+        // Test that other unsafe options are still blocked
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-d", "data", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-X", "POST", "https://example.com"])));
+        assert!(!is_safe_curl_command(&vec_str(&["curl", "-u", "user:pass", "https://example.com"])));
+        
+        // Test that safe methods are allowed
+        assert!(is_safe_curl_command(&vec_str(&["curl", "-X", "GET", "https://example.com"])));
+        assert!(is_safe_curl_command(&vec_str(&["curl", "--request", "HEAD", "https://example.com"])));
     }
 }

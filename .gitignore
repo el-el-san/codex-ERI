@@ -116,3 +116,7 @@ pnpm-workspace.yaml
 cliff.toml
 flake.nix
 flake.lock
+
+
+
+docs/
