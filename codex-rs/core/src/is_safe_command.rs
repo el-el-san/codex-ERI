@@ -134,12 +134,12 @@ pub fn is_safe_curl_command(command: &[String]) -> bool {
             return true;
         }
         
-        // File writing options
+        // File writing options (but allow -o/--output for normal downloads)
         if arg == "-D" || arg == "--dump-header"
             || arg == "-c" || arg == "--cookie-jar"
             || arg == "--trace" || arg.starts_with("--trace-")
-            || arg == "-o" || arg == "--output"
-            || arg == "--create-dirs" {
+            || arg == "--create-dirs"
+            || arg == "-K" || arg == "--config" {
             return true;
         }
         
