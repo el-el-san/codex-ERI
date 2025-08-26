@@ -1733,7 +1733,8 @@ async fn process_batch(
     }
     
     // Check if items can be executed in parallel
-    if can_execute_parallel(&items).await {
+    let trusted_commands = &sess.state.lock().unwrap().config.trusted_commands;
+    if can_execute_parallel(&items, trusted_commands).await {
         // Log parallel execution attempt with timestamp
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
