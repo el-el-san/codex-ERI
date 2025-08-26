@@ -1745,24 +1745,11 @@ async fn process_batch(
             .as_millis();
         eprintln!("[Parallel Execution @ {}ms] Processing {} items in parallel", now % 100000, items.len());
         
-        // Attempt parallel execution
-        match execute_parallel_items(sess, turn_diff_tracker, sub_id, items.clone()).await {
-            Ok(results) => {
-                let end = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis();
-                eprintln!("[Parallel Execution @ {}ms] Successfully processed {} items", end % 100000, results.len());
-                return Ok(results);
-            }
-            Err(e) => {
-                // Fallback to sequential execution on error
-                eprintln!("[Parallel Execution] Failed, falling back to sequential: {}", e);
-            }
-        }
+        // Attempt parallel execution - use the items directly (no clone to prevent re-execution)
+        return execute_parallel_items(sess, turn_diff_tracker, sub_id, items).await;
     }
     
-    // Sequential execution (fallback or if not parallel-eligible)
+    // Sequential execution (only if not parallel-eligible)
     let mut results = Vec::new();
     for item in items {
         let response = handle_response_item(sess, turn_diff_tracker, sub_id, item.clone()).await?;
@@ -1855,6 +1842,7 @@ async fn execute_parallel_items(
     let mut processed_items = Vec::new();
     let mut successful_count = 0;
     let mut failed_count = 0;
+    let mut first_error = None;
     
     for (item, response_result) in results {
         match response_result {
@@ -1864,18 +1852,10 @@ async fn execute_parallel_items(
             }
             Err(e) => {
                 failed_count += 1;
-                // Send end event before returning error
-                let end_event = Event {
-                    id: sub_id.to_string(),
-                    msg: EventMsg::ParallelExecutionEnd(ParallelExecutionEndEvent {
-                        group_id: group_id.clone(),
-                        successful: successful_count,
-                        failed: failed_count,
-                        duration_ms: start_time.elapsed().as_millis() as u64,
-                    }),
-                };
-                sess.send_event(end_event).await;
-                return Err(e);
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+                eprintln!("[Parallel Execution] Tool failed: {:?}", e);
             }
         }
     }
@@ -1892,6 +1872,15 @@ async fn execute_parallel_items(
     };
     sess.send_event(end_event).await;
     
+    // If all items failed, return the first error
+    if successful_count == 0 && failed_count > 0 {
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+    }
+    
+    // Return successful items even if some failed
+    // This prevents re-execution of successful items
     Ok(processed_items)
 }
 
