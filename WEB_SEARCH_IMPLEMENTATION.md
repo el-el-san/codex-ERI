@@ -20,15 +20,18 @@ codex-v0.25を参考に、現在のcodex-ERIバージョンにWebSearch機能を
   - `get_openai_tools`関数でWebSearchツールを条件付きで追加
 
 #### 2. 設定項目
-- `config.rs`: `include_web_search`フィールドを追加（デフォルト: false）
+- `config.rs`: `tools_web_search_request`フィールドを追加（デフォルト: false）。
+  - `ConfigToml`に`[tools] web_search = true`（別名`web_search_request`）の読み取りを追加
+  - `ConfigOverrides`に`tools_web_search_request`を追加
 
 ## 使用方法
 
-設定ファイルで`include_web_search`をtrueに設定することで、WebSearchツールが有効になります：
+設定ファイルで`[tools] web_search = true`を設定、またはオーバーライド`tools_web_search_request = true`で有効化できます：
 
 ```toml
 # ~/.codex/config.toml
-include_web_search = true
+[tools]
+web_search = true
 ```
 
 または、コード内で：
@@ -39,7 +42,7 @@ let tools_config = ToolsConfig::new(
     approval_policy,
     sandbox_policy,
     include_plan_tool,
-    true,  // include_web_search
+    true,  // include_web_search_request
 );
 ```
 

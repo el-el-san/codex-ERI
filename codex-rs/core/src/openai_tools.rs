@@ -74,6 +74,36 @@ impl ToolsConfig {
     }
 }
 
+/// Returns a list of OpenAiTools based on the provided config.
+pub(crate) fn get_openai_tools(
+    config: &ToolsConfig,
+) -> Vec<OpenAiTool> {
+    let mut tools: Vec<OpenAiTool> = Vec::new();
+
+    match &config.shell_type {
+        ConfigShellToolType::DefaultShell => {
+            tools.push(create_shell_tool());
+        }
+        ConfigShellToolType::ShellWithRequest { sandbox_policy } => {
+            tools.push(create_shell_tool_for_sandbox(sandbox_policy));
+        }
+        ConfigShellToolType::LocalShell => {
+            tools.push(OpenAiTool::LocalShell {});
+        }
+    }
+
+    if config.plan_tool {
+        // TODO: Add plan tool when implemented
+        // tools.push(PLAN_TOOL.clone());
+    }
+
+    if config.web_search_request {
+        tools.push(OpenAiTool::WebSearch {});
+    }
+
+    tools
+}
+
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -477,6 +507,21 @@ mod tests {
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
         assert_eq_tool_names(&tools, &["shell", "update_plan"]);
+    }
+
+    #[test]
+    fn test_get_openai_tools_with_web_search() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(
+            &model_family,
+            AskForApproval::Never,
+            SandboxPolicy::ReadOnly,
+            false, // plan tool disabled
+            true,  // include web_search_request
+        );
+        let tools = get_openai_tools(&config, Some(HashMap::new()));
+
+        assert_eq_tool_names(&tools, &["shell", "web_search"]);
     }
 
     #[test]

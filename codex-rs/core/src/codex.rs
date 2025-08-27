@@ -906,7 +906,7 @@ async fn submission_loop(
                         approval_policy,
                         sandbox_policy.clone(),
                         config.include_plan_tool,
-                        config.include_web_search,
+                        config.tools_web_search_request,
                     ),
                     tx_event: tx_event.clone(),
                     ctrl_c: Arc::clone(&ctrl_c),

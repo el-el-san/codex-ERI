@@ -457,6 +457,24 @@ async fn process_sse<S>(
                     return;
                 }
             }
+            // Detect web_search_call begin and forward a synthetic event upstream.
+            "response.output_item.added" => {
+                if let Some(item) = event.item.as_ref() {
+                    if let Some(ty) = item.get("type").and_then(|v| v.as_str())
+                        && ty == "web_search_call"
+                    {
+                        let call_id = item
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ev = ResponseEvent::WebSearchCallBegin { call_id, query: None };
+                        if tx_event.send(Ok(ev)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
             "response.output_text.delta" => {
                 if let Some(delta) = event.delta {
                     let event = ResponseEvent::OutputTextDelta(delta);
@@ -843,5 +861,53 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    /// Detects a web_search_call begin signal from response.output_item.added
+    /// and forwards a WebSearchCallBegin event upstream.
+    #[tokio::test]
+    async fn detects_web_search_call_begin() {
+        let begin = json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "web_search_call",
+                "id": "call-123"
+            }
+        });
+
+        let completed = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "c",
+                "usage": null,
+                "output": []
+            }
+        });
+
+        let provider = ModelProviderInfo {
+            name: "test".to_string(),
+            base_url: Some("https://test.com".to_string()),
+            env_key: Some("TEST_API_KEY".to_string()),
+            env_key_instructions: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(0),
+            stream_max_retries: Some(0),
+            stream_idle_timeout_ms: Some(1000),
+            requires_openai_auth: false,
+        };
+
+        let out = run_sse(vec![begin, completed], provider).await;
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            ResponseEvent::WebSearchCallBegin { call_id, query } => {
+                assert_eq!(call_id, "call-123");
+                assert!(query.is_none());
+            }
+            other => panic!("expected WebSearchCallBegin, got {other:?}"),
+        }
+        matches!(out[1], ResponseEvent::Completed { .. });
     }
 }
