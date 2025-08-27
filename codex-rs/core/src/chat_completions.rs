@@ -588,6 +588,14 @@ where
                 Poll::Ready(Some(Ok(ResponseEvent::ReasoningSummaryDelta(_)))) => {
                     continue;
                 }
+                Poll::Ready(Some(Ok(ResponseEvent::ReasoningSummaryPartAdded))) => {
+                    // Reasoning summary part events are not needed in Chat Completions
+                    continue;
+                }
+                Poll::Ready(Some(Ok(ResponseEvent::WebSearchCallBegin { .. }))) => {
+                    // Web search events are not typically used in Chat Completions
+                    continue;
+                }
             }
         }
     }

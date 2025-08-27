@@ -1636,6 +1636,14 @@ async fn try_run_turn(
                     sess.tx_event.send(event).await.ok();
                 }
             }
+            ResponseEvent::ReasoningSummaryPartAdded => {
+                // Handle reasoning summary part added event
+                // Currently just logging or ignoring
+            }
+            ResponseEvent::WebSearchCallBegin { call_id, query } => {
+                // Handle web search call begin event
+                debug!("WebSearch initiated - call_id: {}, query: {:?}", call_id, query);
+            }
         }
     }
 }
