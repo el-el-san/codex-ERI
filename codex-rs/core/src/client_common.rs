@@ -144,6 +144,11 @@ pub enum ResponseEvent {
     OutputTextDelta(String),
     ReasoningSummaryDelta(String),
     ReasoningContentDelta(String),
+    ReasoningSummaryPartAdded,
+    WebSearchCallBegin {
+        call_id: String,
+        query: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize)]
