@@ -161,7 +161,6 @@ impl CodexToolCallParam {
             codex_linux_sandbox_exe,
             base_instructions,
             include_plan_tool,
-
             disable_response_storage: None,
             show_raw_agent_reasoning: None,
         };
