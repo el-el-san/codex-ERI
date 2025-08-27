@@ -391,6 +391,9 @@ pub enum EventMsg {
 
     McpToolCallEnd(McpToolCallEndEvent),
 
+    /// Notification that the model initiated a web search call.
+    WebSearchBegin(WebSearchBeginEvent),
+
     /// Notification that the server is about to execute a command.
     ExecCommandBegin(ExecCommandBeginEvent),
 
@@ -806,4 +809,10 @@ mod tests {
             r#"{"id":"1234","msg":{"type":"session_configured","session_id":"67e55044-10b1-426f-9247-bb680e5fe0c8","model":"codex-mini-latest","history_log_id":0,"history_entry_count":0}}"#
         );
     }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebSearchBeginEvent {
+    pub call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
 }
