@@ -443,9 +443,7 @@ pub struct ConfigToml {
     #[serde(default)]
     pub tools: Option<ToolsToml>,
 
-    /// Back-compat top-level flag: allow `tools_web_search_request = true` in config overrides
-    #[serde(default)]
-    pub tools_web_search_request: Option<bool>,
+    
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -624,7 +622,6 @@ impl Config {
         // Resolve tools.web_search (from config.toml) with override
         let tools_web_search_effective = tools_web_search_request
             .or(cfg.tools.as_ref().and_then(|t| t.web_search))
-            .or(cfg.tools_web_search_request)
             .unwrap_or(false);
 
         let model = model
