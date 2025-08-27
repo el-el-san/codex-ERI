@@ -169,8 +169,7 @@ pub struct Config {
     /// Include an experimental plan tool that the model can use to update its current plan and status of each step.
     pub include_plan_tool: bool,
 
-    /// Enable native `web_search` tool (Responses API). When true, the model
-    /// can invoke OpenAIのWeb検索ビルトインツール。
+    /// Enable native `web_search` tool. When true, the model can invoke web search.
     pub tools_web_search_request: bool,
 
     /// The value for the `originator` header included with Responses API requests.
@@ -527,6 +526,7 @@ pub struct ConfigOverrides {
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
     pub include_plan_tool: Option<bool>,
+    pub tools_web_search_request: Option<bool>,
     pub disable_response_storage: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
 }
