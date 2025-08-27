@@ -695,6 +695,9 @@ impl ChatWidget<'_> {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 info!("BackgroundEvent: {message}");
             }
+            EventMsg::WebSearchBegin(_) => {
+                // Web search begin event - no special handling needed in TUI
+            }
         }
     }
 
