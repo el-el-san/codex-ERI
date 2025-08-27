@@ -259,6 +259,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AgentReasoning(_)
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
+                    | EventMsg::WebSearchBegin(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::ExecCommandOutputDelta(_)
                     | EventMsg::ExecCommandEnd(_)

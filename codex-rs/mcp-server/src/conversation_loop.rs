@@ -101,6 +101,7 @@ pub async fn run_conversation_loop(
                     | EventMsg::ExecCommandEnd(_)
                     | EventMsg::TurnDiff(_)
                     | EventMsg::BackgroundEvent(_)
+                    | EventMsg::WebSearchBegin(_)
                     | EventMsg::ExecCommandOutputDelta(_)
                     | EventMsg::PatchApplyBegin(_)
                     | EventMsg::PatchApplyEnd(_)
