@@ -29,6 +29,8 @@ pub(crate) enum OpenAiTool {
     Function(ResponsesApiTool),
     #[serde(rename = "local_shell")]
     LocalShell {},
+    #[serde(rename = "web_search")]
+    WebSearch {},
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,7 @@ pub enum ConfigShellToolType {
 pub struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub plan_tool: bool,
+    pub web_search_request: bool,
 }
 
 impl ToolsConfig {
@@ -50,6 +53,7 @@ impl ToolsConfig {
         approval_policy: AskForApproval,
         sandbox_policy: SandboxPolicy,
         include_plan_tool: bool,
+        include_web_search_request: bool,
     ) -> Self {
         let shell_type = if model_family.uses_local_shell_tool {
             ConfigShellToolType::LocalShell
@@ -65,6 +69,7 @@ impl ToolsConfig {
         Self {
             shell_type,
             plan_tool: include_plan_tool,
+            web_search_request: include_web_search_request,
         }
     }
 }
@@ -392,6 +397,10 @@ pub(crate) fn get_openai_tools(
         tools.push(PLAN_TOOL.clone());
     }
 
+    if config.web_search_request {
+        tools.push(OpenAiTool::WebSearch {});
+    }
+
     if let Some(mcp_tools) = mcp_tools {
         for (name, tool) in mcp_tools {
             match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
@@ -422,6 +431,7 @@ mod tests {
             .map(|tool| match tool {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
                 OpenAiTool::LocalShell {} => "local_shell",
+                OpenAiTool::WebSearch {} => "web_search",
             })
             .collect::<Vec<_>>();
 
@@ -447,6 +457,7 @@ mod tests {
             AskForApproval::Never,
             SandboxPolicy::ReadOnly,
             true,
+            false,
         );
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
@@ -461,6 +472,7 @@ mod tests {
             AskForApproval::Never,
             SandboxPolicy::ReadOnly,
             true,
+            false,
         );
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
@@ -474,6 +486,7 @@ mod tests {
             &model_family,
             AskForApproval::Never,
             SandboxPolicy::ReadOnly,
+            false,
             false,
         );
         let tools = get_openai_tools(
