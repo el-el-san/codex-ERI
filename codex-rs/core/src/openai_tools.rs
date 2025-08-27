@@ -74,35 +74,7 @@ impl ToolsConfig {
     }
 }
 
-/// Returns a list of OpenAiTools based on the provided config.
-pub(crate) fn get_openai_tools(
-    config: &ToolsConfig,
-) -> Vec<OpenAiTool> {
-    let mut tools: Vec<OpenAiTool> = Vec::new();
-
-    match &config.shell_type {
-        ConfigShellToolType::DefaultShell => {
-            tools.push(create_shell_tool());
-        }
-        ConfigShellToolType::ShellWithRequest { sandbox_policy } => {
-            tools.push(create_shell_tool_for_sandbox(sandbox_policy));
-        }
-        ConfigShellToolType::LocalShell => {
-            tools.push(OpenAiTool::LocalShell {});
-        }
-    }
-
-    if config.plan_tool {
-        // TODO: Add plan tool when implemented
-        // tools.push(PLAN_TOOL.clone());
-    }
-
-    if config.web_search_request {
-        tools.push(OpenAiTool::WebSearch {});
-    }
-
-    tools
-}
+// Note: Only the two-argument version of `get_openai_tools` is supported.
 
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
