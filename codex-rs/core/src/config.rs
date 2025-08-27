@@ -527,8 +527,6 @@ pub struct ConfigOverrides {
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
     pub include_plan_tool: Option<bool>,
-    /// When true, enable the native `web_search` tool
-    pub tools_web_search_request: Option<bool>,
     pub disable_response_storage: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
 }
