@@ -54,6 +54,10 @@ pub struct CodexToolCallParam {
     /// Whether to include the plan tool in the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_plan_tool: Option<bool>,
+
+    /// Enable native web search tool (`web_search`). Off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_web_search_request: Option<bool>,
 }
 
 /// Custom enum mirroring [`AskForApproval`], but has an extra dependency on
@@ -145,6 +149,7 @@ impl CodexToolCallParam {
             config: cli_overrides,
             base_instructions,
             include_plan_tool,
+            tools_web_search_request,
         } = self;
 
         // Build the `ConfigOverrides` recognized by codex-core.
@@ -158,6 +163,7 @@ impl CodexToolCallParam {
             codex_linux_sandbox_exe,
             base_instructions,
             include_plan_tool,
+            tools_web_search_request,
             disable_response_storage: None,
             show_raw_agent_reasoning: None,
         };

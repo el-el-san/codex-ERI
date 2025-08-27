@@ -169,8 +169,9 @@ pub struct Config {
     /// Include an experimental plan tool that the model can use to update its current plan and status of each step.
     pub include_plan_tool: bool,
 
-    /// Include web search tool for searching the internet.
-    pub include_web_search: bool,
+    /// Enable native `web_search` tool (Responses API). When true, the model
+    /// can invoke OpenAIのWeb検索ビルトインツール。
+    pub tools_web_search_request: bool,
 
     /// The value for the `originator` header included with Responses API requests.
     pub internal_originator: Option<String>,
@@ -437,11 +438,26 @@ pub struct ConfigToml {
     pub internal_originator: Option<String>,
 
     pub projects: Option<HashMap<String, ProjectConfig>>,
+
+    /// Nested tools section for feature toggles.
+    #[serde(default)]
+    pub tools: Option<ToolsToml>,
+
+    /// Back-compat top-level flag: allow `tools_web_search_request = true` in config overrides
+    #[serde(default)]
+    pub tools_web_search_request: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
     pub trust_level: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct ToolsToml {
+    /// Back-compat alias: allow `web_search_request = true` too
+    #[serde(default, alias = "web_search_request")]
+    pub web_search: Option<bool>,
 }
 
 impl ConfigToml {
@@ -513,6 +529,8 @@ pub struct ConfigOverrides {
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
     pub include_plan_tool: Option<bool>,
+    /// When true, enable the native `web_search` tool
+    pub tools_web_search_request: Option<bool>,
     pub disable_response_storage: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
 }
@@ -538,6 +556,7 @@ impl Config {
             codex_linux_sandbox_exe,
             base_instructions,
             include_plan_tool,
+            tools_web_search_request,
             disable_response_storage,
             show_raw_agent_reasoning,
         } = overrides;
@@ -601,6 +620,12 @@ impl Config {
         };
 
         let history = cfg.history.unwrap_or_default();
+
+        // Resolve tools.web_search (from config.toml) with override
+        let tools_web_search_effective = tools_web_search_request
+            .or(cfg.tools.as_ref().and_then(|t| t.web_search))
+            .or(cfg.tools_web_search_request)
+            .unwrap_or(false);
 
         let model = model
             .or(config_profile.model)
@@ -699,7 +724,7 @@ impl Config {
 
             experimental_resume,
             include_plan_tool: include_plan_tool.unwrap_or(false),
-            include_web_search: false,  // Default to false for now
+            tools_web_search_request: tools_web_search_effective,
             internal_originator: cfg.internal_originator,
         };
         Ok(config)
@@ -1068,7 +1093,7 @@ disable_response_storage = true
                 internal_originator: None,
                 custom_commands: vec![],
                 trusted_commands: vec![],
-                include_web_search: false,
+                tools_web_search_request: false,
                 parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
             },
             o3_profile_config
@@ -1124,7 +1149,7 @@ disable_response_storage = true
             internal_originator: None,
             custom_commands: vec![],
             trusted_commands: vec![],
-            include_web_search: false,
+            tools_web_search_request: false,
             parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 
@@ -1195,7 +1220,7 @@ disable_response_storage = true
             internal_originator: None,
             custom_commands: vec![],
             trusted_commands: vec![],
-            include_web_search: false,
+            tools_web_search_request: false,
             parallel_execution: crate::config_types::ParallelExecutionConfig::default(),
         };
 
