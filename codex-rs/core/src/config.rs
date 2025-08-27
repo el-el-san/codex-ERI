@@ -169,6 +169,9 @@ pub struct Config {
     /// Include an experimental plan tool that the model can use to update its current plan and status of each step.
     pub include_plan_tool: bool,
 
+    /// Include web search tool for searching the internet.
+    pub include_web_search: bool,
+
     /// The value for the `originator` header included with Responses API requests.
     pub internal_originator: Option<String>,
 }
@@ -696,6 +699,7 @@ impl Config {
 
             experimental_resume,
             include_plan_tool: include_plan_tool.unwrap_or(false),
+            include_web_search: false,  // Default to false for now
             internal_originator: cfg.internal_originator,
         };
         Ok(config)
