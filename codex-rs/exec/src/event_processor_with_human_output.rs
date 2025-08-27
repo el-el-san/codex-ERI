@@ -3,6 +3,7 @@ use codex_common::elapsed::format_elapsed;
 use codex_core::config::Config;
 use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::protocol::AgentMessageDeltaEvent;
+use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
@@ -563,3 +564,12 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}({args_str})")
     }
 }
+            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
+                let q = query.unwrap_or_else(|| "(query not provided)".to_string());
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "web-search".style(self.cyan).style(self.bold),
+                    q
+                );
+            }

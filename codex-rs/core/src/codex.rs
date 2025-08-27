@@ -94,6 +94,7 @@ use crate::protocol::ParallelExecutionEndEvent;
 use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
+use crate::protocol::WebSearchBeginEvent;
 use crate::protocol::Submission;
 use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TurnDiffEvent;
@@ -1641,8 +1642,14 @@ async fn try_run_turn(
                 // Currently just logging or ignoring
             }
             ResponseEvent::WebSearchCallBegin { call_id, query } => {
-                // Handle web search call begin event
-                debug!("WebSearch initiated - call_id: {}, query: {:?}", call_id, query);
+                let event = Event {
+                    id: sub_id.to_string(),
+                    msg: EventMsg::WebSearchBegin(WebSearchBeginEvent {
+                        call_id,
+                        query,
+                    }),
+                };
+                sess.tx_event.send(event).await.ok();
             }
         }
     }
