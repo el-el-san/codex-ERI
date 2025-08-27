@@ -525,6 +525,15 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     event.successful, event.failed, event.duration_ms);
             }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
+            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
+                let q = query.unwrap_or_else(|| "(query not provided)".to_string());
+                ts_println!(
+                    self,
+                    "{} {}",
+                    "web-search".style(self.cyan).style(self.bold),
+                    q
+                );
+            }
         }
         CodexStatus::Running
     }
@@ -564,12 +573,3 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}({args_str})")
     }
 }
-            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
-                let q = query.unwrap_or_else(|| "(query not provided)".to_string());
-                ts_println!(
-                    self,
-                    "{} {}",
-                    "web-search".style(self.cyan).style(self.bold),
-                    q
-                );
-            }
