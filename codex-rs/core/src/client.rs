@@ -489,7 +489,7 @@ async fn process_sse<S>(
 
                         // Log debug info to help diagnose
                         if query.is_none() {
-                            debug!("Web search SSE event item: {:?}", item);
+                            eprintln!("DEBUG: Web search SSE event item: {:?}", item);
                         }
 
                         let ev = ResponseEvent::WebSearchCallBegin { call_id, query };
