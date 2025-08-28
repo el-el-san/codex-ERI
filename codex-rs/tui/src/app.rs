@@ -1,3 +1,4 @@
+use crate::app_backtrack;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::chatwidget::ChatWidget;
@@ -326,6 +327,22 @@ impl App<'_> {
                                 AppState::Onboarding { .. } => {
                                     self.app_event_tx.send(AppEvent::ExitRequest);
                                 }
+                            }
+                        }
+                        KeyEvent {
+                            code: KeyCode::Esc,
+                            kind: KeyEventKind::Press,
+                            ..
+                        } => {
+                            // Handle Esc for backtrack functionality
+                            if let AppState::Chat { widget } = &mut self.app_state {
+                                // Update chat_widget reference for backtrack
+                                self.chat_widget = Some(widget.clone());
+                                // Call the backtrack handler
+                                self.handle_backtrack_esc_key(terminal);
+                            } else {
+                                // Pass to regular dispatch for other states
+                                self.dispatch_key_event(key_event);
                             }
                         }
                         KeyEvent {

@@ -25,7 +25,7 @@ pub(crate) struct BacktrackState {
     pub(crate) pending: Option<(uuid::Uuid, usize, String)>,
 }
 
-impl<'a> App<'a> {
+impl App<'_> {
     /// Route overlay events when transcript overlay is active.
     /// - If backtrack preview is active: Esc steps selection; Enter confirms.
     /// - Otherwise: Esc begins preview; all other events forward to overlay.
