@@ -828,6 +828,23 @@ impl ChatWidget<'_> {
         self.mcp_popup = Some(McpPopup::new(servers));
         self.request_redraw();
     }
+
+    /// Returns session information if available
+    pub fn session_info(&self) -> Option<codex_core::protocol::ConversationInfo> {
+        // TODO: Implement proper session info retrieval
+        None
+    }
+
+    /// Returns transcript lines for display
+    pub fn get_transcript_lines(&self) -> Vec<ratatui::text::Line<'static>> {
+        // TODO: Implement proper transcript retrieval
+        Vec::new()
+    }
+
+    /// Check if the composer is empty
+    pub fn composer_is_empty(&self) -> bool {
+        self.bottom_pane.composer_is_empty()
+    }
     
 }
 

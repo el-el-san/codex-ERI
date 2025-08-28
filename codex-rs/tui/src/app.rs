@@ -73,6 +73,9 @@ pub(crate) struct App<'a> {
 
     /// Reference to chat widget (if in chat state)
     pub(crate) chat_widget: Option<Box<ChatWidget<'a>>>,
+    
+    /// Transcript lines for backtrack
+    pub(crate) transcript_lines: Vec<Line<'static>>,
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -185,6 +188,7 @@ impl App<'_> {
             backtrack: Default::default(),
             overlay: None,
             chat_widget: None,
+            transcript_lines: Vec::new(),
         }
     }
 
