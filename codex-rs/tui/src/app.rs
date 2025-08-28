@@ -37,7 +37,7 @@ const REDRAW_DEBOUNCE: Duration = Duration::from_millis(10);
 
 /// Top-level application state: which full-screen view is currently active.
 #[allow(clippy::large_enum_variant)]
-enum AppState<'a> {
+pub(crate) enum AppState<'a> {
     Onboarding {
         screen: OnboardingScreen,
     },
@@ -52,7 +52,7 @@ enum AppState<'a> {
 pub(crate) struct App<'a> {
     pub(crate) app_event_tx: AppEventSender,
     app_event_rx: Receiver<AppEvent>,
-    app_state: AppState<'a>,
+    pub(crate) app_state: AppState<'a>,
 
     /// Config is stored here so we can recreate ChatWidgets as needed.
     config: Config,
