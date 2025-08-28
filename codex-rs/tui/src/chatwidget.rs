@@ -840,11 +840,6 @@ impl ChatWidget<'_> {
         // TODO: Implement proper transcript retrieval
         Vec::new()
     }
-
-    /// Check if the composer is empty
-    pub fn composer_is_empty(&self) -> bool {
-        self.bottom_pane.composer_is_empty()
-    }
     
 }
 
