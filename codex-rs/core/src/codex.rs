@@ -1047,6 +1047,26 @@ async fn submission_loop(
                     }
                 });
             }
+            Op::GetHistory => {
+                // TODO: Implement GetHistory
+                let event = Event {
+                    id: sub.id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "GetHistory not yet implemented".to_string(),
+                    }),
+                };
+                tx_event.send(event).await.ok();
+            }
+            Op::ForkConversation { base_session_id, drop_last_messages, initial_message } => {
+                // TODO: Implement ForkConversation
+                let event = Event {
+                    id: sub.id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: "ForkConversation not yet implemented".to_string(),
+                    }),
+                };
+                tx_event.send(event).await.ok();
+            }
             Op::Compact => {
                 let sess = match sess.as_ref() {
                     Some(sess) => sess,
