@@ -77,18 +77,29 @@ impl App<'_> {
 
     /// Handle global Esc presses for backtracking when no overlay is present.
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
+        eprintln!("DEBUG: handle_backtrack_esc_key called");
+        
         // Only handle backtracking when composer is empty to avoid clobbering edits.
         // Check if composer is empty via AppState
         let composer_is_empty = match &self.app_state {
-            AppState::Chat { widget } => widget.composer_is_empty(),
+            AppState::Chat { widget } => {
+                let is_empty = widget.composer_is_empty();
+                eprintln!("DEBUG: composer_is_empty = {}", is_empty);
+                is_empty
+            },
             _ => false,
         };
+        
         if composer_is_empty {
+            eprintln!("DEBUG: backtrack.primed = {}", self.backtrack.primed);
             if !self.backtrack.primed {
+                eprintln!("DEBUG: Priming backtrack");
                 self.prime_backtrack();
             } else if self.overlay.is_none() {
+                eprintln!("DEBUG: Opening backtrack preview");
                 self.open_backtrack_preview(tui);
             } else if self.backtrack.overlay_preview_active {
+                eprintln!("DEBUG: Stepping backtrack");
                 self.step_backtrack_and_highlight(tui);
             }
         }

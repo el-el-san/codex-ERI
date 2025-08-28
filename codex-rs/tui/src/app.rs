@@ -333,9 +333,25 @@ impl App<'_> {
                             code: KeyCode::Esc,
                             kind: KeyEventKind::Press,
                             ..
+                        } | KeyEvent {
+                            // Ctrl+[ is commonly used as Esc alternative in terminals (especially Termux/Android)
+                            code: KeyCode::Char('['),
+                            modifiers: crossterm::event::KeyModifiers::CONTROL,
+                            kind: KeyEventKind::Press,
+                            ..
+                        } | KeyEvent {
+                            // Alt+Q as another alternative for Termux (Volume Down + Q)
+                            code: KeyCode::Char('q'),
+                            modifiers: crossterm::event::KeyModifiers::ALT,
+                            kind: KeyEventKind::Press,
+                            ..
                         } => {
+                            // Debug: Log Esc key press
+                            eprintln!("DEBUG: Esc key pressed (or Ctrl+[ or Alt+Q)");
+                            
                             // Handle Esc for backtrack functionality
                             if let AppState::Chat { .. } = &self.app_state {
+                                eprintln!("DEBUG: In Chat state, calling handle_backtrack_esc_key");
                                 // Call the backtrack handler directly
                                 self.handle_backtrack_esc_key(terminal);
                             } else {
