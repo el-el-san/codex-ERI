@@ -452,6 +452,7 @@ mod tests {
                 OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
                 OpenAiTool::LocalShell {} => "local_shell",
                 OpenAiTool::WebSearch {} => "web_search",
+                OpenAiTool::Freeform(FreeformTool { name, .. }) => name,
             })
             .collect::<Vec<_>>();
 
