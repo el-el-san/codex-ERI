@@ -586,4 +586,43 @@ where
         self.current = 1 - self.current;
     }
 
+    /// Enter alternate screen mode
+    pub fn enter_alt_screen(&mut self) -> io::Result<()> {
+        use crossterm::{Command, terminal::{EnterAlternateScreen}};
+        self.backend.execute(EnterAlternateScreen)?;
+        Ok(())
+    }
+
+    /// Leave alternate screen mode
+    pub fn leave_alt_screen(&mut self) -> io::Result<()> {
+        use crossterm::{Command, terminal::{LeaveAlternateScreen}};
+        self.backend.execute(LeaveAlternateScreen)?;
+        Ok(())
+    }
+
+    /// Get a mutable reference to the backend
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
+    /// Request a frame to be drawn
+    pub fn frame_requester(&self) -> FrameRequester {
+        FrameRequester {
+            // This is a placeholder implementation
+            // In a real implementation, this would connect to the frame scheduling system
+        }
+    }
+}
+
+/// Frame requester for scheduling frame draws
+pub struct FrameRequester {
+    // Placeholder for frame scheduling
+}
+
+impl FrameRequester {
+    /// Schedule a frame to be drawn
+    pub fn schedule_frame(&self) {
+        // Placeholder implementation
+        // In a real implementation, this would trigger a frame draw
+    }
 }

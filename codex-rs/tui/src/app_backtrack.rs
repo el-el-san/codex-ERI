@@ -91,7 +91,11 @@ impl App<'_> {
         };
         
         if composer_is_empty {
-            eprintln!("DEBUG: backtrack.primed = {}", self.backtrack.primed);
+            eprintln!("DEBUG: backtrack.primed = {}, overlay = {}, overlay_preview_active = {}", 
+                     self.backtrack.primed, 
+                     self.overlay.is_some(), 
+                     self.backtrack.overlay_preview_active);
+            
             if !self.backtrack.primed {
                 eprintln!("DEBUG: Priming backtrack");
                 self.prime_backtrack();
@@ -146,21 +150,37 @@ impl App<'_> {
     /// Prime backtrack mode (first Esc).
     fn prime_backtrack(&mut self) {
         self.backtrack.primed = true;
-        self.backtrack.count = 1;
-        // TODO: Implement proper session ID retrieval when available
-        // For now, use a placeholder or skip session management
-        // self.backtrack.base_id = None;
+        self.backtrack.count = 0;  // Start at 0, will increment on next Esc
+        
+        // Get session ID from chat widget if available
+        if let AppState::Chat { widget } = &self.app_state {
+            self.backtrack.base_id = widget.session_id();
+            // Show hint in the composer
+            if let AppState::Chat { widget } = &mut self.app_state {
+                widget.show_esc_backtrack_hint();
+            }
+        }
     }
 
     /// Open transcript overlay with backtrack preview (second Esc).
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
-        if self.overlay.is_none() {
-            // Use transcript_lines instead of getting from chat_widget
-            let lines = self.transcript_lines.clone();
-            self.overlay = Some(Overlay::new_transcript(lines));
-            self.backtrack.overlay_preview_active = true;
-            self.step_backtrack_and_highlight(tui);
+        eprintln!("DEBUG: open_backtrack_preview called");
+        
+        // Enter alternate screen for overlay
+        let _ = tui.enter_alt_screen();
+        
+        // Use transcript_lines for the overlay
+        let lines = self.transcript_lines.clone();
+        self.overlay = Some(Overlay::new_transcript(lines));
+        self.backtrack.overlay_preview_active = true;
+        
+        // Clear hint from composer (hidden by overlay)
+        if let AppState::Chat { widget } = &mut self.app_state {
+            widget.clear_esc_backtrack_hint();
         }
+        
+        // Step to first user message and highlight
+        self.step_backtrack_and_highlight(tui);
     }
 
     /// Begin backtrack preview when already in transcript overlay.
@@ -200,6 +220,11 @@ impl App<'_> {
 
     /// Update overlay highlight based on current backtrack step.
     fn step_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
+        eprintln!("DEBUG: step_backtrack_and_highlight called, current count = {}", self.backtrack.count);
+        
+        // Increment the count to move to next older user message
+        let next = self.backtrack.count.saturating_add(1);
+        
         if let Some(Overlay::Transcript(ref mut transcript)) = self.overlay {
             // Clone the lines to avoid multiple borrows
             let lines_clone: Vec<Line<'static>> = transcript.lines().iter().cloned().map(|line| {
@@ -213,9 +238,14 @@ impl App<'_> {
                 Line::from(owned_spans)
             }).collect();
             
-            let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, self.backtrack.count);
+            // Normalize the count based on available user messages
+            let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, next);
             self.backtrack.count = n;
+            
+            eprintln!("DEBUG: Normalized count = {}", n);
+            
             if let Some((start, end)) = backtrack_helpers::highlight_range_for_nth_last_user(&lines_clone, n) {
+                eprintln!("DEBUG: Setting highlight range: {} to {}", start, end);
                 transcript.set_highlight_range(Some((start, end)));
                 let wrapped_offset = backtrack_helpers::wrapped_offset_before(
                     &lines_clone,
@@ -225,6 +255,9 @@ impl App<'_> {
                 transcript.scroll_to_line(wrapped_offset);
             }
         }
+        
+        // Schedule a frame redraw
+        tui.frame_requester().schedule_frame();
     }
 
     /// Forward events to the overlay widget.
