@@ -20,6 +20,22 @@ pub struct ResponsesApiTool {
     pub(crate) parameters: JsonSchema,
 }
 
+/// Freeform tool format for GPT-5 models
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct FreeformToolFormat {
+    pub(crate) r#type: String,
+    pub(crate) syntax: String,
+    pub(crate) definition: String,
+}
+
+/// Freeform tool for GPT-5 models
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct FreeformTool {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) format: FreeformToolFormat,
+}
+
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -31,6 +47,8 @@ pub(crate) enum OpenAiTool {
     LocalShell {},
     #[serde(rename = "web_search")]
     WebSearch {},
+    #[serde(rename = "freeform")]
+    Freeform(FreeformTool),
 }
 
 #[derive(Debug, Clone)]
