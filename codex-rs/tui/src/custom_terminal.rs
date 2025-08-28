@@ -588,21 +588,18 @@ where
 
     /// Enter alternate screen mode
     pub fn enter_alt_screen(&mut self) -> io::Result<()> {
-        use crossterm::{Command, terminal::{EnterAlternateScreen}};
-        self.backend.execute(EnterAlternateScreen)?;
+        // For now, just clear the screen as a simple alternative
+        // A proper implementation would require backend-specific handling
+        self.clear()?;
         Ok(())
     }
 
     /// Leave alternate screen mode
     pub fn leave_alt_screen(&mut self) -> io::Result<()> {
-        use crossterm::{Command, terminal::{LeaveAlternateScreen}};
-        self.backend.execute(LeaveAlternateScreen)?;
+        // For now, just clear the screen as a simple alternative
+        // A proper implementation would require backend-specific handling
+        self.clear()?;
         Ok(())
-    }
-
-    /// Get a mutable reference to the backend
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.backend
     }
 
     /// Request a frame to be drawn
