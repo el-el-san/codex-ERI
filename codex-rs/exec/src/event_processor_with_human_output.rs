@@ -526,13 +526,20 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
-                let q = query.unwrap_or_else(|| "(query not provided)".to_string());
-                ts_println!(
-                    self,
-                    "{} {}",
-                    "web-search".style(self.cyan).style(self.bold),
-                    q
-                );
+                if let Some(q) = query {
+                    ts_println!(
+                        self,
+                        "{} {}",
+                        "web-search".style(self.cyan).style(self.bold),
+                        q
+                    );
+                } else {
+                    ts_println!(
+                        self,
+                        "{}",
+                        "web-search".style(self.cyan).style(self.bold)
+                    );
+                }
             }
         }
         CodexStatus::Running
