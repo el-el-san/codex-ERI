@@ -29,7 +29,6 @@ libc = "0.2.174"
 mcp-types = { path = "../mcp-types" }
 mime_guess = "2.0"
 os_info = "3.12.0"
-portable-pty = "0.8"
 rand = "0.9"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -60,6 +59,9 @@ webbrowser = "1.0"
 whoami = "1.6.0"
 wildmatch = "2.4.0"
 
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+portable-pty = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.1"

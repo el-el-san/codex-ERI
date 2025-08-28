@@ -1,18 +1,29 @@
 use std::collections::HashMap;
-use std::io::ErrorKind;
-use std::io::Read;
-use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU32;
 
-use portable_pty::CommandBuilder;
-use portable_pty::PtySize;
-use portable_pty::native_pty_system;
 use tokio::sync::Mutex;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tokio::time::Instant;
+
+#[cfg(not(target_os = "android"))]
+use std::io::ErrorKind;
+#[cfg(not(target_os = "android"))]
+use std::io::Read;
+#[cfg(not(target_os = "android"))]
+use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
+use std::sync::Mutex as StdMutex;
+#[cfg(not(target_os = "android"))]
+use portable_pty::CommandBuilder;
+#[cfg(not(target_os = "android"))]
+use portable_pty::PtySize;
+#[cfg(not(target_os = "android"))]
+use portable_pty::native_pty_system;
+#[cfg(not(target_os = "android"))]
+use tokio::sync::mpsc;
+#[cfg(not(target_os = "android"))]
+use tokio::sync::oneshot;
+#[cfg(not(target_os = "android"))]
 use tokio::time::timeout;
 
 use crate::exec_command::exec_command_params::ExecCommandParams;
@@ -85,6 +96,13 @@ impl SessionManager {
         &self,
         params: ExecCommandParams,
     ) -> Result<ExecCommandOutput, String> {
+        #[cfg(target_os = "android")]
+        {
+            return Err("exec_command sessions not supported on Android".to_string());
+        }
+        
+        #[cfg(not(target_os = "android"))]
+        {
         // Allocate a session id.
         let session_id = SessionId(
             self.next_session_id
@@ -173,6 +191,7 @@ impl SessionManager {
             original_token_count,
             output,
         })
+        }
     }
 
     /// Write characters to a session's stdin and collect combined output for up to `yield_time_ms`.
@@ -180,6 +199,13 @@ impl SessionManager {
         &self,
         params: WriteStdinParams,
     ) -> Result<ExecCommandOutput, String> {
+        #[cfg(target_os = "android")]
+        {
+            return Err("write_stdin not supported on Android".to_string());
+        }
+        
+        #[cfg(not(target_os = "android"))]
+        {
         let WriteStdinParams {
             session_id,
             chars,
@@ -237,10 +263,12 @@ impl SessionManager {
             original_token_count,
             output,
         })
+        }
     }
 }
 
 /// Spawn PTY and child process per spawn_exec_command_session logic.
+#[cfg(not(target_os = "android"))]
 async fn create_exec_command_session(
     params: ExecCommandParams,
 ) -> anyhow::Result<(ExecCommandSession, oneshot::Receiver<i32>)> {
