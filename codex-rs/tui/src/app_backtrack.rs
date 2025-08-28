@@ -152,14 +152,12 @@ impl App<'_> {
         self.backtrack.primed = true;
         self.backtrack.count = 0;  // Start at 0, will increment on next Esc
         
-        // Get session ID from chat widget if available
-        if let AppState::Chat { widget } = &self.app_state {
-            self.backtrack.base_id = widget.session_id();
-            // Show hint in the composer
-            if let AppState::Chat { widget } = &mut self.app_state {
-                widget.show_esc_backtrack_hint();
-            }
-        }
+        // TODO: Get session ID from chat widget when session_id() method is available
+        // For now, use None to skip session management
+        self.backtrack.base_id = None;
+        
+        // TODO: Show hint in the composer when show_esc_backtrack_hint() method is available
+        eprintln!("DEBUG: Backtrack primed - press Esc again to open overlay");
     }
 
     /// Open transcript overlay with backtrack preview (second Esc).
@@ -174,10 +172,8 @@ impl App<'_> {
         self.overlay = Some(Overlay::new_transcript(lines));
         self.backtrack.overlay_preview_active = true;
         
-        // Clear hint from composer (hidden by overlay)
-        if let AppState::Chat { widget } = &mut self.app_state {
-            widget.clear_esc_backtrack_hint();
-        }
+        // TODO: Clear hint from composer when clear_esc_backtrack_hint() method is available
+        // Composer is hidden by overlay anyway
         
         // Step to first user message and highlight
         self.step_backtrack_and_highlight(tui);
