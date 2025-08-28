@@ -469,8 +469,30 @@ async fn process_sse<S>(
                             .unwrap_or("")
                             .to_string();
 
-                        // Web search query is not provided in the SSE event
-                        let ev = ResponseEvent::WebSearchCallBegin { call_id, query: None };
+                        // Try to extract query from different possible locations in the SSE event
+                        let query = item
+                            .get("arguments")
+                            .and_then(|v| v.get("query"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                item.get("input")
+                                    .and_then(|v| v.get("query"))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .or_else(|| {
+                                item.get("query")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                            });
+
+                        // Log debug info to help diagnose
+                        if query.is_none() {
+                            debug!("Web search SSE event item: {:?}", item);
+                        }
+
+                        let ev = ResponseEvent::WebSearchCallBegin { call_id, query };
                         if tx_event.send(Ok(ev)).await.is_err() {
                             return;
                         }
