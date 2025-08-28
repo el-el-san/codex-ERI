@@ -335,10 +335,8 @@ impl App<'_> {
                             ..
                         } => {
                             // Handle Esc for backtrack functionality
-                            if let AppState::Chat { widget } = &mut self.app_state {
-                                // Update chat_widget reference for backtrack
-                                self.chat_widget = Some(widget.clone());
-                                // Call the backtrack handler
+                            if let AppState::Chat { .. } = &self.app_state {
+                                // Call the backtrack handler directly
                                 self.handle_backtrack_esc_key(terminal);
                             } else {
                                 // Pass to regular dispatch for other states
