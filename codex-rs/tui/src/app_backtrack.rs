@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, AppState};
 use crate::backtrack_helpers;
 use crate::pager_overlay::Overlay;
 use crate::tui;
@@ -78,7 +78,11 @@ impl App<'_> {
     /// Handle global Esc presses for backtracking when no overlay is present.
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
         // Only handle backtracking when composer is empty to avoid clobbering edits.
-        let composer_is_empty = self.chat_widget.as_ref().map_or(false, |w| w.composer_is_empty());
+        // Check if composer is empty via AppState
+        let composer_is_empty = match &self.app_state {
+            AppState::Chat { widget } => widget.composer_is_empty(),
+            _ => false,
+        };
         if composer_is_empty {
             if !self.backtrack.primed {
                 self.prime_backtrack();
