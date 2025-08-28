@@ -23,8 +23,10 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 mod app;
+mod app_backtrack;
 mod app_event;
 mod app_event_sender;
+mod backtrack_helpers;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
@@ -43,6 +45,7 @@ mod log_layer;
 mod markdown;
 mod markdown_stream;
 pub mod onboarding;
+mod pager_overlay;
 mod render;
 mod session_log;
 mod shimmer;
