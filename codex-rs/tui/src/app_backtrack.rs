@@ -132,22 +132,19 @@ impl<'a> App<'a> {
     fn prime_backtrack(&mut self) {
         self.backtrack.primed = true;
         self.backtrack.count = 1;
-        if let Some(ref chat_widget) = self.chat_widget {
-            if let Some(session) = chat_widget.session_info() {
-                self.backtrack.base_id = Some(session.session_id);
-            }
-        }
+        // TODO: Implement proper session ID retrieval when available
+        // For now, use a placeholder or skip session management
+        // self.backtrack.base_id = None;
     }
 
     /// Open transcript overlay with backtrack preview (second Esc).
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         if self.overlay.is_none() {
-            if let Some(ref chat_widget) = self.chat_widget {
-                let lines = chat_widget.get_transcript_lines();
-                self.overlay = Some(Overlay::new_transcript(lines));
-                self.backtrack.overlay_preview_active = true;
-                self.step_backtrack_and_highlight(tui);
-            }
+            // Use transcript_lines instead of getting from chat_widget
+            let lines = self.transcript_lines.clone();
+            self.overlay = Some(Overlay::new_transcript(lines));
+            self.backtrack.overlay_preview_active = true;
+            self.step_backtrack_and_highlight(tui);
         }
     }
 
@@ -156,11 +153,8 @@ impl<'a> App<'a> {
         self.backtrack.primed = true;
         self.backtrack.count = 1;
         self.backtrack.overlay_preview_active = true;
-        if let Some(ref chat_widget) = self.chat_widget {
-            if let Some(session) = chat_widget.session_info() {
-                self.backtrack.base_id = Some(session.session_id);
-            }
-        }
+        // TODO: Implement proper session ID retrieval when available
+        // self.backtrack.base_id = None;
         self.step_backtrack_and_highlight(tui);
     }
 

@@ -97,6 +97,11 @@ impl ChatComposer {
         }
     }
 
+    /// Check if the composer is empty
+    pub fn is_empty(&self) -> bool {
+        self.textarea.text().is_empty()
+    }
+
     pub fn desired_height(&self, width: u16) -> u16 {
         self.textarea.desired_height(width - 1)
             + match &self.active_popup {

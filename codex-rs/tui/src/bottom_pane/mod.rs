@@ -482,6 +482,11 @@ impl BottomPane<'_> {
         }
         inputs
     }
+    
+    /// Check if the composer is empty
+    pub fn composer_is_empty(&self) -> bool {
+        self.composer.is_empty()
+    }
 }
 
 impl WidgetRef for &BottomPane<'_> {
