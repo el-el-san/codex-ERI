@@ -1,9 +1,8 @@
 use std::io::Result;
-use std::time::Duration;
 
 use crate::insert_history;
 use crate::tui;
-use crate::tui::TuiEvent;
+use crossterm::event::Event as TuiEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -228,23 +227,23 @@ impl TranscriptOverlay {
                 KeyCode::Down => self.pager.scroll_down(1),
                 KeyCode::Up => self.pager.scroll_up(1),
                 KeyCode::PageDown => {
-                    let page_size = (tui.size().height as usize).saturating_sub(3);
+                    let page_size = (tui.size().unwrap_or_default().height as usize).saturating_sub(3);
                     self.pager.scroll_down(page_size);
                 }
                 KeyCode::PageUp => {
-                    let page_size = (tui.size().height as usize).saturating_sub(3);
+                    let page_size = (tui.size().unwrap_or_default().height as usize).saturating_sub(3);
                     self.pager.scroll_up(page_size);
                 }
                 KeyCode::Home => self.pager.scroll_to_top(),
                 KeyCode::End => {
-                    let viewport_height = (tui.size().height as usize).saturating_sub(2);
+                    let viewport_height = (tui.size().unwrap_or_default().height as usize).saturating_sub(2);
                     self.pager.scroll_to_bottom(viewport_height);
                 }
                 _ => {}
             },
             _ => {}
         }
-        tui.request_redraw();
+        // Note: redraw will be handled by the main event loop
         Ok(())
     }
 
@@ -284,23 +283,23 @@ impl StaticOverlay {
                 KeyCode::Down => self.pager.scroll_down(1),
                 KeyCode::Up => self.pager.scroll_up(1),
                 KeyCode::PageDown => {
-                    let page_size = (tui.size().height as usize).saturating_sub(3);
+                    let page_size = (tui.size().unwrap_or_default().height as usize).saturating_sub(3);
                     self.pager.scroll_down(page_size);
                 }
                 KeyCode::PageUp => {
-                    let page_size = (tui.size().height as usize).saturating_sub(3);
+                    let page_size = (tui.size().unwrap_or_default().height as usize).saturating_sub(3);
                     self.pager.scroll_up(page_size);
                 }
                 KeyCode::Home => self.pager.scroll_to_top(),
                 KeyCode::End => {
-                    let viewport_height = (tui.size().height as usize).saturating_sub(2);
+                    let viewport_height = (tui.size().unwrap_or_default().height as usize).saturating_sub(2);
                     self.pager.scroll_to_bottom(viewport_height);
                 }
                 _ => {}
             },
             _ => {}
         }
-        tui.request_redraw();
+        // Note: redraw will be handled by the main event loop
         Ok(())
     }
 

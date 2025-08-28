@@ -276,6 +276,11 @@ impl<B> Terminal<B>
 where
     B: Backend,
 {
+    /// Get the terminal size
+    pub fn size(&self) -> io::Result<Size> {
+        self.backend.size()
+    }
+
     /// Creates a new [`Terminal`] with the given [`Backend`] and [`TerminalOptions`].
     ///
     /// # Example

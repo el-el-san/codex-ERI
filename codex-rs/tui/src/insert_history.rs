@@ -19,6 +19,25 @@ use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
 
+/// Simple word wrapping function for lines
+pub fn word_wrap_lines(lines: &[Line<'_>], width: u16) -> Vec<Line<'static>> {
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let text_len = text.len();
+        if text_len <= width as usize {
+            wrapped.push(line.clone().into_owned());
+        } else {
+            // Simple wrap at width boundary
+            for chunk in text.as_bytes().chunks(width as usize) {
+                let chunk_str = String::from_utf8_lossy(chunk).into_owned();
+                wrapped.push(Line::from(chunk_str));
+            }
+        }
+    }
+    wrapped
+}
+
 /// Insert `lines` above the viewport.
 pub(crate) fn insert_history_lines(terminal: &mut tui::Tui, lines: Vec<Line>) {
     let mut out = std::io::stdout();

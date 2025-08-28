@@ -49,7 +49,7 @@ enum AppState<'a> {
 }
 
 pub(crate) struct App<'a> {
-    app_event_tx: AppEventSender,
+    pub(crate) app_event_tx: AppEventSender,
     app_event_rx: Receiver<AppEvent>,
     app_state: AppState<'a>,
 
@@ -64,6 +64,15 @@ pub(crate) struct App<'a> {
     pending_history_lines: Vec<Line<'static>>,
 
     enhanced_keys_supported: bool,
+
+    /// Backtrack state
+    pub(crate) backtrack: crate::app_backtrack::BacktrackState,
+
+    /// Current overlay (if any)
+    pub(crate) overlay: Option<crate::pager_overlay::Overlay>,
+
+    /// Reference to chat widget (if in chat state)
+    pub(crate) chat_widget: Option<Box<ChatWidget<'a>>>,
 }
 
 /// Aggregate parameters needed to create a `ChatWidget`, as creation may be
@@ -173,6 +182,9 @@ impl App<'_> {
             file_search,
             pending_redraw,
             enhanced_keys_supported,
+            backtrack: Default::default(),
+            overlay: None,
+            chat_widget: None,
         }
     }
 

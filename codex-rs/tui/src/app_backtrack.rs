@@ -2,9 +2,9 @@ use crate::app::App;
 use crate::backtrack_helpers;
 use crate::pager_overlay::Overlay;
 use crate::tui;
-use crate::tui::TuiEvent;
 use codex_core::protocol::ConversationHistoryResponseEvent;
 use color_eyre::eyre::Result;
+use crossterm::event::Event as TuiEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
@@ -24,7 +24,7 @@ pub(crate) struct BacktrackState {
     pub(crate) pending: Option<(uuid::Uuid, usize, String)>,
 }
 
-impl App {
+impl<'a> App<'a> {
     /// Route overlay events when transcript overlay is active.
     /// - If backtrack preview is active: Esc steps selection; Enter confirms.
     /// - Otherwise: Esc begins preview; all other events forward to overlay.
@@ -188,7 +188,7 @@ impl App {
                 let wrapped_offset = backtrack_helpers::wrapped_offset_before(
                     lines,
                     start,
-                    tui.size().width,
+                    tui.size().unwrap_or_default().width,
                 );
                 transcript.scroll_to_line(wrapped_offset);
             }
@@ -207,9 +207,9 @@ impl App {
     }
 
     /// Close overlay and reset state.
-    fn close_overlay(&mut self, tui: &mut tui::Tui) {
+    fn close_overlay(&mut self, _tui: &mut tui::Tui) {
         self.overlay = None;
-        tui.request_redraw();
+        // Note: redraw will be handled by the main event loop
     }
 
     /// Reset all backtrack state.
