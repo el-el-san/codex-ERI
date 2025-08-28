@@ -23,6 +23,28 @@ use crate::message_history::HistoryEntry;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::plan_tool::UpdatePlanArgs;
 
+/// Payload for function call output
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FunctionCallOutputPayload {
+    pub content: String,
+    pub success: Option<bool>,
+}
+
+/// Conversation history response event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationHistoryResponseEvent {
+    pub conversations: Vec<ConversationInfo>,
+}
+
+/// Information about a conversation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationInfo {
+    pub session_id: Uuid,
+    pub active: bool,
+    pub title: String,
+    pub created_at: String,
+}
+
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Submission {
@@ -121,6 +143,16 @@ pub enum Op {
 
     /// Request a single history entry identified by `log_id` + `offset`.
     GetHistoryEntryRequest { offset: usize, log_id: u64 },
+
+    /// Request conversation history
+    GetHistory,
+
+    /// Fork a conversation from a specific point
+    ForkConversation {
+        base_session_id: Uuid,
+        drop_last_messages: usize,
+        initial_message: String,
+    },
 
     /// Request the agent to summarize the current conversation context.
     /// The agent will use its existing context (either conversation history or previous response id)

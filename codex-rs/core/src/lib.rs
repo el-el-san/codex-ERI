@@ -37,6 +37,7 @@ pub mod git_info;
 mod is_safe_command;
 mod mcp_connection_manager;
 mod mcp_config_manager;
+mod tool_apply_patch;
 pub use mcp_config_manager::McpConfigManager;
 mod mcp_tool_call;
 pub mod message_history;
