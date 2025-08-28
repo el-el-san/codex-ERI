@@ -26,7 +26,15 @@ pub fn word_wrap_lines(lines: &[Line<'_>], width: u16) -> Vec<Line<'static>> {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let text_len = text.len();
         if text_len <= width as usize {
-            wrapped.push(line.clone().into_owned());
+            // Clone the line and convert spans to owned
+            let owned_spans: Vec<Span<'static>> = line.spans.iter()
+                .map(|s| {
+                    let mut span = Span::from(s.content.to_string());
+                    span.style = s.style;
+                    span
+                })
+                .collect();
+            wrapped.push(Line::from(owned_spans));
         } else {
             // Simple wrap at width boundary
             for chunk in text.as_bytes().chunks(width as usize) {

@@ -8,6 +8,7 @@ use crossterm::event::Event as TuiEvent;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use ratatui::text::{Line, Span};
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -77,7 +78,8 @@ impl<'a> App<'a> {
     /// Handle global Esc presses for backtracking when no overlay is present.
     pub(crate) fn handle_backtrack_esc_key(&mut self, tui: &mut tui::Tui) {
         // Only handle backtracking when composer is empty to avoid clobbering edits.
-        if self.chat_widget.composer_is_empty() {
+        let composer_is_empty = self.chat_widget.as_ref().map_or(false, |w| w.composer_is_empty());
+        if composer_is_empty {
             if !self.backtrack.primed {
                 self.prime_backtrack();
             } else if self.overlay.is_none() {
@@ -130,18 +132,22 @@ impl<'a> App<'a> {
     fn prime_backtrack(&mut self) {
         self.backtrack.primed = true;
         self.backtrack.count = 1;
-        if let Some(session) = self.chat_widget.session_info() {
-            self.backtrack.base_id = Some(session.session_id);
+        if let Some(ref chat_widget) = self.chat_widget {
+            if let Some(session) = chat_widget.session_info() {
+                self.backtrack.base_id = Some(session.session_id);
+            }
         }
     }
 
     /// Open transcript overlay with backtrack preview (second Esc).
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         if self.overlay.is_none() {
-            let lines = self.chat_widget.get_transcript_lines();
-            self.overlay = Some(Overlay::new_transcript(lines));
-            self.backtrack.overlay_preview_active = true;
-            self.step_backtrack_and_highlight(tui);
+            if let Some(ref chat_widget) = self.chat_widget {
+                let lines = chat_widget.get_transcript_lines();
+                self.overlay = Some(Overlay::new_transcript(lines));
+                self.backtrack.overlay_preview_active = true;
+                self.step_backtrack_and_highlight(tui);
+            }
         }
     }
 
@@ -150,8 +156,10 @@ impl<'a> App<'a> {
         self.backtrack.primed = true;
         self.backtrack.count = 1;
         self.backtrack.overlay_preview_active = true;
-        if let Some(session) = self.chat_widget.session_info() {
-            self.backtrack.base_id = Some(session.session_id);
+        if let Some(ref chat_widget) = self.chat_widget {
+            if let Some(session) = chat_widget.session_info() {
+                self.backtrack.base_id = Some(session.session_id);
+            }
         }
         self.step_backtrack_and_highlight(tui);
     }
@@ -165,14 +173,18 @@ impl<'a> App<'a> {
 
     /// Confirm the backtrack selection and initiate fork.
     fn overlay_confirm_backtrack(&mut self, tui: &mut tui::Tui) {
-        if let Some(Overlay::Transcript(ref transcript)) = self.overlay {
+        let backtrack_info = if let Some(Overlay::Transcript(ref transcript)) = self.overlay {
             let lines = transcript.lines();
-            if let Some(prefill) = backtrack_helpers::nth_last_user_text(lines, self.backtrack.count) {
-                if let Some(base_id) = self.backtrack.base_id {
-                    self.request_backtrack(prefill, base_id, self.backtrack.count);
-                }
-            }
+            backtrack_helpers::nth_last_user_text(lines, self.backtrack.count)
+                .map(|prefill| (prefill, self.backtrack.base_id, self.backtrack.count))
+        } else {
+            None
+        };
+        
+        if let Some((prefill, Some(base_id), count)) = backtrack_info {
+            self.request_backtrack(prefill, base_id, count);
         }
+        
         self.close_overlay(tui);
         self.reset_backtrack();
     }
@@ -180,13 +192,24 @@ impl<'a> App<'a> {
     /// Update overlay highlight based on current backtrack step.
     fn step_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
         if let Some(Overlay::Transcript(ref mut transcript)) = self.overlay {
-            let lines = transcript.lines();
-            let n = backtrack_helpers::normalize_backtrack_n(lines, self.backtrack.count);
+            // Clone the lines to avoid multiple borrows
+            let lines_clone: Vec<Line<'static>> = transcript.lines().iter().cloned().map(|line| {
+                let owned_spans: Vec<Span<'static>> = line.spans.iter()
+                    .map(|s| {
+                        let mut span = Span::from(s.content.to_string());
+                        span.style = s.style;
+                        span
+                    })
+                    .collect();
+                Line::from(owned_spans)
+            }).collect();
+            
+            let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, self.backtrack.count);
             self.backtrack.count = n;
-            if let Some((start, end)) = backtrack_helpers::highlight_range_for_nth_last_user(lines, n) {
+            if let Some((start, end)) = backtrack_helpers::highlight_range_for_nth_last_user(&lines_clone, n) {
                 transcript.set_highlight_range(Some((start, end)));
                 let wrapped_offset = backtrack_helpers::wrapped_offset_before(
-                    lines,
+                    &lines_clone,
                     start,
                     tui.size().unwrap_or_default().width,
                 );

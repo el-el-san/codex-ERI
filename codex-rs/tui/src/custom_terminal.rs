@@ -586,8 +586,4 @@ where
         self.current = 1 - self.current;
     }
 
-    /// Queries the real size of the backend.
-    pub fn size(&self) -> io::Result<Size> {
-        self.backend.size()
-    }
 }
