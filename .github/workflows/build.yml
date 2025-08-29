@@ -276,8 +276,13 @@ jobs:
             cargo build --target ${{ matrix.target }} --workspace
           )
       
-      - name: Run tests (Unix - non-cross)
-        if: matrix.os != 'windows-latest' && matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'aarch64-linux-android' && matrix.target != 'aarch64-apple-darwin'
+      - name: Run tests (Unix - native only)
+        if: |
+          matrix.os != 'windows-latest' && 
+          matrix.target != 'aarch64-unknown-linux-gnu' && 
+          matrix.target != 'aarch64-linux-android' && 
+          matrix.target != 'aarch64-apple-darwin' &&
+          matrix.target != 'x86_64-apple-darwin'
         working-directory: codex-rs
         run: |
           cargo test --target ${{ matrix.target }} --workspace
@@ -299,6 +304,12 @@ jobs:
         run: |
           echo "Skipping tests for macOS ARM64 cross-compilation target"
           echo "Tests cannot be run on x86_64 host for ARM64 binaries"
+      
+      - name: Skip tests for macOS x86_64 (cross-compilation on Apple Silicon)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          echo "Skipping tests for macOS x86_64 cross-compilation target"
+          echo "Tests cannot be run on ARM64 host for x86_64 binaries without Rosetta"
       
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest' && matrix.target != 'aarch64-pc-windows-msvc'
