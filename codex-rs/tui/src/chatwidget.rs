@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codex_core::codex_wrapper::CodexConversation;
 use codex_core::codex_wrapper::init_codex;
@@ -470,7 +471,7 @@ impl ChatWidget<'_> {
                 );
             }
             EventMsg::Error(ErrorEvent { message }) => {
-                self.add_to_history(HistoryCell::new_error_event(message.clone()));
+                self.add_to_history(crate::history_cell::new_error_event(message.clone()));
                 self.bottom_pane.set_task_running(false);
                 self.bottom_pane.clear_live_ring();
                 self.live_builder = RowBuilder::new(self.live_builder.width());
@@ -485,7 +486,7 @@ impl ChatWidget<'_> {
             }
             EventMsg::PlanUpdate(update) => {
                 // Commit plan updates directly to history (no status-line preview).
-                self.add_to_history(HistoryCell::new_plan_update(update));
+                self.add_to_history(crate::history_cell::new_plan_update(update));
             }
             EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
                 call_id: _,
@@ -520,7 +521,7 @@ impl ChatWidget<'_> {
                 // approval dialog) and avoids surprising the user with a modal
                 // prompt before they have seen *what* is being requested.
                 // ------------------------------------------------------------------
-                self.add_to_history(HistoryCell::new_patch_event(
+                self.add_to_history(crate::history_cell::new_patch_event(
                     PatchEventType::ApprovalRequest,
                     changes,
                 ));
@@ -550,7 +551,7 @@ impl ChatWidget<'_> {
                         cwd: cwd.clone(),
                     },
                 );
-                self.active_history_cell = Some(HistoryCell::new_active_exec_command(command));
+                self.active_history_cell = Some(Box::new(crate::history_cell::new_active_exec_command(command.clone(), vec![], true)));
             }
             EventMsg::ExecCommandOutputDelta(_) => {
                 // TODO
@@ -560,14 +561,14 @@ impl ChatWidget<'_> {
                 auto_approved,
                 changes,
             }) => {
-                self.add_to_history(HistoryCell::new_patch_event(
+                self.add_to_history(crate::history_cell::new_patch_event(
                     PatchEventType::ApplyBegin { auto_approved },
                     changes,
                 ));
             }
             EventMsg::PatchApplyEnd(event) => {
                 if !event.success {
-                    self.add_to_history(HistoryCell::new_patch_apply_failure(event.stderr));
+                    self.add_to_history(crate::history_cell::new_patch_apply_failure(event.stderr));
                 }
             }
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
@@ -580,13 +581,16 @@ impl ChatWidget<'_> {
                 // Compute summary before moving stdout into the history cell.
                 let cmd = self.running_commands.remove(&call_id);
                 self.active_history_cell = None;
-                self.add_to_history(HistoryCell::new_completed_exec_command(
+                self.add_to_history(crate::history_cell::new_completed_exec_command(
                     cmd.map(|cmd| cmd.command).unwrap_or_else(|| vec![call_id]),
-                    CommandOutput {
+                    vec![],  // parsed commands
+                    crate::history_cell::CommandOutput {
                         exit_code,
-                        stdout,
-                        stderr,
+                        stdout: stdout.clone(),
+                        stderr: stderr.clone(),
+                        formatted_output: format!("{}\n{}", stdout, stderr),
                     },
+                    Duration::from_secs(0),  // duration placeholder
                 ));
             }
             EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
@@ -594,7 +598,7 @@ impl ChatWidget<'_> {
                 invocation,
             }) => {
                 self.finalize_active_stream();
-                self.add_to_history(HistoryCell::new_active_mcp_tool_call(invocation));
+                self.add_to_history(crate::history_cell::new_active_mcp_tool_call(invocation));
             }
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
                 call_id: _,
