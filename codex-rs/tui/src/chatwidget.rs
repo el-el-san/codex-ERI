@@ -26,7 +26,6 @@ use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::ParallelExecutionStartEvent;
 use codex_core::protocol::ParallelExecutionProgressEvent;
-use codex_core::protocol::ParallelExecutionEndEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TurnDiffEvent;
