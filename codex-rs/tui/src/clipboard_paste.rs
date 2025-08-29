@@ -85,11 +85,11 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
     ))
 }
 
-/// Capture image from system clipboard, encode to PNG, and return bytes + info.
+/// Android version - clipboard image paste is not supported
 #[cfg(target_os = "android")]
 pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
     Err(PasteImageError::ClipboardUnavailable(
-        "Clipboard not available on Android".to_string(),
+        "Clipboard image paste is not supported on Android".into()
     ))
 }
 
@@ -111,11 +111,11 @@ pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImag
     Ok((path, info))
 }
 
-/// Convenience: write to a temp file and return its path + info.
+/// Android version - clipboard image paste is not supported
 #[cfg(target_os = "android")]
 pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
     Err(PasteImageError::ClipboardUnavailable(
-        "Clipboard not available on Android".to_string(),
+        "Clipboard image paste is not supported on Android".into()
     ))
 }
 

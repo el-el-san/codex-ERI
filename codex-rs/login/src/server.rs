@@ -399,6 +399,79 @@ async fn persist_tokens_async(
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?
 }
 
+/// Opens a URL in the default browser with environment-aware logic
+fn open_url_in_browser(url: &str) -> io::Result<()> {
+    // Check if running in Termux
+    if std::env::var("TERMUX_VERSION").is_ok() {
+        return Command::new("termux-open-url")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| io::Error::other(format!("Failed to open URL in Termux: {}", e)));
+    }
+
+    // Check if running in WSL
+    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
+        // Try cmd.exe first
+        if Command::new("cmd.exe")
+            .args(&["/c", "start", "", url])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        // Fallback to wslview
+        return Command::new("wslview")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| io::Error::other(format!("Failed to open URL in WSL: {}", e)));
+    }
+
+    // Check if running in SSH or container (no display)
+    if std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok() {
+        eprintln!("Running in SSH session. Please open the URL manually: {}", url);
+        return Ok(()); // Don't fail, just warn
+    }
+    
+    if std::env::var("DISPLAY").is_err() && !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
+        eprintln!("No display detected (container/headless). Please open the URL manually: {}", url);
+        return Ok(()); // Don't fail, just warn
+    }
+
+    // OS-specific browser launch
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| io::Error::other(format!("Failed to open URL on macOS: {}", e)));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("cmd")
+            .args(&["/c", "start", "", url])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| io::Error::other(format!("Failed to open URL on Windows: {}", e)));
+    }
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        // Linux and other Unix-like systems
+        let browsers = ["xdg-open", "firefox", "chromium", "chrome", "sensible-browser"];
+        for browser in &browsers {
+            if Command::new(browser).arg(url).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        eprintln!("Failed to open URL. Please open manually: {}", url);
+        Ok(()) // Don't fail, just warn
+    }
+}
+
 fn read_or_default(path: &Path) -> AuthDotJson {
     match super::try_read_auth_json(path) {
         Ok(auth) => auth,
@@ -518,82 +591,4 @@ async fn obtain_api_key(issuer: &str, client_id: &str, id_token: &str) -> io::Re
     }
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
-}
-
-/// Open a URL in the browser, with platform-specific handling
-fn open_url_in_browser(url: &str) -> Result<(), String> {
-    // Check for Termux environment
-    if std::env::var("PREFIX").ok().as_deref() == Some("/data/data/com.termux/files/usr") {
-        // Termux environment detected
-        match Command::new("termux-open-url").arg(url).spawn() {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                eprintln!("Failed to open URL with termux-open-url: {}", e);
-                eprintln!("Please open the following URL manually: {}", url);
-                return Err(format!("Failed to open URL: {}", e));
-            }
-        }
-    }
-    
-    // Check for WSL environment
-    if let Ok(wsl_distro) = std::env::var("WSL_DISTRO_NAME") {
-        // WSL environment detected
-        if let Ok(_) = Command::new("cmd.exe").args(&["/c", "start", url]).spawn() {
-            return Ok(());
-        }
-        if let Ok(_) = Command::new("wslview").arg(url).spawn() {
-            return Ok(());
-        }
-        eprintln!("WSL detected ({}), but unable to open browser", wsl_distro);
-        eprintln!("Please open the following URL manually: {}", url);
-        return Err("Failed to open URL in WSL".to_string());
-    }
-    
-    // Check for SSH connection
-    if std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_CLIENT").is_ok() {
-        eprintln!("SSH session detected. Please open the following URL manually:");
-        eprintln!("{}", url);
-        return Ok(()); // Return Ok to not block the login flow
-    }
-    
-    // Check for container environment
-    if Path::new("/.dockerenv").exists() || std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
-        eprintln!("Container environment detected. Please open the following URL manually:");
-        eprintln!("{}", url);
-        return Ok(()); // Return Ok to not block the login flow
-    }
-    
-    // Try platform-specific methods
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(_) = Command::new("open").arg(url).spawn() {
-            return Ok(());
-        }
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        // Try xdg-open first (most common)
-        if let Ok(_) = Command::new("xdg-open").arg(url).spawn() {
-            return Ok(());
-        }
-        // Try other common Linux browsers
-        for browser in &["firefox", "chromium", "google-chrome", "brave-browser"] {
-            if let Ok(_) = Command::new(browser).arg(url).spawn() {
-                return Ok(());
-            }
-        }
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(_) = Command::new("cmd").args(&["/c", "start", url]).spawn() {
-            return Ok(());
-        }
-    }
-    
-    // If all else fails, just print the URL
-    eprintln!("Unable to open browser automatically. Please open the following URL manually:");
-    eprintln!("{}", url);
-    Ok(()) // Return Ok to not block the login flow
 }
