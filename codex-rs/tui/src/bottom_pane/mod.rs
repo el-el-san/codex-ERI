@@ -85,6 +85,9 @@ pub(crate) struct BottomPane<'a> {
     
     /// Parallel execution status tracking
     pub(crate) parallel_execution_status: Option<ParallelExecutionStatus>,
+    
+    /// Backtrack hint display state
+    esc_backtrack_hint: bool,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -117,6 +120,7 @@ impl BottomPane<'_> {
             enable_input_queueing: true, // Enable by default
             input_buffer: String::new(),
             parallel_execution_status: None,
+            esc_backtrack_hint: false,
         }
     }
 
@@ -481,6 +485,27 @@ impl BottomPane<'_> {
             self.input_buffer.clear();
         }
         inputs
+    }
+
+    /// Show the backtrack hint in the composer
+    pub(crate) fn show_esc_backtrack_hint(&mut self) {
+        self.esc_backtrack_hint = true;
+        self.composer.set_esc_backtrack_hint(true);
+        self.request_redraw();
+    }
+
+    /// Clear the backtrack hint from the composer
+    pub(crate) fn clear_esc_backtrack_hint(&mut self) {
+        if self.esc_backtrack_hint {
+            self.esc_backtrack_hint = false;
+            self.composer.set_esc_backtrack_hint(false);
+            self.request_redraw();
+        }
+    }
+
+    /// Request a redraw of the UI
+    fn request_redraw(&self) {
+        self.app_event_tx.send(AppEvent::RequestRedraw);
     }
 }
 
