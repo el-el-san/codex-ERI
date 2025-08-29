@@ -175,19 +175,12 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_NDK_HOME" >> $GITHUB_ENV
           
-          # Install cargo-ndk for better Android integration
-          cargo install cargo-ndk
-          
           # Set up Rust Android target
           rustup target add aarch64-linux-android
           
-          # Set environment variables for OpenSSL vendored build
+          # Set environment variables for Android cross-compilation
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          
-          # OpenSSL specific environment variables - use vendored for Android
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
           
           # Set CC and AR for proper cross-compilation
           echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
@@ -195,6 +188,15 @@ jobs:
           echo "AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
           echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+          
+          # Install OpenSSL for Android (prebuilt)
+          cd $HOME
+          wget -q https://github.com/KDAB/android_openssl/archive/refs/heads/master.zip
+          unzip -q master.zip
+          echo "OPENSSL_DIR=$HOME/android_openssl-master/ssl_3/android-arm64-v8a" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$HOME/android_openssl-master/ssl_3/include" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$HOME/android_openssl-master/ssl_3/android-arm64-v8a" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
       
       - name: Cache cleanup
         if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
@@ -243,28 +245,15 @@ jobs:
             echo "OPENSSL_STATIC=$OPENSSL_STATIC"
             echo "cargo-ndk version:"
             cargo ndk --version || echo "cargo-ndk not found"
-            # Force vendored OpenSSL for Android
-            export OPENSSL_NO_VENDOR=0
-            export OPENSSL_STATIC=1
           fi
           
           # Ensure the target is installed (redundant but safe)
           rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
           
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
-            if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-              # Use cargo-ndk for Android builds
-              cargo +${{ needs.setup.outputs.rust_version }} ndk --platform 28 -t aarch64-linux-android build --release --workspace
-            else
-              cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} --workspace
-            fi
+            cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} --workspace
           else
-            if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-              # Use cargo-ndk for Android builds
-              cargo +${{ needs.setup.outputs.rust_version }} ndk --platform 28 -t aarch64-linux-android build --workspace
-            else
-              cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} --workspace
-            fi
+            cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} --workspace
           fi
       
       - name: Build (Windows)
