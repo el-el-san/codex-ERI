@@ -1086,8 +1086,4 @@ impl ChatWidget<'_> {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
 
-    /// Add a history cell to the conversation transcript  
-    fn add_to_history(&mut self, cell: impl crate::history_cell::HistoryCell + 'static) {
-        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
-    }
 }
