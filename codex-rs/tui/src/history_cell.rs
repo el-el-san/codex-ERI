@@ -99,6 +99,16 @@ pub(crate) struct TranscriptOnlyHistoryCell {
     lines: Vec<Line<'static>>,
 }
 
+#[derive(Debug)]
+pub(crate) struct ParallelExecutionGroupStart {
+    pub view: crate::text_block::TextBlock,
+}
+
+#[derive(Debug)]
+pub(crate) struct ParallelExecutionGroupEnd {
+    pub view: crate::text_block::TextBlock,
+}
+
 impl HistoryCell for TranscriptOnlyHistoryCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         Vec::new()
@@ -106,6 +116,18 @@ impl HistoryCell for TranscriptOnlyHistoryCell {
 
     fn transcript_lines(&self) -> Vec<Line<'static>> {
         self.lines.clone()
+    }
+}
+
+impl HistoryCell for ParallelExecutionGroupStart {
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        vec![Line::from("⚡ Parallel execution started".cyan().bold())]
+    }
+}
+
+impl HistoryCell for ParallelExecutionGroupEnd {
+    fn display_lines(&self) -> Vec<Line<'static>> {
+        vec![Line::from("✅ Parallel execution completed".green().bold())]
     }
 }
 
@@ -1228,6 +1250,23 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
         Span::raw(")"),
     ];
     Line::from(invocation_spans)
+}
+
+pub(crate) fn new_diff_output(diff_output: String) -> PlainHistoryCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from("📝 Diff Output".yellow().bold()));
+    lines.extend(diff_output.lines().map(|l| Line::from(l.to_string())));
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_prompts_output() -> PlainHistoryCell {
+    PlainHistoryCell { 
+        lines: vec![
+            Line::from(""),
+            Line::from("📋 Available prompts".cyan().bold()),
+        ]
+    }
 }
 
 #[cfg(test)]

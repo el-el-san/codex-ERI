@@ -581,7 +581,7 @@ impl ChatWidget<'_> {
                 // Compute summary before moving stdout into the history cell.
                 let cmd = self.running_commands.remove(&call_id);
                 self.active_history_cell = None;
-                self.add_to_history(crate::history_cell::new_completed_exec_command(
+                self.add_to_history(Box::new(crate::history_cell::new_completed_exec_command(
                     cmd.map(|cmd| cmd.command).unwrap_or_else(|| vec![call_id]),
                     vec![],  // parsed commands
                     crate::history_cell::CommandOutput {
@@ -590,8 +590,9 @@ impl ChatWidget<'_> {
                         stderr: stderr.clone(),
                         formatted_output: format!("{}\n{}", stdout, stderr),
                     },
+                    true,  // include_header
                     Duration::from_secs(0),  // duration placeholder
-                ));
+                )));
             }
             EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
                 call_id: _,
@@ -606,7 +607,7 @@ impl ChatWidget<'_> {
                 invocation,
                 result,
             }) => {
-                self.add_to_history(HistoryCell::new_completed_mcp_tool_call(
+                self.add_to_history(Box::new(crate::history_cell::new_completed_mcp_tool_call(
                     80,
                     invocation,
                     duration,
@@ -615,7 +616,7 @@ impl ChatWidget<'_> {
                         .map(|r| r.is_error.unwrap_or(false))
                         .unwrap_or(false),
                     result,
-                ));
+                )));
             }
             EventMsg::GetHistoryEntryResponse(event) => {
                 let codex_core::protocol::GetHistoryEntryResponseEvent {
@@ -647,7 +648,7 @@ impl ChatWidget<'_> {
                     .map(|s| Line::from(s.to_string()))
                     .collect();
                 let view = TextBlock::new(lines);
-                self.add_to_history(HistoryCell::ParallelExecutionGroupStart { view });
+                self.add_to_history(Box::new(crate::history_cell::ParallelExecutionGroupStart { view }));
                 
                 // Update bottom pane status
                 let status = ParallelExecutionStatus {
@@ -686,7 +687,7 @@ impl ChatWidget<'_> {
                     .map(|s| Line::from(s.to_string()))
                     .collect();
                 let view = TextBlock::new(lines);
-                self.add_to_history(HistoryCell::ParallelExecutionGroupEnd { view });
+                self.add_to_history(Box::new(crate::history_cell::ParallelExecutionGroupEnd { view }));
                 
                 // Clear bottom pane status
                 self.bottom_pane.update_parallel_execution_status(None);
@@ -719,18 +720,18 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn add_diff_output(&mut self, diff_output: String) {
-        self.add_to_history(HistoryCell::new_diff_output(diff_output.clone()));
+        self.add_to_history(Box::new(crate::history_cell::new_diff_output(diff_output.clone())));
     }
 
     pub(crate) fn add_status_output(&mut self) {
-        self.add_to_history(HistoryCell::new_status_output(
+        self.add_to_history(Box::new(crate::history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
-        ));
+        )));
     }
 
     pub(crate) fn add_prompts_output(&mut self) {
-        self.add_to_history(HistoryCell::new_prompts_output());
+        self.add_to_history(Box::new(crate::history_cell::new_prompts_output()));
     }
 
     /// Forward file-search results to the bottom pane.
