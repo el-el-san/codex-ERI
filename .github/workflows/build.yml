@@ -133,17 +133,21 @@ jobs:
       - name: Setup Rust (Unix)
         if: matrix.target != 'aarch64-linux-android' && matrix.os != 'windows-latest'
         run: |
+          echo "Installing Rust toolchain for target: ${{ matrix.target }}"
           rustup toolchain install ${{ needs.setup.outputs.rust_version }}
           rustup default ${{ needs.setup.outputs.rust_version }}
           rustup target add ${{ matrix.target }}
+          rustup show
       
       - name: Setup Rust (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          echo "Installing Rust toolchain for target: ${{ matrix.target }}"
           rustup toolchain install ${{ needs.setup.outputs.rust_version }}
           rustup default ${{ needs.setup.outputs.rust_version }}
           rustup target add ${{ matrix.target }}
+          rustup show
       
       - name: Setup Rust (Android)
         if: matrix.target == 'aarch64-linux-android'
