@@ -84,7 +84,6 @@ CHANGELOG.ignore.md
 
 .mcp.json
 HTTP_MCP_USAGE.md
-test*
 config.toml
 
 # Termux build scripts
