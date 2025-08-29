@@ -172,10 +172,11 @@ impl App<'_> {
         self.overlay = Some(Overlay::new_transcript(lines));
         self.backtrack.overlay_preview_active = true;
         
-        // TODO: Clear hint from composer when clear_esc_backtrack_hint() method is available
-        // Composer is hidden by overlay anyway
+        // Clear the backtrack hint from composer
+        self.chat_widget.clear_esc_backtrack_hint();
         
-        // Step to first user message and highlight
+        // Start at count 1 to highlight the first (most recent) user message
+        self.backtrack.count = 1;
         self.step_backtrack_and_highlight(tui);
     }
 
@@ -190,10 +191,11 @@ impl App<'_> {
     }
 
     /// Step through backtrack selections and update overlay.
-    fn overlay_step_backtrack(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+    fn overlay_step_backtrack(&mut self, tui: &mut tui::Tui, _event: TuiEvent) -> Result<()> {
+        // Increment count and update selection
         self.backtrack.count = self.backtrack.count.saturating_add(1);
         self.step_backtrack_and_highlight(tui);
-        self.overlay_forward_event(tui, event)
+        Ok(())
     }
 
     /// Confirm the backtrack selection and initiate fork.
@@ -218,9 +220,6 @@ impl App<'_> {
     fn step_backtrack_and_highlight(&mut self, tui: &mut tui::Tui) {
         eprintln!("DEBUG: step_backtrack_and_highlight called, current count = {}", self.backtrack.count);
         
-        // Increment the count to move to next older user message
-        let next = self.backtrack.count.saturating_add(1);
-        
         if let Some(Overlay::Transcript(ref mut transcript)) = self.overlay {
             // Clone the lines to avoid multiple borrows
             let lines_clone: Vec<Line<'static>> = transcript.lines().iter().cloned().map(|line| {
@@ -235,8 +234,7 @@ impl App<'_> {
             }).collect();
             
             // Normalize the count based on available user messages
-            let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, next);
-            self.backtrack.count = n;
+            let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, self.backtrack.count);
             
             eprintln!("DEBUG: Normalized count = {}", n);
             
