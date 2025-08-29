@@ -135,7 +135,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.setup.outputs.rust_version }}
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
       
       - name: Setup Rust (Android)
         if: matrix.target == 'aarch64-linux-android'
