@@ -387,6 +387,15 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.update_latest_log(line),
                     AppState::Onboarding { .. } => {}
                 },
+                AppEvent::AddToTranscript(lines) => {
+                    // Add lines to transcript for backtrack functionality
+                    self.transcript_lines.extend(lines);
+                }
+                AppEvent::InsertHistoryCell(cell) => {
+                    // Add history cell's transcript lines to the transcript
+                    let transcript_lines = cell.transcript_lines();
+                    self.transcript_lines.extend(transcript_lines);
+                }
                 AppEvent::DispatchCommand(command) => match command {
                     SlashCommand::New => {
                         // User accepted – switch to chat view.

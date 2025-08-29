@@ -1066,4 +1066,31 @@ impl ChatWidget<'_> {
     pub(crate) fn clear_esc_backtrack_hint(&mut self) {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
+
+    /// Add a history cell to the conversation transcript
+    fn add_to_history(&mut self, cell: impl crate::history_cell::HistoryCell + 'static) {
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
+    }
+
+    /// Submit a text message from the user
+    pub(crate) fn submit_text_message(&mut self, text: String) {
+        use crate::history_cell;
+        use codex_core::protocol::Op;
+        use codex_core::protocol::InputItem;
+        
+        if text.is_empty() {
+            return;
+        }
+
+        // Add user message to history
+        self.add_to_history(history_cell::new_user_prompt(text.clone()));
+
+        // Send message to backend
+        let items = vec![InputItem::Text { text: text.clone() }];
+        self.codex_op_tx
+            .send(Op::UserInput { items })
+            .unwrap_or_else(|e| {
+                tracing::error!("failed to send message: {e}");
+            });
+    }
 }

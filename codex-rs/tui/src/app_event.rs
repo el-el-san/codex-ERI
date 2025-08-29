@@ -4,6 +4,7 @@ use crossterm::event::KeyEvent;
 use ratatui::text::Line;
 
 use crate::app::ChatWidgetArgs;
+use crate::history_cell::HistoryCell;
 use crate::slash_command::SlashCommand;
 use codex_core::custom_command::CustomCommand;
 
@@ -58,6 +59,12 @@ pub(crate) enum AppEvent {
         query: String,
         matches: Vec<FileMatch>,
     },
+
+    /// Add lines to the transcript for backtrack functionality
+    AddToTranscript(Vec<Line<'static>>),
+
+    /// Insert a history cell into the transcript
+    InsertHistoryCell(Box<dyn HistoryCell>),
 
     InsertHistory(Vec<Line<'static>>),
 
