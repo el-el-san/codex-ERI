@@ -1357,4 +1357,5 @@ fn extract_first_bold(s: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[path = "chatwidget/tests.rs"]
 mod tests;
