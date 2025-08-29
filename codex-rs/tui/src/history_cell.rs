@@ -1230,6 +1230,98 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     Line::from(invocation_spans)
 }
 
+pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(""),
+        Line::from(vec![Span::raw("🖐 ").red().bold(), Span::raw(message)]),
+    ];
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
+    let UpdatePlanArgs { explanation, plan } = update;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from("📋 Update plan".bold()));
+    if let Some(exp) = explanation {
+        lines.push(Line::from(exp));
+    }
+    for item in plan {
+        let status_icon = match item.status {
+            StepStatus::Completed => "✅",
+            StepStatus::Pending => "⬜",
+            StepStatus::InProgress => "🔄",
+        };
+        lines.push(Line::from(format!("  {} {}", status_icon, item.description)));
+    }
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_patch_event(
+    file_change: FileChange,
+    policy: SandboxPolicy,
+    diff_output: String,
+) -> PlainHistoryCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("📝 Patch: {}", file_change.path).bold()));
+    lines.extend(diff_output.lines().map(|l| Line::from(l.to_string())));
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_patch_apply_failure(stderr: String) -> PlainHistoryCell {
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(""),
+        Line::from("❌ Patch apply failed".red().bold()),
+        Line::from(stderr),
+    ];
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_completed_exec_command(
+    command: Vec<String>,
+    parsed: Vec<String>,
+    output: CommandOutput,
+    duration: Duration,
+) -> PlainHistoryCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("✅ Command completed in {:?}", duration).green()));
+    if output.exit_code != 0 {
+        lines.push(Line::from(format!("Exit code: {}", output.exit_code).red()));
+    }
+    if !output.stdout.is_empty() {
+        lines.extend(output.stdout.lines().map(|l| Line::from(l.to_string())));
+    }
+    if !output.stderr.is_empty() {
+        lines.extend(output.stderr.lines().map(|l| Line::from(l.to_string()).red()));
+    }
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_active_mcp_tool_call(invocation: McpInvocation) -> PlainHistoryCell {
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(""),
+        Line::from(format!("🔧 MCP Tool: {}", invocation.tool_name).cyan()),
+    ];
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_active_exec_command(
+    command: Vec<String>,
+    parsed: Vec<String>,
+    include_header: bool,
+) -> ExecCell {
+    ExecCell {
+        command,
+        parsed,
+        output: None,
+        start_time: Some(Instant::now()),
+        duration: None,
+        include_header,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
