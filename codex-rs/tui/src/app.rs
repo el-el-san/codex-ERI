@@ -466,6 +466,18 @@ impl App<'_> {
                             widget.add_prompts_output();
                         }
                     }
+                    SlashCommand::Model => {
+                        // TODO: Implement model selection
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.add_text_to_history("Model selection not yet implemented".to_string());
+                        }
+                    }
+                    SlashCommand::Approvals => {
+                        // TODO: Implement approvals configuration
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.add_text_to_history("Approvals configuration not yet implemented".to_string());
+                        }
+                    }
                     #[cfg(debug_assertions)]
                     SlashCommand::TestApproval => {
                         use std::collections::HashMap;
