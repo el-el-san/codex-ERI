@@ -230,7 +230,7 @@ jobs:
         run: |
           # Debug: Show installed targets
           echo "Installed Rust targets:"
-          rustup target list --installed
+          rustup +${{ needs.setup.outputs.rust_version }} target list --installed
           echo "Current toolchain:"
           rustup show
           
@@ -246,21 +246,21 @@ jobs:
           fi
           
           # Ensure the target is installed (redundant but safe)
-          rustup target add ${{ matrix.target }} || true
+          rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
           
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
             if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
               # Use cargo-ndk for Android builds
-              cargo ndk --platform 28 -t aarch64-linux-android build --release --workspace
+              cargo +${{ needs.setup.outputs.rust_version }} ndk --platform 28 -t aarch64-linux-android build --release --workspace
             else
-              cargo build --release --target ${{ matrix.target }} --workspace
+              cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} --workspace
             fi
           else
             if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
               # Use cargo-ndk for Android builds
-              cargo ndk --platform 28 -t aarch64-linux-android build --workspace
+              cargo +${{ needs.setup.outputs.rust_version }} ndk --platform 28 -t aarch64-linux-android build --workspace
             else
-              cargo build --target ${{ matrix.target }} --workspace
+              cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} --workspace
             fi
           fi
       
