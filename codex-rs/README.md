@@ -43,6 +43,12 @@ To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the p
 
 Typing `@` triggers a fuzzy-filename search over the workspace root. Use up/down to select among the results and Tab or Enter to replace the `@` with the selected path. You can use Esc to cancel the search.
 
+### Esc–Esc to edit a previous message
+
+When the chat composer is empty, press Esc to prime “backtrack” mode. Press Esc again to open a transcript preview highlighting the last user message; press Esc repeatedly to step to older user messages. Press Enter to confirm and Codex will fork the conversation from that point, trim the visible transcript accordingly, and pre‑fill the composer with the selected user message so you can edit and resubmit it.
+
+In the transcript preview, the footer shows an `Esc edit prev` hint while editing is active.
+
 ### `--cd`/`-C` flag
 
 Sometimes it is not convenient to `cd` to the directory you want Codex to use as the "working root" before running Codex. Fortunately, `codex` supports a `--cd` option so you can specify whatever folder you want. You can confirm that Codex is honoring `--cd` by double-checking the **workdir** it reports in the TUI at the start of a new session.
@@ -85,29 +91,6 @@ codex --sandbox danger-full-access
 ```
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
-
-## 並列実行機能
-
-Codexは、モデルがサポートする場合、複数のツール呼び出しを並列で実行できます。
-
-### サポートモデル
-- GPT-5: 並列実行有効
-- GPT-4o: 並列実行有効
-- その他: シリアル実行（従来通り）
-
-### 並列化可能な操作
-- ファイル読み取り（Read）
-- ファイル検索（Grep, Glob）
-- MCPツールの読み取り操作
-- 独立したカスタムコマンド
-
-### 並列化されない操作
-- シェルコマンド実行
-- ファイル書き込み
-- パッチ適用
-- 依存関係のある操作
-
-この機能により、複数のファイル読み取りや検索操作が同時に実行され、パフォーマンスが向上します。
 
 ## Code Organization
 

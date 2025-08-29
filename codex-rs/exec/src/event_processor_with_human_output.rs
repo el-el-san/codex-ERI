@@ -3,7 +3,6 @@ use codex_common::elapsed::format_elapsed;
 use codex_core::config::Config;
 use codex_core::plan_tool::UpdatePlanArgs;
 use codex_core::protocol::AgentMessageDeltaEvent;
-use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
@@ -21,8 +20,11 @@ use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::SessionConfiguredEvent;
+use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
+use codex_core::protocol::TurnAbortReason;
 use codex_core::protocol::TurnDiffEvent;
+use codex_core::protocol::WebSearchBeginEvent;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
 use shlex::try_join;
@@ -174,7 +176,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
                 ts_println!(self, "{}", message.style(self.dimmed));
             }
-            EventMsg::TaskStarted => {
+            EventMsg::StreamError(StreamErrorEvent { message }) => {
+                ts_println!(self, "{}", message.style(self.dimmed));
+            }
+            EventMsg::TaskStarted(_) => {
                 // Ignore.
             }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
@@ -192,7 +197,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     self.answer_started = true;
                 }
                 print!("{delta}");
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used)]
                 std::io::stdout().flush().expect("could not flush stdout");
             }
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
@@ -208,7 +213,15 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     self.reasoning_started = true;
                 }
                 print!("{delta}");
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used)]
+                std::io::stdout().flush().expect("could not flush stdout");
+            }
+            EventMsg::AgentReasoningSectionBreak(_) => {
+                if !self.show_agent_reasoning {
+                    return CodexStatus::Running;
+                }
+                println!();
+                #[expect(clippy::expect_used)]
                 std::io::stdout().flush().expect("could not flush stdout");
             }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
@@ -217,7 +230,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 if !self.raw_reasoning_started {
                     print!("{text}");
-                    #[allow(clippy::expect_used)]
+                    #[expect(clippy::expect_used)]
                     std::io::stdout().flush().expect("could not flush stdout");
                 } else {
                     println!();
@@ -234,7 +247,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     self.raw_reasoning_started = true;
                 }
                 print!("{delta}");
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used)]
                 std::io::stdout().flush().expect("could not flush stdout");
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {
@@ -256,6 +269,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 call_id,
                 command,
                 cwd,
+                parsed_cmd: _,
             }) => {
                 self.call_id_to_command.insert(
                     call_id.clone(),
@@ -274,10 +288,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::ExecCommandOutputDelta(_) => {}
             EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                 call_id,
-                stdout,
-                stderr,
+                aggregated_output,
                 duration,
                 exit_code,
+                ..
             }) => {
                 let exec_command = self.call_id_to_command.remove(&call_id);
                 let (duration, call) = if let Some(ExecCommandBegin { command, .. }) = exec_command
@@ -290,8 +304,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     ("".to_string(), format!("exec('{call_id}')"))
                 };
 
-                let output = if exit_code == 0 { stdout } else { stderr };
-                let truncated_output = output
+                let truncated_output = aggregated_output
                     .lines()
                     .take(MAX_OUTPUT_LINES_FOR_EXEC_TOOL_CALL)
                     .collect::<Vec<_>>()
@@ -348,6 +361,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                         println!("{}", line.style(self.dimmed));
                     }
                 }
+            }
+            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
+                ts_println!(self, "🌐 {query}");
             }
             EventMsg::PatchApplyBegin(PatchApplyBeginEvent {
                 call_id,
@@ -514,33 +530,19 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::GetHistoryEntryResponse(_) => {
                 // Currently ignored in exec output.
             }
-            EventMsg::ParallelExecutionStart(event) => {
-                ts_println!(self, "[並列実行開始] {} ツール", event.total_count);
+            EventMsg::McpListToolsResponse(_) => {
+                // Currently ignored in exec output.
             }
-            EventMsg::ParallelExecutionProgress(event) => {
-                ts_println!(self, "[並列実行進捗] {}/{} 完了", event.completed, event.total);
-            }
-            EventMsg::ParallelExecutionEnd(event) => {
-                ts_println!(self, "[並列実行終了] 成功: {}, 失敗: {}, 時間: {}ms", 
-                    event.successful, event.failed, event.duration_ms);
-            }
-            EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
-            EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id: _, query }) => {
-                if let Some(q) = query {
-                    ts_println!(
-                        self,
-                        "{} {}",
-                        "web-search".style(self.cyan).style(self.bold),
-                        q
-                    );
-                } else {
-                    ts_println!(
-                        self,
-                        "{}",
-                        "web-search".style(self.cyan).style(self.bold)
-                    );
+            EventMsg::TurnAborted(abort_reason) => match abort_reason.reason {
+                TurnAbortReason::Interrupted => {
+                    ts_println!(self, "task interrupted");
                 }
-            }
+                TurnAbortReason::Replaced => {
+                    ts_println!(self, "task aborted: replaced by a new task");
+                }
+            },
+            EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
+            EventMsg::ConversationHistory(_) => {}
         }
         CodexStatus::Running
     }

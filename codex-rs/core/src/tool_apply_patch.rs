@@ -82,11 +82,11 @@ Each operation starts with one of three headers:
 *** Update File: <path> - patch an existing file in place (optionally with a rename).
 
 May be immediately followed by *** Move to: <new path> if you want to rename the file.
-Then one or more "hunks", each introduced by @@ (optionally followed by a hunk header).
+Then one or more “hunks”, each introduced by @@ (optionally followed by a hunk header).
 Within a hunk each line starts with:
 
 For instructions on [context_before] and [context_after]:
-- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change's [context_after] lines in the second change's [context_before] lines.
+- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change’s [context_after] lines in the second change’s [context_before] lines.
 - If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. For instance, we might have:
 @@ class BaseClass
 [3 lines of pre-context]
@@ -103,44 +103,38 @@ For instructions on [context_before] and [context_after]:
 + [new_code]
 [3 lines of post-context]
 
-In general, 3 lines of context should be enough, but you can use 5 or even 10 lines of context around your changes to ensure you are matching the correct snippet of code.
+The full grammar definition is below:
+Patch := Begin { FileOp } End
+Begin := "*** Begin Patch" NEWLINE
+End := "*** End Patch" NEWLINE
+FileOp := AddFile | DeleteFile | UpdateFile
+AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
+DeleteFile := "*** Delete File: " path NEWLINE
+UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
+MoveTo := "*** Move to: " newPath NEWLINE
+Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
+HunkLine := (" " | "-" | "+") text NEWLINE
 
-+ adds a line
-- removes a line
-(space) contextual line (shown for reference, not changed)
+A full patch can combine several operations:
 
-This syntax is simpler than standard Unified Diff format. You don't need line numbers, @@ markers, or other metadata. Just focus on clearly showing what changes where.
-
-Here's a complete example showing multiple file operations:
 *** Begin Patch
-*** Add File: hello.py
-+def hello_world():
-+    print("Hello, World!")
-+
-+if __name__ == "__main__":
-+    hello_world()
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
 
-*** Update File: main.py
-@@ def main
-     print("Starting application")
--    print("Loading modules...")
-+    print("Initializing components...")
-+    hello_world()  # Call our new function
-     print("Ready")
+It is important to remember:
 
-*** Delete File: old_module.py
-
-*** Update File: config.json
-*** Move to: settings.json
-@@ 
- {
-     "app_name": "MyApp",
--    "version": "1.0.0",
-+    "version": "2.0.0",
-     "debug": true
- }
-*** End Patch"#
-            .to_string(),
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with `+` even when creating a new file
+- File references can only be relative, NEVER ABSOLUTE.
+"#
+        .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

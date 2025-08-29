@@ -17,7 +17,7 @@ Both the `--config` flag and the `config.toml` file support the following option
 The model that Codex should use.
 
 ```toml
-model = "o3"  # overrides the default of "codex-mini-latest"
+model = "o3"  # overrides the default of "gpt-5"
 ```
 
 ## model_providers
@@ -142,10 +142,14 @@ Determines when the user should be prompted to approve whether Codex can execute
 # Codex has hardcoded logic that defines a set of "trusted" commands.
 # Setting the approval_policy to `untrusted` means that Codex will prompt the
 # user before running a command not in the "trusted" set.
+#
+# See https://github.com/openai/codex/issues/1260 for the plan to enable
+# end-users to define their own trusted commands.
 approval_policy = "untrusted"
 ```
 
 If you want to be notified whenever a command fails, use "on-failure":
+
 ```toml
 # If the command fails when run in the sandbox, Codex asks for permission to
 # retry the command outside the sandbox.
@@ -153,42 +157,19 @@ approval_policy = "on-failure"
 ```
 
 If you want the model to run until it decides that it needs to ask you for escalated permissions, use "on-request":
+
 ```toml
 # The model decides when to escalate
 approval_policy = "on-request"
 ```
 
 Alternatively, you can have the model run until it is done, and never ask to run a command with escalated permissions:
+
 ```toml
 # User is never prompted: if the command fails, Codex will automatically try
 # something out. Note the `exec` subcommand always uses this mode.
 approval_policy = "never"
 ```
-
-## trusted_commands
-
-Defines a list of user-specific commands that should be automatically approved when `approval_policy` is set to `"untrusted"`. This allows you to extend the built-in list of safe commands with your own commonly used commands.
-
-```toml
-# Define commands that should be auto-approved (exact match required)
-trusted_commands = [
-    ["npm", "install"],
-    ["npm", "run", "build"],
-    ["yarn", "install"],
-    ["yarn", "build"],
-    ["make", "clean"],
-    ["docker", "ps", "-a"],
-    ["cargo", "build"],
-    ["cargo", "test"],
-    ["python", "-m", "pytest"],
-]
-```
-
-Note that each command must match exactly, including all arguments. For example, `["npm", "install"]` will auto-approve `npm install` but not `npm install express`. This ensures security by only approving precisely the commands you've explicitly trusted.
-
-When using `approval_policy = "untrusted"`, commands are auto-approved if they are either:
-1. In the built-in list of safe commands (like `ls`, `cat`, `grep`, etc.)
-2. In your `trusted_commands` list
 
 ## profiles
 
@@ -235,21 +216,18 @@ Users can specify config values at multiple levels. Order of precedence is as fo
 1. custom command-line argument, e.g., `--model o3`
 2. as part of a profile, where the `--profile` is specified via a CLI (or in the config file itself)
 3. as an entry in `config.toml`, e.g., `model = "o3"`
-4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `codex-mini-latest`)
+4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `gpt-5`)
 
 ## model_reasoning_effort
 
-If the model name starts with `"o"` (as in `"o3"` or `"o4-mini"`) or `"codex"`, reasoning is enabled by default when using the Responses API. As explained in the [OpenAI Platform documentation](https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning), this can be set to:
+If the selected model is known to support reasoning (for example: `o3`, `o4-mini`, `codex-*`, `gpt-5`), reasoning is enabled by default when using the Responses API. As explained in the [OpenAI Platform documentation](https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning), this can be set to:
 
+- `"minimal"`
 - `"low"`
 - `"medium"` (default)
 - `"high"`
 
-To disable reasoning, set `model_reasoning_effort` to `"none"` in your config:
-
-```toml
-model_reasoning_effort = "none"  # disable reasoning
-```
+Note: to minimize reasoning, choose `"minimal"`.
 
 ## model_reasoning_summary
 
@@ -264,6 +242,25 @@ To disable reasoning summaries, set `model_reasoning_summary` to `"none"` in you
 ```toml
 model_reasoning_summary = "none"  # disable reasoning summaries
 ```
+
+## model_verbosity
+
+Controls output length/detail on GPT‑5 family models when using the Responses API. Supported values:
+
+- `"low"`
+- `"medium"` (default when omitted)
+- `"high"`
+
+When set, Codex includes a `text` object in the request payload with the configured verbosity, for example: `"text": { "verbosity": "low" }`.
+
+Example:
+
+```toml
+model = "gpt-5"
+model_verbosity = "low"
+```
+
+Note: This applies only to providers using the Responses API. Chat Completions providers are unaffected.
 
 ## model_supports_reasoning_summaries
 
@@ -303,6 +300,9 @@ sandbox_mode = "workspace-write"
 exclude_tmpdir_env_var = false
 exclude_slash_tmp = false
 
+# Optional list of _additional_ writable roots beyond $TMPDIR and /tmp.
+writable_roots = ["/Users/YOU/.pyenv/shims"]
+
 # Allow the command being run inside the sandbox to make outbound network
 # requests. Disabled by default.
 network_access = false
@@ -318,6 +318,16 @@ sandbox_mode = "danger-full-access"
 This is reasonable to use if Codex is running in an environment that provides its own sandboxing (such as a Docker container) such that further sandboxing is unnecessary.
 
 Though using this option may also be necessary if you try to use Codex in environments where its native sandboxing mechanisms are unsupported, such as older Linux kernels or on Windows.
+
+## Approval presets
+
+Codex provides three main Approval Presets:
+
+- Read Only: Codex can read files and answer questions; edits, running commands, and network access require approval.
+- Auto: Codex can read files, make edits, and run commands in the workspace without approval; asks for approval outside the workspace or for network access.
+- Full Access: Full disk and network access without prompts; extremely risky.
+
+You can further customize how Codex runs at the command line using the `--ask-for-approval` and `--sandbox` options.
 
 ## mcp_servers
 
@@ -520,10 +530,12 @@ hide_agent_reasoning = true   # defaults to false
 Surfaces the model’s raw chain-of-thought ("raw reasoning content") when available.
 
 Notes:
+
 - Only takes effect if the selected model/provider actually emits raw reasoning content. Many models do not. When unsupported, this option has no visible effect.
 - Raw reasoning may include intermediate thoughts or sensitive context. Enable only if acceptable for your workflow.
 
 Example:
+
 ```toml
 show_raw_agent_reasoning = true  # defaults to false
 ```

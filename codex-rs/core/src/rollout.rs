@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::fs::{self};
 use std::io::Error as IoError;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,8 +22,7 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::git_info::GitInfo;
 use crate::git_info::collect_git_info;
-use crate::models::ResponseItem;
-use crate::protocol::InputItem;
+use codex_protocol::models::ResponseItem;
 
 const SESSIONS_SUBDIR: &str = "sessions";
 
@@ -133,6 +132,8 @@ impl RolloutRecorder {
                 | ResponseItem::LocalShellCall { .. }
                 | ResponseItem::FunctionCall { .. }
                 | ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCall { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
                 | ResponseItem::Reasoning { .. } => filtered.push(item.clone()),
                 ResponseItem::Other => {
                     // These should never be serialized.
@@ -195,6 +196,8 @@ impl RolloutRecorder {
                     | ResponseItem::LocalShellCall { .. }
                     | ResponseItem::FunctionCall { .. }
                     | ResponseItem::FunctionCallOutput { .. }
+                    | ResponseItem::CustomToolCall { .. }
+                    | ResponseItem::CustomToolCallOutput { .. }
                     | ResponseItem::Reasoning { .. } => items.push(item),
                     ResponseItem::Other => {}
                 },
@@ -318,6 +321,8 @@ async fn rollout_writer(
                         | ResponseItem::LocalShellCall { .. }
                         | ResponseItem::FunctionCall { .. }
                         | ResponseItem::FunctionCallOutput { .. }
+                        | ResponseItem::CustomToolCall { .. }
+                        | ResponseItem::CustomToolCallOutput { .. }
                         | ResponseItem::Reasoning { .. } => {
                             writer.write_line(&item).await?;
                         }
@@ -360,101 +365,4 @@ impl JsonlWriter {
         self.file.flush().await?;
         Ok(())
     }
-}
-
-/// Find the most recent rollout file in the sessions directory
-pub async fn find_latest_rollout(config: &Config) -> std::io::Result<Option<PathBuf>> {
-    let mut sessions_dir = config.codex_home.clone();
-    sessions_dir.push(SESSIONS_SUBDIR);
-    
-    if !sessions_dir.exists() {
-        return Ok(None);
-    }
-    
-    // Find all rollout files recursively
-    let mut latest_file: Option<(PathBuf, std::time::SystemTime)> = None;
-    
-    fn scan_dir(dir: &Path, latest: &mut Option<(PathBuf, std::time::SystemTime)>) -> std::io::Result<()> {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    scan_dir(&path, latest)?;
-                } else if let Some(name) = path.file_name() {
-                    if let Some(name_str) = name.to_str() {
-                        if name_str.starts_with("rollout-") && name_str.ends_with(".jsonl") {
-                            if let Ok(metadata) = entry.metadata() {
-                                if let Ok(modified) = metadata.modified() {
-                                    match latest {
-                                        None => {
-                                            *latest = Some((path, modified));
-                                        }
-                                        Some((_, last_time)) if modified > *last_time => {
-                                            *latest = Some((path, modified));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-    
-    scan_dir(&sessions_dir, &mut latest_file)?;
-    Ok(latest_file.map(|(path, _)| path))
-}
-
-/// Load a rollout file and extract conversation history
-pub async fn load_rollout_conversation(path: &Path) -> std::io::Result<Vec<InputItem>> {
-    use tokio::io::AsyncBufReadExt;
-    use tokio::io::BufReader;
-    
-    let file = tokio::fs::File::open(path).await?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
-    
-    let mut conversation = Vec::new();
-    
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        
-        // Parse each JSON line
-        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-            // Check role field for messages
-            if let Some(role) = value.get("role") {
-                let role_str = role.as_str().unwrap_or("");
-                
-                // Extract message content based on role
-                if role_str == "user" {
-                    if let Some(content_array) = value.get("content").and_then(|c| c.as_array()) {
-                        for item in content_array {
-                            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                conversation.push(InputItem::Text { 
-                                    text: format!("User: {}", text) 
-                                });
-                            }
-                        }
-                    }
-                } else if role_str == "assistant" {
-                    if let Some(content_array) = value.get("content").and_then(|c| c.as_array()) {
-                        for item in content_array {
-                            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                conversation.push(InputItem::Text { 
-                                    text: format!("Assistant: {}", text) 
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    Ok(conversation)
 }

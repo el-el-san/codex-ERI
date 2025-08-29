@@ -17,6 +17,8 @@ use super::CancellationEvent;
 use super::bottom_pane_view::BottomPaneView;
 use super::popup_consts::MAX_POPUP_ROWS;
 use super::scroll_state::ScrollState;
+use super::selection_popup_common::GenericDisplayRow;
+use super::selection_popup_common::render_rows;
 
 /// One selectable item in the generic selection list.
 pub(crate) type SelectionAction = Box<dyn Fn(&AppEventSender) + Send + Sync>;
@@ -43,6 +45,10 @@ impl ListSelectionView {
         Span::styled("▌ ", Style::default().add_modifier(Modifier::DIM))
     }
 
+    fn render_dim_prefix_line(area: Rect, buf: &mut Buffer) {
+        let para = Paragraph::new(Line::from(Self::dim_prefix_span()));
+        para.render(area, buf);
+    }
     pub fn new(
         title: String,
         subtitle: Option<String>,
@@ -99,8 +105,8 @@ impl ListSelectionView {
     }
 }
 
-impl<'a> BottomPaneView<'a> for ListSelectionView {
-    fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
+impl BottomPaneView for ListSelectionView {
+    fn handle_key_event(&mut self, _pane: &mut BottomPane, key_event: KeyEvent) {
         match key_event {
             KeyEvent {
                 code: KeyCode::Up, ..
@@ -125,7 +131,7 @@ impl<'a> BottomPaneView<'a> for ListSelectionView {
         self.complete
     }
 
-    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
+    fn on_ctrl_c(&mut self, _pane: &mut BottomPane) -> CancellationEvent {
         self.complete = true;
         CancellationEvent::Handled
     }
@@ -166,7 +172,79 @@ impl<'a> BottomPaneView<'a> for ListSelectionView {
         let title_para = Paragraph::new(Line::from(title_spans));
         title_para.render(title_area, buf);
 
-        // Additional rendering logic would go here for subtitle and items
-        // Simplified for initial implementation
+        let mut next_y = area.y.saturating_add(1);
+        if let Some(sub) = &self.subtitle {
+            let subtitle_area = Rect {
+                x: area.x,
+                y: next_y,
+                width: area.width,
+                height: 1,
+            };
+            let subtitle_spans: Vec<Span<'static>> = vec![
+                Self::dim_prefix_span(),
+                Span::styled(sub.clone(), Style::default().add_modifier(Modifier::DIM)),
+            ];
+            let subtitle_para = Paragraph::new(Line::from(subtitle_spans));
+            subtitle_para.render(subtitle_area, buf);
+            // Render the extra spacer line with the dimmed prefix to align with title/subtitle
+            let spacer_area = Rect {
+                x: area.x,
+                y: next_y.saturating_add(1),
+                width: area.width,
+                height: 1,
+            };
+            Self::render_dim_prefix_line(spacer_area, buf);
+            next_y = next_y.saturating_add(2);
+        }
+
+        let footer_reserved = if self.footer_hint.is_some() { 2 } else { 0 };
+        let rows_area = Rect {
+            x: area.x,
+            y: next_y,
+            width: area.width,
+            height: area
+                .height
+                .saturating_sub(next_y.saturating_sub(area.y))
+                .saturating_sub(footer_reserved),
+        };
+
+        let rows: Vec<GenericDisplayRow> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                let is_selected = self.state.selected_idx == Some(i);
+                let prefix = if is_selected { '>' } else { ' ' };
+                let name_with_marker = if it.is_current {
+                    format!("{} (current)", it.name)
+                } else {
+                    it.name.clone()
+                };
+                let display_name = format!("{} {}. {}", prefix, i + 1, name_with_marker);
+                GenericDisplayRow {
+                    name: display_name,
+                    match_indices: None,
+                    is_current: it.is_current,
+                    description: it.description.clone(),
+                }
+            })
+            .collect();
+        if rows_area.height > 0 {
+            render_rows(rows_area, buf, &rows, &self.state, MAX_POPUP_ROWS, true);
+        }
+
+        if let Some(hint) = &self.footer_hint {
+            let footer_area = Rect {
+                x: area.x,
+                y: area.y + area.height - 1,
+                width: area.width,
+                height: 1,
+            };
+            let footer_para = Paragraph::new(Line::from(Span::styled(
+                hint.clone(),
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+            footer_para.render(footer_area, buf);
+        }
     }
 }

@@ -1,36 +1,25 @@
 use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU32;
 
+use portable_pty::CommandBuilder;
+use portable_pty::PtySize;
+use portable_pty::native_pty_system;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tokio::time::Instant;
-
-#[cfg(not(target_os = "android"))]
-use std::io::ErrorKind;
-#[cfg(not(target_os = "android"))]
-use std::io::Read;
-#[cfg(not(target_os = "android"))]
-use std::sync::Arc;
-#[cfg(not(target_os = "android"))]
-use std::sync::Mutex as StdMutex;
-#[cfg(not(target_os = "android"))]
-use portable_pty::CommandBuilder;
-#[cfg(not(target_os = "android"))]
-use portable_pty::PtySize;
-#[cfg(not(target_os = "android"))]
-use portable_pty::native_pty_system;
-#[cfg(not(target_os = "android"))]
-use tokio::sync::mpsc;
-#[cfg(not(target_os = "android"))]
-use tokio::sync::oneshot;
-#[cfg(not(target_os = "android"))]
 use tokio::time::timeout;
 
 use crate::exec_command::exec_command_params::ExecCommandParams;
 use crate::exec_command::exec_command_params::WriteStdinParams;
 use crate::exec_command::exec_command_session::ExecCommandSession;
 use crate::exec_command::session_id::SessionId;
-use crate::protocol::FunctionCallOutputPayload;
+use codex_protocol::models::FunctionCallOutputPayload;
 
 #[derive(Debug, Default)]
 pub struct SessionManager {
@@ -96,13 +85,6 @@ impl SessionManager {
         &self,
         params: ExecCommandParams,
     ) -> Result<ExecCommandOutput, String> {
-        #[cfg(target_os = "android")]
-        {
-            return Err("exec_command sessions not supported on Android".to_string());
-        }
-        
-        #[cfg(not(target_os = "android"))]
-        {
         // Allocate a session id.
         let session_id = SessionId(
             self.next_session_id
@@ -191,7 +173,6 @@ impl SessionManager {
             original_token_count,
             output,
         })
-        }
     }
 
     /// Write characters to a session's stdin and collect combined output for up to `yield_time_ms`.
@@ -199,13 +180,6 @@ impl SessionManager {
         &self,
         params: WriteStdinParams,
     ) -> Result<ExecCommandOutput, String> {
-        #[cfg(target_os = "android")]
-        {
-            return Err("write_stdin not supported on Android".to_string());
-        }
-        
-        #[cfg(not(target_os = "android"))]
-        {
         let WriteStdinParams {
             session_id,
             chars,
@@ -263,12 +237,10 @@ impl SessionManager {
             original_token_count,
             output,
         })
-        }
     }
 }
 
 /// Spawn PTY and child process per spawn_exec_command_session logic.
-#[cfg(not(target_os = "android"))]
 async fn create_exec_command_session(
     params: ExecCommandParams,
 ) -> anyhow::Result<(ExecCommandSession, oneshot::Receiver<i32>)> {
@@ -488,4 +460,215 @@ fn truncate_middle(s: &str, max_bytes: usize) -> (String, Option<u64>) {
     out.push('\n');
     out.push_str(&s[suffix_start..]);
     (out, Some(est_tokens))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec_command::session_id::SessionId;
+
+    /// Test that verifies that [`SessionManager::handle_exec_command_request()`]
+    /// and [`SessionManager::handle_write_stdin_request()`] work as expected
+    /// in the presence of a process that never terminates (but produces
+    /// output continuously).
+    #[cfg(unix)]
+    #[allow(clippy::print_stderr)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_manager_streams_and_truncates_from_now() {
+        use crate::exec_command::exec_command_params::ExecCommandParams;
+        use crate::exec_command::exec_command_params::WriteStdinParams;
+        use tokio::time::sleep;
+
+        let session_manager = SessionManager::default();
+        // Long-running loop that prints an increasing counter every ~100ms.
+        // Use Python for a portable, reliable sleep across shells/PTYs.
+        let cmd = r#"python3 - <<'PY'
+import sys, time
+count = 0
+while True:
+    print(count)
+    sys.stdout.flush()
+    count += 100
+    time.sleep(0.1)
+PY"#
+        .to_string();
+
+        // Start the session and collect ~3s of output.
+        let params = ExecCommandParams {
+            cmd,
+            yield_time_ms: 3_000,
+            max_output_tokens: 1_000, // large enough to avoid truncation here
+            shell: "/bin/bash".to_string(),
+            login: false,
+        };
+        let initial_output = match session_manager
+            .handle_exec_command_request(params.clone())
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                // PTY may be restricted in some sandboxes; skip in that case.
+                if e.contains("openpty") || e.contains("Operation not permitted") {
+                    eprintln!("skipping test due to restricted PTY: {e}");
+                    return;
+                }
+                panic!("exec request failed unexpectedly: {e}");
+            }
+        };
+        eprintln!("initial output: {initial_output:?}");
+
+        // Should be ongoing (we launched a never-ending loop).
+        let session_id = match initial_output.exit_status {
+            ExitStatus::Ongoing(id) => id,
+            _ => panic!("expected ongoing session"),
+        };
+
+        // Parse the numeric lines and get the max observed value in the first window.
+        let first_nums = extract_monotonic_numbers(&initial_output.output);
+        assert!(
+            !first_nums.is_empty(),
+            "expected some output from first window"
+        );
+        let first_max = *first_nums.iter().max().unwrap();
+
+        // Wait ~4s so counters progress while we're not reading.
+        sleep(Duration::from_millis(4_000)).await;
+
+        // Now read ~3s of output "from now" only.
+        // Use a small token cap so truncation occurs and we test middle truncation.
+        let write_params = WriteStdinParams {
+            session_id,
+            chars: String::new(),
+            yield_time_ms: 3_000,
+            max_output_tokens: 16, // 16 tokens ~= 64 bytes -> likely truncation
+        };
+        let second = session_manager
+            .handle_write_stdin_request(write_params)
+            .await
+            .expect("write stdin should succeed");
+
+        // Verify truncation metadata and size bound (cap is tokens*4 bytes).
+        assert!(second.original_token_count.is_some());
+        let cap_bytes = (16u64 * 4) as usize;
+        assert!(second.output.len() <= cap_bytes);
+        // New middle marker should be present.
+        assert!(
+            second.output.contains("tokens truncated") && second.output.contains('…'),
+            "expected truncation marker in output, got: {}",
+            second.output
+        );
+
+        // Minimal freshness check: the earliest number we see in the second window
+        // should be significantly larger than the last from the first window.
+        let second_nums = extract_monotonic_numbers(&second.output);
+        assert!(
+            !second_nums.is_empty(),
+            "expected some numeric output from second window"
+        );
+        let second_min = *second_nums.iter().min().unwrap();
+
+        // We slept 4 seconds (~40 ticks at 100ms/tick, each +100), so expect
+        // an increase of roughly 4000 or more. Allow a generous margin.
+        assert!(
+            second_min >= first_max + 2000,
+            "second_min={second_min} first_max={first_max}",
+        );
+    }
+
+    #[cfg(unix)]
+    fn extract_monotonic_numbers(s: &str) -> Vec<i64> {
+        s.lines()
+            .filter_map(|line| {
+                if !line.is_empty()
+                    && line.chars().all(|c| c.is_ascii_digit())
+                    && let Ok(n) = line.parse::<i64>()
+                {
+                    // Our generator increments by 100; ignore spurious fragments.
+                    if n % 100 == 0 {
+                        return Some(n);
+                    }
+                }
+                None
+            })
+            .collect()
+    }
+
+    #[test]
+    fn to_text_output_exited_no_truncation() {
+        let out = ExecCommandOutput {
+            wall_time: Duration::from_millis(1234),
+            exit_status: ExitStatus::Exited(0),
+            original_token_count: None,
+            output: "hello".to_string(),
+        };
+        let text = out.to_text_output();
+        let expected = r#"Wall time: 1.234 seconds
+Process exited with code 0
+Output:
+hello"#;
+        assert_eq!(expected, text);
+    }
+
+    #[test]
+    fn to_text_output_ongoing_with_truncation() {
+        let out = ExecCommandOutput {
+            wall_time: Duration::from_millis(500),
+            exit_status: ExitStatus::Ongoing(SessionId(42)),
+            original_token_count: Some(1000),
+            output: "abc".to_string(),
+        };
+        let text = out.to_text_output();
+        let expected = r#"Wall time: 0.500 seconds
+Process running with session ID 42
+Warning: truncated output (original token count: 1000)
+Output:
+abc"#;
+        assert_eq!(expected, text);
+    }
+
+    #[test]
+    fn truncate_middle_no_newlines_fallback() {
+        // A long string with no newlines that exceeds the cap.
+        let s = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let max_bytes = 16; // force truncation
+        let (out, original) = truncate_middle(s, max_bytes);
+        // For very small caps, we return the full, untruncated marker,
+        // even if it exceeds the cap.
+        assert_eq!(out, "…16 tokens truncated…");
+        // Original string length is 62 bytes => ceil(62/4) = 16 tokens.
+        assert_eq!(original, Some(16));
+    }
+
+    #[test]
+    fn truncate_middle_prefers_newline_boundaries() {
+        // Build a multi-line string of 20 numbered lines (each "NNN\n").
+        let mut s = String::new();
+        for i in 1..=20 {
+            s.push_str(&format!("{i:03}\n"));
+        }
+        // Total length: 20 lines * 4 bytes per line = 80 bytes.
+        assert_eq!(s.len(), 80);
+
+        // Choose a cap that forces truncation while leaving room for
+        // a few lines on each side after accounting for the marker.
+        let max_bytes = 64;
+        // Expect exact output: first 4 lines, marker, last 4 lines, and correct token estimate (80/4 = 20).
+        assert_eq!(
+            truncate_middle(&s, max_bytes),
+            (
+                r#"001
+002
+003
+004
+…12 tokens truncated…
+017
+018
+019
+020
+"#
+                .to_string(),
+                Some(20)
+            )
+        );
+    }
 }

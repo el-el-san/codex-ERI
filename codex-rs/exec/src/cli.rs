@@ -19,12 +19,8 @@ pub struct Cli {
 
     /// Select the sandbox policy to use when executing model-generated shell
     /// commands.
-    #[arg(long = "sandbox", short = 's')]
+    #[arg(long = "sandbox", short = 's', value_enum)]
     pub sandbox_mode: Option<codex_common::SandboxModeCliArg>,
-
-    /// Select when to ask for approval before executing commands.
-    #[arg(long = "approval", short = 'a')]
-    pub approval_policy: Option<codex_common::ApprovalModeCliArg>,
 
     /// Configuration profile from config.toml to specify default options.
     #[arg(long = "profile", short = 'p')]
@@ -66,10 +62,6 @@ pub struct Cli {
     /// Specifies file where the last message from the agent should be written.
     #[arg(long = "output-last-message")]
     pub last_message_file: Option<PathBuf>,
-
-    /// Resume the last conversation session.
-    #[arg(long = "resume", short = 'r', default_value_t = false)]
-    pub resume: bool,
 
     /// Initial instructions for the agent. If not provided as an argument (or
     /// if `-` is used), instructions are read from stdin.

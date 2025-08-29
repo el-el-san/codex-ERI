@@ -109,3 +109,46 @@ fn highlight_range_from_header(lines: &[Line<'_>], header_idx: usize) -> (usize,
     }
     (header_idx, end)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::text::Span;
+
+    fn line(s: &str) -> Line<'static> {
+        Line::from(Span::raw(s.to_string()))
+    }
+
+    fn transcript_with_users(count: usize) -> Vec<Line<'static>> {
+        // Build a transcript with `count` user messages, each followed by one body line and a blank line.
+        let mut v = Vec::new();
+        for i in 0..count {
+            v.push(line("user"));
+            v.push(line(&format!("message {i}")));
+            v.push(line(""));
+        }
+        v
+    }
+
+    #[test]
+    fn normalize_wraps_to_one_when_past_oldest() {
+        let lines = transcript_with_users(2);
+        assert_eq!(normalize_backtrack_n(&lines, 1), 1);
+        assert_eq!(normalize_backtrack_n(&lines, 2), 2);
+        // Requesting 3rd when only 2 exist wraps to 1
+        assert_eq!(normalize_backtrack_n(&lines, 3), 1);
+    }
+
+    #[test]
+    fn normalize_returns_zero_when_no_user_messages() {
+        let lines = transcript_with_users(0);
+        assert_eq!(normalize_backtrack_n(&lines, 1), 0);
+        assert_eq!(normalize_backtrack_n(&lines, 5), 0);
+    }
+
+    #[test]
+    fn normalize_keeps_valid_n() {
+        let lines = transcript_with_users(3);
+        assert_eq!(normalize_backtrack_n(&lines, 2), 2);
+    }
+}

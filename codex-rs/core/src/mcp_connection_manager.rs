@@ -15,7 +15,6 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_mcp_client::McpClient;
-use codex_mcp_client::McpTransport;
 use mcp_types::ClientCapabilities;
 use mcp_types::Implementation;
 use mcp_types::Tool;
@@ -39,12 +38,6 @@ const MAX_TOOL_NAME_LENGTH: usize = 64;
 
 /// Timeout for the `tools/list` request.
 const LIST_TOOLS_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Maximum number of concurrent MCP server connections
-const MAX_CONCURRENT_CONNECTIONS: usize = 5;
-
-/// Timeout for MCP server initialization
-const MCP_INIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Map that holds a startup error for every MCP server that could **not** be
 /// spawned successfully.
@@ -99,9 +92,6 @@ pub(crate) struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
-    
-    /// Server configuration for tracking enabled state
-    server_configs: HashMap<String, McpServerConfig>,
 }
 
 impl McpConnectionManager {
@@ -121,63 +111,29 @@ impl McpConnectionManager {
             return Ok((Self::default(), ClientStartErrors::default()));
         }
 
+        // Launch all configured servers concurrently.
+        let mut join_set = JoinSet::new();
         let mut errors = ClientStartErrors::new();
-        let mut clients: HashMap<String, std::sync::Arc<McpClient>> = HashMap::new();
-        
-        // Process servers in batches to avoid overwhelming the system
-        let servers: Vec<_> = mcp_servers.into_iter().collect();
-        let total_servers = servers.len();
-        
-        info!("Starting {} MCP servers in batches of {}", total_servers, MAX_CONCURRENT_CONNECTIONS);
-        
-        for (batch_idx, batch) in servers.chunks(MAX_CONCURRENT_CONNECTIONS).enumerate() {
-            let batch_start = batch_idx * MAX_CONCURRENT_CONNECTIONS;
-            let batch_end = std::cmp::min(batch_start + batch.len(), total_servers);
-            info!("Processing batch {}/{}: servers {}-{} of {}", 
-                batch_idx + 1, 
-                (total_servers + MAX_CONCURRENT_CONNECTIONS - 1) / MAX_CONCURRENT_CONNECTIONS,
-                batch_start + 1, 
-                batch_end, 
-                total_servers
-            );
 
-            let mut join_set = JoinSet::new();
-            
-            for (server_name, cfg) in batch {
-            // Skip disabled servers
-            if !cfg.is_enabled() {
-                info!("Skipping disabled MCP server: {}", server_name);
-                continue;
-            }
-            
+        for (server_name, cfg) in mcp_servers {
             // Validate server name before spawning
             if !is_valid_mcp_server_name(&server_name) {
                 let error = anyhow::anyhow!(
                     "invalid server name '{}': must match pattern ^[a-zA-Z0-9_-]+$",
                     server_name
                 );
-                errors.insert(server_name.to_string(), error);
+                errors.insert(server_name, error);
                 continue;
             }
-            
-            let server_name = server_name.clone();
-            let cfg = cfg.clone();
 
             join_set.spawn(async move {
-                let (transport, args, env) = match cfg {
-                    McpServerConfig::Stdio { command, args, env, .. } => {
-                        let mut all_args = vec![OsString::from(command)];
-                        all_args.extend(args.into_iter().map(OsString::from));
-                        (McpTransport::Stdio, all_args, env)
-                    }
-                    McpServerConfig::Http { url, env, .. } => {
-                        (McpTransport::Http { url }, vec![], env)
-                    }
-                };
-                
-                info!("Connecting to MCP server: {}", server_name.clone());
-                
-                let client_res = McpClient::new(transport, args, env).await;
+                let McpServerConfig { command, args, env } = cfg;
+                let client_res = McpClient::new_stdio_client(
+                    command.into(),
+                    args.into_iter().map(OsString::from).collect(),
+                    env,
+                )
+                .await;
                 match client_res {
                     Ok(client) => {
                         // Initialize the client.
@@ -198,92 +154,50 @@ impl McpConnectionManager {
                             protocol_version: mcp_types::MCP_SCHEMA_VERSION.to_owned(),
                         };
                         let initialize_notification_params = None;
-                        // Use extended timeout for MCP server initialization
-                        let timeout = Some(MCP_INIT_TIMEOUT);
+                        let timeout = Some(Duration::from_secs(10));
                         match client
                             .initialize(params, initialize_notification_params, timeout)
                             .await
                         {
-                            Ok(_response) => (server_name.clone(), Ok(client)),
-                            Err(e) => (server_name.clone(), Err(e)),
+                            Ok(_response) => (server_name, Ok(client)),
+                            Err(e) => (server_name, Err(e)),
                         }
                     }
-                    Err(e) => (server_name.clone(), Err(e.into())),
+                    Err(e) => (server_name, Err(e.into())),
                 }
             });
-            }
+        }
 
-            // Process batch results
-            let mut batch_success = 0;
-            let mut batch_failed = 0;
-            
-            while let Some(res) = join_set.join_next().await {
-                let (server_name, client_res) = res?; // JoinError propagation
+        let mut clients: HashMap<String, std::sync::Arc<McpClient>> =
+            HashMap::with_capacity(join_set.len());
 
-                match client_res {
-                    Ok(client) => {
-                        info!("✓ Successfully connected to MCP server: {}", server_name);
-                        clients.insert(server_name, std::sync::Arc::new(client));
-                        batch_success += 1;
-                    }
-                    Err(e) => {
-                        warn!("✗ Failed to connect to MCP server {}: {:#}", server_name, e);
-                        errors.insert(server_name, e);
-                        batch_failed += 1;
-                    }
+        while let Some(res) = join_set.join_next().await {
+            let (server_name, client_res) = res?; // JoinError propagation
+
+            match client_res {
+                Ok(client) => {
+                    clients.insert(server_name, std::sync::Arc::new(client));
+                }
+                Err(e) => {
+                    errors.insert(server_name, e);
                 }
             }
-            
-            info!("Batch {} complete: {} successful, {} failed", 
-                batch_idx + 1, batch_success, batch_failed);
-            
-            // Add a small delay between batches to avoid overwhelming the system
-            if batch_idx < servers.chunks(MAX_CONCURRENT_CONNECTIONS).count() - 1 {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
         }
-        
-        info!("MCP server initialization complete: {} connected, {} failed", 
-            clients.len(), errors.len());
 
         let all_tools = list_all_tools(&clients).await?;
 
         let tools = qualify_tools(all_tools);
-        
-        // Store server configs for later reference
-        let server_configs = servers.into_iter()
-            .map(|(name, cfg)| (name.clone(), cfg.clone()))
-            .collect();
 
-        Ok((Self { clients, tools, server_configs }, errors))
+        Ok((Self { clients, tools }, errors))
     }
 
     /// Returns a single map that contains **all** tools. Each key is the
     /// fully-qualified name for the tool.
     pub fn list_all_tools(&self) -> HashMap<String, Tool> {
-        let all_tools: HashMap<String, Tool> = self.tools
+        self.tools
             .iter()
             .map(|(name, tool)| (name.clone(), tool.tool.clone()))
-            .collect();
-        
-        // Debug logging for MCP tools
-        info!("=== MCP Tools Debug ===");
-        info!("Total MCP tools loaded: {} tools", all_tools.len());
-        
-        // Show size of first 5 tools as samples
-        for (name, tool) in all_tools.iter().take(5) {
-            let tool_json = serde_json::to_string(&tool).unwrap_or_default();
-            info!("  Tool '{}': {} bytes", name, tool_json.len());
-        }
-        
-        // Calculate total size
-        let total_json = serde_json::to_string(&all_tools).unwrap_or_default();
-        info!("Total MCP tools JSON size: {} bytes (~{} KB)", 
-            total_json.len(), 
-            total_json.len() / 1024);
-        info!("=======================");
-        
-        all_tools
+            .collect()
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.
@@ -310,24 +224,6 @@ impl McpConnectionManager {
         self.tools
             .get(tool_name)
             .map(|tool| (tool.server_name.clone(), tool.tool_name.clone()))
-    }
-    
-    /// Get information about all MCP servers and their status
-    pub fn get_server_info(&self) -> Vec<(String, McpServerConfig, bool, usize)> {
-        let mut info = Vec::new();
-        
-        for (name, config) in &self.server_configs {
-            let is_connected = self.clients.contains_key(name);
-            let tool_count = self.tools
-                .values()
-                .filter(|tool| tool.server_name == *name)
-                .count();
-            
-            info.push((name.clone(), config.clone(), is_connected, tool_count));
-        }
-        
-        info.sort_by(|a, b| a.0.cmp(&b.0));
-        info
     }
 }
 
@@ -356,23 +252,15 @@ async fn list_all_tools(
 
     while let Some(join_res) = join_set.join_next().await {
         let (server_name, list_result) = join_res?;
-        
-        // Skip servers that don't support tools/list or have errors
-        match list_result {
-            Ok(list_result) => {
-                for tool in list_result.tools {
-                    let tool_info = ToolInfo {
-                        server_name: server_name.clone(),
-                        tool_name: tool.name.clone(),
-                        tool,
-                    };
-                    aggregated.push(tool_info);
-                }
-            }
-            Err(e) => {
-                // Log warning but continue with other servers
-                tracing::warn!("Server '{}' failed to list tools: {}", server_name, e);
-            }
+        let list_result = list_result?;
+
+        for tool in list_result.tools {
+            let tool_info = ToolInfo {
+                server_name: server_name.clone(),
+                tool_name: tool.name.clone(),
+                tool,
+            };
+            aggregated.push(tool_info);
         }
     }
 
@@ -393,7 +281,6 @@ fn is_valid_mcp_server_name(server_name: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use mcp_types::ToolInputSchema;
