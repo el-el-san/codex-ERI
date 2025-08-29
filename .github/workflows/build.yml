@@ -228,6 +228,12 @@ jobs:
         if: matrix.os != 'windows-latest'
         working-directory: codex-rs
         run: |
+          # Debug: Show installed targets
+          echo "Installed Rust targets:"
+          rustup target list --installed
+          echo "Current toolchain:"
+          rustup show
+          
           # Show environment for Android debugging
           if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
             echo "Android build environment:"
@@ -235,11 +241,12 @@ jobs:
             echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
             echo "CC_aarch64_linux_android=$CC_aarch64_linux_android"
             echo "OPENSSL_STATIC=$OPENSSL_STATIC"
-            echo "Rustup targets:"
-            rustup target list --installed
             echo "cargo-ndk version:"
             cargo ndk --version || echo "cargo-ndk not found"
           fi
+          
+          # Ensure the target is installed (redundant but safe)
+          rustup target add ${{ matrix.target }} || true
           
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
             if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
