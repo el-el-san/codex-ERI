@@ -595,5 +595,5 @@ fn open_url_in_browser(url: &str) -> Result<(), String> {
     // If all else fails, just print the URL
     eprintln!("Unable to open browser automatically. Please open the following URL manually:");
     eprintln!("{}", url);
-    Ok(()); // Return Ok to not block the login flow
+    Ok(()) // Return Ok to not block the login flow
 }
