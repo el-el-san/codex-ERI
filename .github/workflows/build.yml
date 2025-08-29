@@ -189,14 +189,11 @@ jobs:
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
           echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
           
-          # Install OpenSSL for Android (prebuilt)
-          cd $HOME
-          wget -q https://github.com/KDAB/android_openssl/archive/refs/heads/master.zip
-          unzip -q master.zip
-          echo "OPENSSL_DIR=$HOME/android_openssl-master/ssl_3/android-arm64-v8a" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=$HOME/android_openssl-master/ssl_3/include" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=$HOME/android_openssl-master/ssl_3/android-arm64-v8a" >> $GITHUB_ENV
+          # Use vendored OpenSSL for Android instead of prebuilt
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          
+          # Install dependencies for vendored OpenSSL build
+          sudo apt-get update && sudo apt-get install -y perl make
       
       - name: Cache cleanup
         if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
