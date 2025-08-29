@@ -185,9 +185,9 @@ jobs:
           echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
           echo "PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
           
-          # OpenSSL specific environment variables
+          # OpenSSL specific environment variables - use vendored for Android
           echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
+          echo "OPENSSL_NO_VENDOR=0" >> $GITHUB_ENV
           
           # Set CC and AR for proper cross-compilation
           echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
@@ -243,6 +243,9 @@ jobs:
             echo "OPENSSL_STATIC=$OPENSSL_STATIC"
             echo "cargo-ndk version:"
             cargo ndk --version || echo "cargo-ndk not found"
+            # Force vendored OpenSSL for Android
+            export OPENSSL_NO_VENDOR=0
+            export OPENSSL_STATIC=1
           fi
           
           # Ensure the target is installed (redundant but safe)
