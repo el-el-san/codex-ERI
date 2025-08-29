@@ -56,6 +56,7 @@ use crate::live_wrap::RowBuilder;
 use crate::user_approval_widget::ApprovalRequest;
 use codex_file_search::FileMatch;
 use ratatui::style::Stylize;
+use uuid::Uuid;
 
 struct RunningCommand {
     command: Vec<String>,
@@ -85,6 +86,7 @@ pub(crate) struct ChatWidget<'a> {
     live_max_rows: u16,
     mcp_popup: Option<McpPopup>,
     show_mcp_popup: bool,
+    session_id: Option<Uuid>,
 }
 
 struct UserMessage {
@@ -233,6 +235,7 @@ impl ChatWidget<'_> {
             live_max_rows: 3,
             mcp_popup: None,
             show_mcp_popup: false,
+            session_id: None,
         }
     }
 
@@ -1046,5 +1049,22 @@ fn add_token_usage(current_usage: &TokenUsage, new_usage: &TokenUsage) -> TokenU
         output_tokens: current_usage.output_tokens + new_usage.output_tokens,
         reasoning_output_tokens,
         total_tokens: current_usage.total_tokens + new_usage.total_tokens,
+    }
+}
+
+impl ChatWidget<'_> {
+    /// Get the current session ID
+    pub(crate) fn session_id(&self) -> Option<Uuid> {
+        self.session_id
+    }
+
+    /// Show the backtrack hint in the bottom pane
+    pub(crate) fn show_esc_backtrack_hint(&mut self) {
+        self.bottom_pane.show_esc_backtrack_hint();
+    }
+
+    /// Clear the backtrack hint from the bottom pane
+    pub(crate) fn clear_esc_backtrack_hint(&mut self) {
+        self.bottom_pane.clear_esc_backtrack_hint();
     }
 }

@@ -55,6 +55,7 @@ pub(crate) struct ChatComposer {
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
     ctrl_c_quit_hint: bool,
+    esc_backtrack_hint: bool,
     use_shift_enter_hint: bool,
     dismissed_file_popup_token: Option<String>,
     current_file_query: Option<String>,
@@ -87,6 +88,7 @@ impl ChatComposer {
             app_event_tx,
             history: ChatComposerHistory::new(),
             ctrl_c_quit_hint: false,
+            esc_backtrack_hint: false,
             use_shift_enter_hint,
             dismissed_file_popup_token: None,
             current_file_query: None,
@@ -199,6 +201,14 @@ impl ChatComposer {
     pub fn set_ctrl_c_quit_hint(&mut self, show: bool, has_focus: bool) {
         self.ctrl_c_quit_hint = show;
         self.set_has_focus(has_focus);
+    }
+
+    fn set_has_focus(&mut self, has_focus: bool) {
+        self.has_focus = has_focus;
+    }
+
+    pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
+        self.esc_backtrack_hint = show;
     }
 
     /// Handle a key event coming from the main UI.
@@ -707,6 +717,12 @@ impl WidgetRef for &ChatComposer {
                         Span::from(" quit"),
                     ]
                 };
+
+                if !self.ctrl_c_quit_hint && self.esc_backtrack_hint {
+                    hint.push(Span::from("   "));
+                    hint.push("Esc".set_style(key_hint_style));
+                    hint.push(Span::from(" edit prev"));
+                }
 
                 // Append token/context usage info to the footer hints when available.
                 if let Some(token_usage_info) = &self.token_usage_info {
