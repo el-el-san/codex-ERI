@@ -56,7 +56,7 @@ mod parallel_execution;
 mod parallel_executor;
 mod parallel_batch;
 pub mod plan_tool;
-mod project_doc;
+pub mod project_doc;
 pub mod protocol;
 pub mod rate_limiter;
 pub mod rollout;

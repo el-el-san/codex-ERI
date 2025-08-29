@@ -585,9 +585,9 @@ pub(crate) fn new_completed_mcp_tool_call(
     duration: Duration,
     success: bool,
     result: Result<mcp_types::CallToolResult, String>,
-) -> Box<dyn HistoryCell> {
+) -> PlainHistoryCell {
     if let Some(cell) = try_new_completed_mcp_tool_call_with_image_output(&result) {
-        return Box::new(cell);
+        return cell;
     }
 
     let duration = format_duration(duration);
@@ -657,7 +657,7 @@ pub(crate) fn new_completed_mcp_tool_call(
 
     // Leading blank separator at the start of this cell
     lines.insert(0, Line::from(""));
-    Box::new(PlainHistoryCell { lines })
+    PlainHistoryCell { lines }
 }
 
 pub(crate) fn new_status_output(
