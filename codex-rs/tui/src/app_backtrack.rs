@@ -165,12 +165,14 @@ impl App<'_> {
     /// Open transcript overlay with backtrack preview (second Esc).
     fn open_backtrack_preview(&mut self, tui: &mut tui::Tui) {
         eprintln!("DEBUG: open_backtrack_preview called");
+        eprintln!("DEBUG: transcript_lines has {} lines", self.transcript_lines.len());
         
         // Enter alternate screen for overlay
         let _ = tui.enter_alt_screen();
         
         // Use transcript_lines for the overlay
         let lines = self.transcript_lines.clone();
+        eprintln!("DEBUG: Creating overlay with {} lines", lines.len());
         self.overlay = Some(Overlay::new_transcript(lines));
         self.backtrack.overlay_preview_active = true;
         
@@ -236,6 +238,20 @@ impl App<'_> {
                     .collect();
                 Line::from(owned_spans)
             }).collect();
+            
+            // Debug: Check for user messages in transcript
+            let mut user_count = 0;
+            for (idx, line) in lines_clone.iter().enumerate() {
+                let content: String = line.spans.iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+                    .join("");
+                if content.trim() == "user" {
+                    user_count += 1;
+                    eprintln!("DEBUG: Found user message at line {}: '{}'", idx, content.trim());
+                }
+            }
+            eprintln!("DEBUG: Total user messages found: {}", user_count);
             
             // Normalize the count based on available user messages
             let n = backtrack_helpers::normalize_backtrack_n(&lines_clone, self.backtrack.count);
