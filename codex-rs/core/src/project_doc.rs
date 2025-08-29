@@ -12,7 +12,7 @@
 //!     exists, the search stops – we do **not** walk past the Git root.
 
 use crate::config::Config;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 use tracing::error;
 
@@ -280,4 +280,73 @@ mod tests {
 
         assert_eq!(res, Some(INSTRUCTIONS.to_string()));
     }
+}
+
+/// Discovers AGENTS.md files from git root to current working directory.
+/// Returns a list of paths to AGENTS.md files that exist.
+pub fn discover_project_doc_paths(config: &Config) -> std::io::Result<Vec<PathBuf>> {
+    let mut dir = config.cwd.clone();
+    if let Ok(canon) = dir.canonicalize() {
+        dir = canon;
+    }
+
+    // Build chain from cwd upwards and detect git root.
+    let mut chain: Vec<PathBuf> = vec![dir.clone()];
+    let mut git_root: Option<PathBuf> = None;
+    let mut cursor = dir.clone();
+    while let Some(parent) = cursor.parent() {
+        let git_marker = cursor.join(".git");
+        let git_exists = match std::fs::metadata(&git_marker) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e),
+        };
+
+        if git_exists {
+            git_root = Some(cursor.clone());
+            break;
+        }
+
+        chain.push(parent.to_path_buf());
+        cursor = parent.to_path_buf();
+    }
+
+    let search_dirs: Vec<PathBuf> = if let Some(root) = git_root {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        let mut saw_root = false;
+        for p in chain.iter().rev() {
+            if !saw_root {
+                if p == &root {
+                    saw_root = true;
+                } else {
+                    continue;
+                }
+            }
+            dirs.push(p.clone());
+        }
+        dirs
+    } else {
+        vec![config.cwd.clone()]
+    };
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    for d in search_dirs {
+        for name in CANDIDATE_FILENAMES {
+            let candidate = d.join(name);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(md) => {
+                    let ft = md.file_type();
+                    // Allow regular files and symlinks; opening will later fail for dangling links.
+                    if ft.is_file() || ft.is_symlink() {
+                        found.push(candidate);
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    Ok(found)
 }
