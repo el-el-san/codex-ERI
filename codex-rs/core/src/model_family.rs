@@ -1,3 +1,5 @@
+use crate::tool_apply_patch::ApplyPatchToolType;
+
 /// A model family is a group of models that share certain characteristics.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelFamily {
@@ -24,9 +26,9 @@ pub struct ModelFamily {
     // See https://platform.openai.com/docs/guides/tools-local-shell
     pub uses_local_shell_tool: bool,
 
-    // Whether this model supports parallel tool calls.
-    // When true, multiple independent tools can be executed concurrently.
-    pub supports_parallel_tool_calls: bool,
+    /// Present if the model performs better when `apply_patch` is provided as
+    /// a tool call instead of just a bash command
+    pub apply_patch_tool_type: Option<ApplyPatchToolType>,
 }
 
 macro_rules! model_family {
@@ -40,7 +42,7 @@ macro_rules! model_family {
             needs_special_apply_patch_instructions: false,
             supports_reasoning_summaries: false,
             uses_local_shell_tool: false,
-            supports_parallel_tool_calls: false,
+            apply_patch_tool_type: None,
         };
         // apply overrides
         $(
@@ -60,7 +62,7 @@ macro_rules! simple_model_family {
             needs_special_apply_patch_instructions: false,
             supports_reasoning_summaries: false,
             uses_local_shell_tool: false,
-            supports_parallel_tool_calls: false,
+            apply_patch_tool_type: None,
         })
     }};
 }
@@ -84,26 +86,26 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             supports_reasoning_summaries: true,
             uses_local_shell_tool: true,
         )
+    } else if slug.starts_with("codex-") {
+        model_family!(
+            slug, slug,
+            supports_reasoning_summaries: true,
+        )
     } else if slug.starts_with("gpt-4.1") {
         model_family!(
             slug, "gpt-4.1",
             needs_special_apply_patch_instructions: true,
         )
-    } else if slug.starts_with("gpt-4o") {
-        model_family!(
-            slug, "gpt-4o",
-            supports_parallel_tool_calls: true,  // Enable parallel execution for GPT-4o
-        )
     } else if slug.starts_with("gpt-oss") {
-        simple_model_family!(slug, "gpt-oss")
+        model_family!(slug, "gpt-oss", apply_patch_tool_type: Some(ApplyPatchToolType::Function))
+    } else if slug.starts_with("gpt-4o") {
+        simple_model_family!(slug, "gpt-4o")
     } else if slug.starts_with("gpt-3.5") {
         simple_model_family!(slug, "gpt-3.5")
     } else if slug.starts_with("gpt-5") {
         model_family!(
             slug, "gpt-5",
             supports_reasoning_summaries: true,
-            uses_local_shell_tool: false,  // OpenAI does not support local_shell for gpt-5
-            supports_parallel_tool_calls: true,  // Enable parallel execution for GPT-5
         )
     } else {
         None

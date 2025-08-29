@@ -6,24 +6,23 @@ mod event_processor_with_json_output;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub use cli::Cli;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
-use codex_core::codex_wrapper::CodexConversation;
-use codex_core::codex_wrapper::{self};
+use codex_core::ConversationManager;
+use codex_core::NewConversation;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config_types::SandboxMode;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
-use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::util::is_inside_git_repo;
+use codex_login::AuthManager;
 use codex_ollama::DEFAULT_OSS_MODEL;
+use codex_protocol::config_types::SandboxMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
 use tracing::debug;
@@ -48,8 +47,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         last_message_file,
         json: json_mode,
         sandbox_mode: sandbox_mode_cli_arg,
-        approval_policy: approval_policy_cli_arg,
-        resume,
         prompt,
         config_overrides,
     } = cli;
@@ -141,19 +138,19 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     let overrides = ConfigOverrides {
         model,
         config_profile,
-        // Use CLI argument if provided, otherwise default to Never for headless operation
-        approval_policy: approval_policy_cli_arg
-            .map(|a| a.into())
-            .or_else(|| Some(AskForApproval::Never)),
+        // This CLI is intended to be headless and has no affordances for asking
+        // the user for approval.
+        approval_policy: Some(AskForApproval::Never),
         sandbox_mode,
         cwd: cwd.map(|p| p.canonicalize().unwrap_or(p)),
         model_provider,
         codex_linux_sandbox_exe,
         base_instructions: None,
         include_plan_tool: None,
-        tools_web_search_request: None,
+        include_apply_patch_tool: None,
         disable_response_storage: oss.then_some(true),
         show_raw_agent_reasoning: oss.then_some(true),
+        tools_web_search_request: None,
     };
     // Parse `-c` overrides.
     let cli_kv_overrides = match config_overrides.parse_overrides() {
@@ -190,68 +187,33 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         std::process::exit(1);
     }
 
-    // If --resume is specified, load conversation from rollout
-    let resume_history = if resume {
-        match codex_core::rollout::find_latest_rollout(&config).await? {
-            Some(rollout_path) => {
-                eprintln!("Loading conversation from: {}", rollout_path.display());
-                match codex_core::rollout::load_rollout_conversation(&rollout_path).await {
-                    Ok(conversation) => {
-                        if !conversation.is_empty() {
-                            eprintln!("Loaded {} messages from previous session", conversation.len());
-                            conversation
-                        } else {
-                            eprintln!("Warning: No conversation found in rollout file");
-                            Vec::new()
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to load rollout: {}", e);
-                        Vec::new()
-                    }
-                }
-            }
-            None => {
-                eprintln!("Warning: No previous session found to resume");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
-
-    // Store sandbox_policy before moving config
-    let sandbox_policy = config.sandbox_policy.clone();
-    
-    let CodexConversation {
-        codex: codex_wrapper,
+    let conversation_manager = ConversationManager::new(AuthManager::shared(
+        config.codex_home.clone(),
+        config.preferred_auth_method,
+    ));
+    let NewConversation {
+        conversation_id: _,
+        conversation,
         session_configured,
-        ctrl_c,
-        ..
-    } = codex_wrapper::init_codex(config).await?;
-    let codex = Arc::new(codex_wrapper);
+    } = conversation_manager.new_conversation(config).await?;
     info!("Codex initialized with event: {session_configured:?}");
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     {
-        let codex = codex.clone();
+        let conversation = conversation.clone();
         tokio::spawn(async move {
             loop {
-                let interrupted = ctrl_c.notified();
                 tokio::select! {
-                    _ = interrupted => {
-                        // Forward an interrupt to the codex so it can abort any in‑flight task.
-                        let _ = codex
-                            .submit(
-                                Op::Interrupt,
-                            )
-                            .await;
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::debug!("Keyboard interrupt");
+                        // Immediately notify Codex to abort any in‑flight task.
+                        conversation.submit(Op::Interrupt).await.ok();
 
-                        // Exit the inner loop and return to the main input prompt.  The codex
+                        // Exit the inner loop and return to the main input prompt. The codex
                         // will emit a `TurnInterrupted` (Error) event which is drained later.
                         break;
                     }
-                    res = codex.next_event() => match res {
+                    res = conversation.next_event() => match res {
                         Ok(event) => {
                             debug!("Received event: {event:?}");
 
@@ -275,98 +237,15 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         });
     }
 
-    // Track if we need to send a new prompt after history replay
-    let mut should_send_new_prompt = true;
-    let mut task_already_complete = false;
-    
-    // If resuming, send the history first
-    if !resume_history.is_empty() {
-        eprintln!("Replaying conversation history...");
-        
-        // Combine history with the new prompt as a single submission
-        // This prevents duplicate processing
-        let mut combined_items = Vec::new();
-        
-        // Add system message to explicitly inform about available tools
-        // This ensures the model knows it can use shell commands even during resume
-        match &sandbox_policy {
-            SandboxPolicy::WorkspaceWrite { network_access, .. } => {
-                if *network_access {
-                    combined_items.push(InputItem::Text {
-                        text: "System: You have access to the shell tool with network access enabled. You can use curl, wget and other network commands.".to_string()
-                    });
-                } else {
-                    combined_items.push(InputItem::Text {
-                        text: "System: You have access to the shell tool. Network commands like curl require escalated permissions.".to_string()
-                    });
-                }
-            }
-            SandboxPolicy::DangerFullAccess => {
-                combined_items.push(InputItem::Text {
-                    text: "System: You have full shell access with no restrictions.".to_string()
-                });
-            }
-            SandboxPolicy::ReadOnly => {
-                combined_items.push(InputItem::Text {
-                    text: "System: You have access to the shell tool in read-only mode. Write operations require escalated permissions.".to_string()
-                });
-            }
-        }
-        
-        // Add the history
-        combined_items.extend(resume_history);
-        
-        // Add the new prompt
-        combined_items.push(InputItem::Text { text: prompt.clone() });
-        
-        let combined_task_id = codex.submit(Op::UserInput { items: combined_items }).await?;
-        info!("Sent combined history and new prompt with event ID: {combined_task_id}");
-        
-        // Mark that we've already sent the prompt
-        should_send_new_prompt = false;
-        
-        // Process events and display them
-        while let Some(event) = rx.recv().await {
-            let is_task_complete = event.id == combined_task_id
-                && matches!(
-                    event.msg,
-                    EventMsg::TaskComplete(TaskCompleteEvent {
-                        last_agent_message: _,
-                    })
-                );
-            
-            // Process the event through the event processor to display it
-            let shutdown = event_processor.process_event(event);
-            
-            if is_task_complete {
-                // Task is complete, mark it and exit
-                task_already_complete = true;
-                break;
-            }
-            
-            match shutdown {
-                CodexStatus::Running => continue,
-                CodexStatus::InitiateShutdown => {
-                    codex.submit(Op::Shutdown).await?;
-                    task_already_complete = true;
-                }
-                CodexStatus::Shutdown => {
-                    task_already_complete = true;
-                    break;
-                }
-            }
-        }
-    }
-
     // Send images first, if any.
     if !images.is_empty() {
         let items: Vec<InputItem> = images
             .into_iter()
             .map(|path| InputItem::LocalImage { path })
             .collect();
-        let initial_images_event_id = codex.submit(Op::UserInput { items }).await?;
+        let initial_images_event_id = conversation.submit(Op::UserInput { items }).await?;
         info!("Sent images with event ID: {initial_images_event_id}");
-        while let Some(event) = rx.recv().await {
+        while let Ok(event) = conversation.next_event().await {
             if event.id == initial_images_event_id
                 && matches!(
                     event.msg,
@@ -380,25 +259,21 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         }
     }
 
-    // Send the prompt only if we haven't already sent it with history
-    if should_send_new_prompt && !task_already_complete {
-        let items: Vec<InputItem> = vec![InputItem::Text { text: prompt }];
-        let initial_prompt_task_id = codex.submit(Op::UserInput { items }).await?;
-        info!("Sent prompt with event ID: {initial_prompt_task_id}");
-    }
+    // Send the prompt.
+    let items: Vec<InputItem> = vec![InputItem::Text { text: prompt }];
+    let initial_prompt_task_id = conversation.submit(Op::UserInput { items }).await?;
+    info!("Sent prompt with event ID: {initial_prompt_task_id}");
 
-    // Run the loop until the task is complete (only if not already complete)
-    if !task_already_complete {
-        while let Some(event) = rx.recv().await {
-            let shutdown: CodexStatus = event_processor.process_event(event);
-            match shutdown {
-                CodexStatus::Running => continue,
-                CodexStatus::InitiateShutdown => {
-                    codex.submit(Op::Shutdown).await?;
-                }
-                CodexStatus::Shutdown => {
-                    break;
-                }
+    // Run the loop until the task is complete.
+    while let Some(event) = rx.recv().await {
+        let shutdown: CodexStatus = event_processor.process_event(event);
+        match shutdown {
+            CodexStatus::Running => continue,
+            CodexStatus::InitiateShutdown => {
+                conversation.submit(Op::Shutdown).await?;
+            }
+            CodexStatus::Shutdown => {
+                break;
             }
         }
     }

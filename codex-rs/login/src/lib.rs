@@ -1,5 +1,4 @@
 use chrono::DateTime;
-
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
@@ -13,31 +12,26 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Child;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use tempfile::NamedTempFile;
-use tokio::process::Command;
 
+pub use crate::server::LoginServer;
+pub use crate::server::ServerOptions;
+pub use crate::server::ShutdownHandle;
+pub use crate::server::run_login_server;
 pub use crate::token_data::TokenData;
 use crate::token_data::parse_id_token;
 
+mod auth_manager;
+mod pkce;
+mod server;
 mod token_data;
-pub mod pkce;
-pub mod server;
 
-const SOURCE_FOR_PYTHON_SERVER: &str = include_str!("./login_with_chatgpt.py");
-
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
-
-#[derive(Clone, Debug, PartialEq, Copy)]
-pub enum AuthMode {
-    ApiKey,
-    ChatGPT,
-}
+pub use auth_manager::AuthManager;
+pub use codex_protocol::mcp_protocol::AuthMode;
 
 #[derive(Debug, Clone)]
 pub struct CodexAuth {
@@ -64,10 +58,46 @@ impl CodexAuth {
         }
     }
 
+    pub async fn refresh_token(&self) -> Result<String, std::io::Error> {
+        let token_data = self
+            .get_current_token_data()
+            .ok_or(std::io::Error::other("Token data is not available."))?;
+        let token = token_data.refresh_token;
+
+        let refresh_response = try_refresh_token(token)
+            .await
+            .map_err(std::io::Error::other)?;
+
+        let updated = update_tokens(
+            &self.auth_file,
+            refresh_response.id_token,
+            refresh_response.access_token,
+            refresh_response.refresh_token,
+        )
+        .await?;
+
+        if let Ok(mut auth_lock) = self.auth_dot_json.lock() {
+            *auth_lock = Some(updated.clone());
+        }
+
+        let access = match updated.tokens {
+            Some(t) => t.access_token,
+            None => {
+                return Err(std::io::Error::other(
+                    "Token data is not available after refresh.",
+                ));
+            }
+        };
+        Ok(access)
+    }
+
     /// Loads the available auth information from the auth.json or
     /// OPENAI_API_KEY environment variable.
-    pub fn from_codex_home(codex_home: &Path) -> std::io::Result<Option<CodexAuth>> {
-        load_auth(codex_home, true)
+    pub fn from_codex_home(
+        codex_home: &Path,
+        preferred_auth_method: AuthMode,
+    ) -> std::io::Result<Option<CodexAuth>> {
+        load_auth(codex_home, true, preferred_auth_method)
     }
 
     pub async fn get_token_data(&self) -> Result<TokenData, std::io::Error> {
@@ -119,9 +149,9 @@ impl CodexAuth {
         match self.mode {
             AuthMode::ApiKey => Ok(self.api_key.clone().unwrap_or_default()),
             AuthMode::ChatGPT => {
-                let access_token = self.get_token_data().await?.access_token;
+                let id_token = self.get_token_data().await?.access_token;
 
-                Ok(access_token)
+                Ok(id_token)
             }
         }
     }
@@ -168,7 +198,11 @@ impl CodexAuth {
     }
 }
 
-fn load_auth(codex_home: &Path, include_env_var: bool) -> std::io::Result<Option<CodexAuth>> {
+fn load_auth(
+    codex_home: &Path,
+    include_env_var: bool,
+    preferred_auth_method: AuthMode,
+) -> std::io::Result<Option<CodexAuth>> {
     // First, check to see if there is a valid auth.json file. If not, we fall
     // back to AuthMode::ApiKey using the OPENAI_API_KEY environment variable
     // (if it is set).
@@ -204,7 +238,7 @@ fn load_auth(codex_home: &Path, include_env_var: bool) -> std::io::Result<Option
         // "refreshable" even if we are using the API key for auth?
         match &tokens {
             Some(tokens) => {
-                if tokens.is_plan_that_should_use_api_key() {
+                if tokens.should_use_api_key(preferred_auth_method, tokens.is_openai_email()) {
                     return Ok(Some(CodexAuth::from_api_key(api_key)));
                 } else {
                     // Ignore the API key and fall through to ChatGPT auth.
@@ -255,109 +289,6 @@ pub fn logout(codex_home: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Represents a running login subprocess. The child can be killed by holding
-/// the mutex and calling `kill()`.
-#[derive(Debug, Clone)]
-pub struct SpawnedLogin {
-    pub child: Arc<Mutex<Child>>,
-    pub stdout: Arc<Mutex<Vec<u8>>>,
-    pub stderr: Arc<Mutex<Vec<u8>>>,
-}
-
-/// Spawn the ChatGPT login Python server as a child process and return a handle to its process.
-pub fn spawn_login_with_chatgpt(codex_home: &Path) -> std::io::Result<SpawnedLogin> {
-    let script_path = write_login_script_to_disk()?;
-    let mut cmd = std::process::Command::new("python3");
-    cmd.arg(&script_path)
-        .env("CODEX_HOME", codex_home)
-        .env("CODEX_CLIENT_ID", CLIENT_ID)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn()?;
-
-    let stdout_buf = Arc::new(Mutex::new(Vec::new()));
-    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
-
-    if let Some(mut out) = child.stdout.take() {
-        let buf = stdout_buf.clone();
-        std::thread::spawn(move || {
-            let mut tmp = Vec::new();
-            let _ = std::io::copy(&mut out, &mut tmp);
-            if let Ok(mut b) = buf.lock() {
-                b.extend_from_slice(&tmp);
-            }
-        });
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let buf = stderr_buf.clone();
-        std::thread::spawn(move || {
-            let mut tmp = Vec::new();
-            let _ = std::io::copy(&mut err, &mut tmp);
-            if let Ok(mut b) = buf.lock() {
-                b.extend_from_slice(&tmp);
-            }
-        });
-    }
-
-    Ok(SpawnedLogin {
-        child: Arc::new(Mutex::new(child)),
-        stdout: stdout_buf,
-        stderr: stderr_buf,
-    })
-}
-
-/// Run `python3 -c {{SOURCE_FOR_PYTHON_SERVER}}` with the CODEX_HOME
-/// environment variable set to the provided `codex_home` path. If the
-/// subprocess exits 0, read the OPENAI_API_KEY property out of
-/// CODEX_HOME/auth.json and return Ok(OPENAI_API_KEY). Otherwise, return Err
-/// with any information from the subprocess.
-///
-/// If `capture_output` is true, the subprocess's output will be captured and
-/// recorded in memory. Otherwise, the subprocess's output will be sent to the
-/// current process's stdout/stderr.
-pub async fn login_with_chatgpt(codex_home: &Path, capture_output: bool) -> std::io::Result<()> {
-    let script_path = write_login_script_to_disk()?;
-    let child = Command::new("python3")
-        .arg(&script_path)
-        .env("CODEX_HOME", codex_home)
-        .env("CODEX_CLIENT_ID", CLIENT_ID)
-        .stdin(Stdio::null())
-        .stdout(if capture_output {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .stderr(if capture_output {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .spawn()?;
-
-    let output = child.wait_with_output().await?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(std::io::Error::other(format!(
-            "login_with_chatgpt subprocess failed: {stderr}"
-        )))
-    }
-}
-
-fn write_login_script_to_disk() -> std::io::Result<PathBuf> {
-    // Write the embedded Python script to a file to avoid very long
-    // command-line arguments (Windows error 206).
-    let mut tmp = NamedTempFile::new()?;
-    tmp.write_all(SOURCE_FOR_PYTHON_SERVER.as_bytes())?;
-    tmp.flush()?;
-
-    let (_file, path) = tmp.keep()?;
-    Ok(path)
-}
-
 pub fn login_with_api_key(codex_home: &Path, api_key: &str) -> std::io::Result<()> {
     let auth_dot_json = AuthDotJson {
         openai_api_key: Some(api_key.to_string()),
@@ -402,9 +333,9 @@ async fn update_tokens(
 
     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
     tokens.id_token = parse_id_token(&id_token).map_err(std::io::Error::other)?;
-    // Use access_token if provided, otherwise use id_token as access_token
-    // This fixes the issue where refresh response might not include access_token
-    tokens.access_token = access_token.unwrap_or(id_token);
+    if let Some(access_token) = access_token {
+        tokens.access_token = access_token.to_string();
+    }
     if let Some(refresh_token) = refresh_token {
         tokens.refresh_token = refresh_token.to_string();
     }
@@ -474,7 +405,6 @@ pub struct AuthDotJson {
 
 #[cfg(test)]
 mod tests {
-    #![expect(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
     use crate::token_data::IdTokenInfo;
     use crate::token_data::KnownPlan;
@@ -490,7 +420,9 @@ mod tests {
     fn writes_api_key_and_loads_auth() {
         let dir = tempdir().unwrap();
         login_with_api_key(dir.path(), "sk-test-key").unwrap();
-        let auth = load_auth(dir.path(), false).unwrap().unwrap();
+        let auth = load_auth(dir.path(), false, AuthMode::ChatGPT)
+            .unwrap()
+            .unwrap();
         assert_eq!(auth.mode, AuthMode::ApiKey);
         assert_eq!(auth.api_key.as_deref(), Some("sk-test-key"));
     }
@@ -502,16 +434,38 @@ mod tests {
         let env_var = std::env::var(OPENAI_API_KEY_ENV_VAR);
 
         if let Ok(env_var) = env_var {
-            let auth = load_auth(dir.path(), true).unwrap().unwrap();
+            let auth = load_auth(dir.path(), true, AuthMode::ChatGPT)
+                .unwrap()
+                .unwrap();
             assert_eq!(auth.mode, AuthMode::ApiKey);
             assert_eq!(auth.api_key, Some(env_var));
         }
     }
 
     #[tokio::test]
-    async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
+    async fn roundtrip_auth_dot_json() {
         let codex_home = tempdir().unwrap();
         write_auth_file(
+            AuthFileParams {
+                openai_api_key: None,
+                chatgpt_plan_type: "pro".to_string(),
+            },
+            codex_home.path(),
+        )
+        .expect("failed to write auth file");
+
+        let file = get_auth_file(codex_home.path());
+        let auth_dot_json = try_read_auth_json(&file).unwrap();
+        write_auth_json(&file, &auth_dot_json).unwrap();
+
+        let same_auth_dot_json = try_read_auth_json(&file).unwrap();
+        assert_eq!(auth_dot_json, same_auth_dot_json);
+    }
+
+    #[tokio::test]
+    async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
+        let codex_home = tempdir().unwrap();
+        let fake_jwt = write_auth_file(
             AuthFileParams {
                 openai_api_key: None,
                 chatgpt_plan_type: "pro".to_string(),
@@ -525,7 +479,9 @@ mod tests {
             mode,
             auth_dot_json,
             auth_file: _,
-        } = load_auth(codex_home.path(), false).unwrap().unwrap();
+        } = load_auth(codex_home.path(), false, AuthMode::ChatGPT)
+            .unwrap()
+            .unwrap();
         assert_eq!(None, api_key);
         assert_eq!(AuthMode::ChatGPT, mode);
 
@@ -538,6 +494,7 @@ mod tests {
                     id_token: IdTokenInfo {
                         email: Some("user@example.com".to_string()),
                         chatgpt_plan_type: Some(PlanType::Known(KnownPlan::Pro)),
+                        raw_jwt: fake_jwt,
                     },
                     access_token: "test-access-token".to_string(),
                     refresh_token: "test-refresh-token".to_string(),
@@ -559,7 +516,7 @@ mod tests {
     #[tokio::test]
     async fn pro_account_with_api_key_still_uses_chatgpt_auth() {
         let codex_home = tempdir().unwrap();
-        write_auth_file(
+        let fake_jwt = write_auth_file(
             AuthFileParams {
                 openai_api_key: Some("sk-test-key".to_string()),
                 chatgpt_plan_type: "pro".to_string(),
@@ -573,7 +530,9 @@ mod tests {
             mode,
             auth_dot_json,
             auth_file: _,
-        } = load_auth(codex_home.path(), false).unwrap().unwrap();
+        } = load_auth(codex_home.path(), false, AuthMode::ChatGPT)
+            .unwrap()
+            .unwrap();
         assert_eq!(None, api_key);
         assert_eq!(AuthMode::ChatGPT, mode);
 
@@ -586,6 +545,7 @@ mod tests {
                     id_token: IdTokenInfo {
                         email: Some("user@example.com".to_string()),
                         chatgpt_plan_type: Some(PlanType::Known(KnownPlan::Pro)),
+                        raw_jwt: fake_jwt,
                     },
                     access_token: "test-access-token".to_string(),
                     refresh_token: "test-refresh-token".to_string(),
@@ -620,7 +580,9 @@ mod tests {
             mode,
             auth_dot_json,
             auth_file: _,
-        } = load_auth(codex_home.path(), false).unwrap().unwrap();
+        } = load_auth(codex_home.path(), false, AuthMode::ChatGPT)
+            .unwrap()
+            .unwrap();
         assert_eq!(Some("sk-test-key".to_string()), api_key);
         assert_eq!(AuthMode::ApiKey, mode);
 
@@ -633,7 +595,7 @@ mod tests {
         chatgpt_plan_type: String,
     }
 
-    fn write_auth_file(params: AuthFileParams, codex_home: &Path) -> std::io::Result<()> {
+    fn write_auth_file(params: AuthFileParams, codex_home: &Path) -> std::io::Result<String> {
         let auth_file = get_auth_file(codex_home);
         // Create a minimal valid JWT for the id_token field.
         #[derive(Serialize)]
@@ -671,7 +633,9 @@ mod tests {
             "last_refresh": LAST_REFRESH,
         });
         let auth_json = serde_json::to_string_pretty(&auth_json_data)?;
-        std::fs::write(auth_file, auth_json)
+        std::fs::write(auth_file, auth_json)?;
+
+        Ok(fake_jwt)
     }
 
     #[test]
@@ -707,7 +671,9 @@ mod tests {
         )
         .unwrap();
 
-        let auth = load_auth(dir.path(), false).unwrap().unwrap();
+        let auth = load_auth(dir.path(), false, AuthMode::ChatGPT)
+            .unwrap()
+            .unwrap();
         assert_eq!(auth.mode, AuthMode::ApiKey);
         assert_eq!(auth.api_key, Some("sk-test-key".to_string()));
 

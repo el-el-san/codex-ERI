@@ -5,19 +5,19 @@ use crate::exec_command::session_id::SessionId;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecCommandParams {
-    pub cmd: String,
+    pub(crate) cmd: String,
 
     #[serde(default = "default_yield_time")]
-    pub yield_time_ms: u64,
+    pub(crate) yield_time_ms: u64,
 
     #[serde(default = "max_output_tokens")]
-    pub max_output_tokens: u64,
+    pub(crate) max_output_tokens: u64,
 
     #[serde(default = "default_shell")]
-    pub shell: String,
+    pub(crate) shell: String,
 
     #[serde(default = "default_login")]
-    pub login: bool,
+    pub(crate) login: bool,
 }
 
 fn default_yield_time() -> u64 {
@@ -38,14 +38,14 @@ fn default_shell() -> String {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WriteStdinParams {
-    pub session_id: SessionId,
-    pub chars: String,
+    pub(crate) session_id: SessionId,
+    pub(crate) chars: String,
 
     #[serde(default = "write_stdin_default_yield_time_ms")]
-    pub yield_time_ms: u64,
+    pub(crate) yield_time_ms: u64,
 
     #[serde(default = "write_stdin_default_max_output_tokens")]
-    pub max_output_tokens: u64,
+    pub(crate) max_output_tokens: u64,
 }
 
 fn write_stdin_default_yield_time_ms() -> u64 {

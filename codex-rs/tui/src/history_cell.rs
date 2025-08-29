@@ -20,6 +20,7 @@ use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
 use codex_login::get_auth_file;
 use codex_login::try_read_auth_json;
+use codex_protocol::parse_command::ParsedCommand;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -39,18 +40,6 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::error;
 use uuid::Uuid;
-
-#[derive(Clone, Debug)]
-pub(crate) enum ParsedCommand {
-    Read { name: String, path: String },
-    ListFiles { cmd: String, path: Option<String> },
-    Search { query: Option<String>, path: Option<String>, cmd: String },
-    Format { cmd: String },
-    Test { cmd: String },
-    Lint { cmd: String, files: Vec<String> },
-    Unknown { cmd: String },
-    Noop { cmd: String },
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct CommandOutput {
@@ -100,26 +89,6 @@ pub(crate) struct TranscriptOnlyHistoryCell {
     lines: Vec<Line<'static>>,
 }
 
-pub(crate) struct ParallelExecutionGroupStart {
-    pub view: crate::text_block::TextBlock,
-}
-
-impl std::fmt::Debug for ParallelExecutionGroupStart {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ParallelExecutionGroupStart").finish()
-    }
-}
-
-pub(crate) struct ParallelExecutionGroupEnd {
-    pub view: crate::text_block::TextBlock,
-}
-
-impl std::fmt::Debug for ParallelExecutionGroupEnd {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ParallelExecutionGroupEnd").finish()
-    }
-}
-
 impl HistoryCell for TranscriptOnlyHistoryCell {
     fn display_lines(&self) -> Vec<Line<'static>> {
         Vec::new()
@@ -127,18 +96,6 @@ impl HistoryCell for TranscriptOnlyHistoryCell {
 
     fn transcript_lines(&self) -> Vec<Line<'static>> {
         self.lines.clone()
-    }
-}
-
-impl HistoryCell for ParallelExecutionGroupStart {
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        vec![Line::from("⚡ Parallel execution started".cyan().bold())]
-    }
-}
-
-impl HistoryCell for ParallelExecutionGroupEnd {
-    fn display_lines(&self) -> Vec<Line<'static>> {
-        vec![Line::from("✅ Parallel execution completed".green().bold())]
     }
 }
 
@@ -342,15 +299,6 @@ pub(crate) fn new_user_prompt(message: String) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
     lines.push(Line::from("user".cyan().bold()));
-    lines.extend(message.lines().map(|l| Line::from(l.to_string())));
-
-    PlainHistoryCell { lines }
-}
-
-pub(crate) fn new_agent_answer(message: String) -> PlainHistoryCell {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(""));
-    lines.push(Line::from("agent".green().bold()));
     lines.extend(message.lines().map(|l| Line::from(l.to_string())));
 
     PlainHistoryCell { lines }
@@ -909,45 +857,24 @@ pub(crate) fn new_mcp_tools_output(
             server.clone().into(),
         ]));
 
-        match cfg {
-            codex_core::config_types::McpServerConfig::Stdio { command, args, env, .. } => {
-                if !command.is_empty() {
-                    let cmd_display = format!("{} {}", command, args.join(" "));
+        if !cfg.command.is_empty() {
+            let cmd_display = format!("{} {}", cfg.command, cfg.args.join(" "));
 
-                    lines.push(Line::from(vec![
-                        "    • Command: ".into(),
-                        cmd_display.into(),
-                    ]));
-                }
+            lines.push(Line::from(vec![
+                "    • Command: ".into(),
+                cmd_display.into(),
+            ]));
+        }
 
-                if let Some(env) = env.as_ref()
-                    && !env.is_empty()
-                {
-                    let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    env_pairs.sort();
-                    lines.push(Line::from(vec![
-                        "    • Env: ".into(),
-                        env_pairs.join(" ").into(),
-                    ]));
-                }
-            }
-            codex_core::config_types::McpServerConfig::Http { url, env, .. } => {
-                lines.push(Line::from(vec![
-                    "    • URL: ".into(),
-                    url.clone().into(),
-                ]));
-
-                if let Some(env) = env.as_ref()
-                    && !env.is_empty()
-                {
-                    let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    env_pairs.sort();
-                    lines.push(Line::from(vec![
-                        "    • Env: ".into(),
-                        env_pairs.join(" ").into(),
-                    ]));
-                }
-            }
+        if let Some(env) = cfg.env.as_ref()
+            && !env.is_empty()
+        {
+            let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            env_pairs.sort();
+            lines.push(Line::from(vec![
+                "    • Env: ".into(),
+                env_pairs.join(" ").into(),
+            ]));
         }
 
         if names.is_empty() {
@@ -1282,23 +1209,6 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
         Span::raw(")"),
     ];
     Line::from(invocation_spans)
-}
-
-pub(crate) fn new_diff_output(diff_output: String) -> PlainHistoryCell {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(""));
-    lines.push(Line::from("📝 Diff Output".yellow().bold()));
-    lines.extend(diff_output.lines().map(|l| Line::from(l.to_string())));
-    PlainHistoryCell { lines }
-}
-
-pub(crate) fn new_prompts_output() -> PlainHistoryCell {
-    PlainHistoryCell { 
-        lines: vec![
-            Line::from(""),
-            Line::from("📋 Available prompts".cyan().bold()),
-        ]
-    }
 }
 
 #[cfg(test)]

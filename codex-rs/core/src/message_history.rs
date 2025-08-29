@@ -125,16 +125,18 @@ pub(crate) async fn append_entry(text: &str, session_id: &Uuid, config: &Config)
 /// times if the lock is currently held by another process. This prevents a
 /// potential indefinite wait while still giving other writers some time to
 /// finish their operation.
-async fn acquire_exclusive_lock_with_retry(file: &std::fs::File) -> Result<()> {
+async fn acquire_exclusive_lock_with_retry(file: &File) -> Result<()> {
     use tokio::time::sleep;
 
     for _ in 0..MAX_RETRIES {
-        match fs2::FileExt::try_lock_exclusive(file) {
+        match file.try_lock() {
             Ok(()) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                sleep(RETRY_SLEEP).await;
-            }
-            Err(e) => return Err(e),
+            Err(e) => match e {
+                std::fs::TryLockError::WouldBlock => {
+                    sleep(RETRY_SLEEP).await;
+                }
+                other => return Err(other.into()),
+            },
         }
     }
 
@@ -259,12 +261,14 @@ pub(crate) fn lookup(log_id: u64, offset: usize, config: &Config) -> Option<Hist
 #[cfg(unix)]
 fn acquire_shared_lock_with_retry(file: &File) -> Result<()> {
     for _ in 0..MAX_RETRIES {
-        match fs2::FileExt::try_lock_shared(file) {
+        match file.try_lock_shared() {
             Ok(()) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(RETRY_SLEEP);
-            }
-            Err(e) => return Err(e),
+            Err(e) => match e {
+                std::fs::TryLockError::WouldBlock => {
+                    std::thread::sleep(RETRY_SLEEP);
+                }
+                other => return Err(other.into()),
+            },
         }
     }
 
@@ -294,65 +298,4 @@ async fn ensure_owner_only_permissions(file: &File) -> Result<()> {
 async fn ensure_owner_only_permissions(_file: &File) -> Result<()> {
     // For now, on non-Unix, simply succeed.
     Ok(())
-}
-
-/// Get the most recent session ID from the history file.
-pub async fn get_last_session_id(config: &Config) -> Result<Option<String>> {
-    let path = history_filepath(config);
-    
-    // Read the file backwards to find the last entry
-    let contents = match tokio::fs::read_to_string(&path).await {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    
-    // Get the last non-empty line
-    let last_entry = contents
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty());
-    
-    match last_entry {
-        Some(line) => {
-            match serde_json::from_str::<HistoryEntry>(line) {
-                Ok(entry) => Ok(Some(entry.session_id)),
-                Err(e) => {
-                    tracing::warn!("Failed to parse last history entry: {}", e);
-                    Ok(None)
-                }
-            }
-        }
-        None => Ok(None),
-    }
-}
-
-/// Get all history entries for a given session ID.
-pub async fn get_session_history(session_id: &str, config: &Config) -> Result<Vec<HistoryEntry>> {
-    let path = history_filepath(config);
-    
-    let contents = match tokio::fs::read_to_string(&path).await {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-    
-    let mut entries = Vec::new();
-    for line in contents.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        
-        match serde_json::from_str::<HistoryEntry>(line) {
-            Ok(entry) if entry.session_id == session_id => {
-                entries.push(entry);
-            }
-            Ok(_) => {}, // Different session, skip
-            Err(e) => {
-                tracing::warn!("Failed to parse history entry: {}", e);
-            }
-        }
-    }
-    
-    Ok(entries)
 }

@@ -1,18 +1,9 @@
-#[cfg(not(target_os = "android"))]
 use std::sync::Mutex as StdMutex;
 
-#[cfg(not(target_os = "android"))]
 use tokio::sync::broadcast;
-#[cfg(not(target_os = "android"))]
 use tokio::sync::mpsc;
-#[cfg(not(target_os = "android"))]
 use tokio::task::JoinHandle;
 
-#[cfg(target_os = "android")]
-#[derive(Debug)]
-pub(crate) struct ExecCommandSession;
-
-#[cfg(not(target_os = "android"))]
 #[derive(Debug)]
 pub(crate) struct ExecCommandSession {
     /// Queue for writing bytes to the process stdin (PTY master write side).
@@ -35,7 +26,6 @@ pub(crate) struct ExecCommandSession {
     wait_handle: StdMutex<Option<JoinHandle<()>>>,
 }
 
-#[cfg(not(target_os = "android"))]
 impl ExecCommandSession {
     pub(crate) fn new(
         writer_tx: mpsc::Sender<Vec<u8>>,
@@ -64,7 +54,6 @@ impl ExecCommandSession {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 impl Drop for ExecCommandSession {
     fn drop(&mut self) {
         // Best-effort: terminate child first so blocking tasks can complete.

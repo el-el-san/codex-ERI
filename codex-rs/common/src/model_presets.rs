@@ -1,4 +1,4 @@
-use codex_protocol::config_types::ReasoningEffort;
+use codex_core::protocol_config_types::ReasoningEffort;
 
 /// A simple preset pairing a model slug with a reasoning effort.
 #[derive(Debug, Clone, Copy)]

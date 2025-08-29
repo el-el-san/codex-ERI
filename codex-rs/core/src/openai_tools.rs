@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -8,6 +9,9 @@ use crate::model_family::ModelFamily;
 use crate::plan_tool::PLAN_TOOL;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+use crate::tool_apply_patch::ApplyPatchToolType;
+use crate::tool_apply_patch::create_apply_patch_freeform_tool;
+use crate::tool_apply_patch::create_apply_patch_json_tool;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiTool {
@@ -20,20 +24,18 @@ pub struct ResponsesApiTool {
     pub(crate) parameters: JsonSchema,
 }
 
-/// Freeform tool format for GPT-5 models
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct FreeformToolFormat {
-    pub(crate) r#type: String,
-    pub(crate) syntax: String,
-    pub(crate) definition: String,
-}
-
-/// Freeform tool for GPT-5 models
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub(crate) struct FreeformTool {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeformTool {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) format: FreeformToolFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeformToolFormat {
+    pub(crate) r#type: String,
+    pub(crate) syntax: String,
+    pub(crate) definition: String,
 }
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
@@ -47,7 +49,7 @@ pub(crate) enum OpenAiTool {
     LocalShell {},
     #[serde(rename = "web_search")]
     WebSearch {},
-    #[serde(rename = "freeform")]
+    #[serde(rename = "custom")]
     Freeform(FreeformTool),
 }
 
@@ -56,43 +58,71 @@ pub enum ConfigShellToolType {
     DefaultShell,
     ShellWithRequest { sandbox_policy: SandboxPolicy },
     LocalShell,
+    StreamableShell,
 }
 
 #[derive(Debug, Clone)]
-pub struct ToolsConfig {
+pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub plan_tool: bool,
+    pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
 }
 
+pub(crate) struct ToolsConfigParams<'a> {
+    pub(crate) model_family: &'a ModelFamily,
+    pub(crate) approval_policy: AskForApproval,
+    pub(crate) sandbox_policy: SandboxPolicy,
+    pub(crate) include_plan_tool: bool,
+    pub(crate) include_apply_patch_tool: bool,
+    pub(crate) include_web_search_request: bool,
+    pub(crate) use_streamable_shell_tool: bool,
+}
+
 impl ToolsConfig {
-    pub fn new(
-        model_family: &ModelFamily,
-        approval_policy: AskForApproval,
-        sandbox_policy: SandboxPolicy,
-        include_plan_tool: bool,
-        include_web_search_request: bool,
-    ) -> Self {
-        let shell_type = if model_family.uses_local_shell_tool {
+    pub fn new(params: &ToolsConfigParams) -> Self {
+        let ToolsConfigParams {
+            model_family,
+            approval_policy,
+            sandbox_policy,
+            include_plan_tool,
+            include_apply_patch_tool,
+            include_web_search_request,
+            use_streamable_shell_tool,
+        } = params;
+        let mut shell_type = if *use_streamable_shell_tool {
+            ConfigShellToolType::StreamableShell
+        } else if model_family.uses_local_shell_tool {
             ConfigShellToolType::LocalShell
-        } else if matches!(approval_policy, AskForApproval::OnRequest | AskForApproval::Never) {
-            // Never の場合も sandbox_policy を使用してネットワーク設定を正しく伝える
-            ConfigShellToolType::ShellWithRequest {
-                sandbox_policy: sandbox_policy.clone(),
-            }
         } else {
             ConfigShellToolType::DefaultShell
+        };
+        if matches!(approval_policy, AskForApproval::OnRequest) && !use_streamable_shell_tool {
+            shell_type = ConfigShellToolType::ShellWithRequest {
+                sandbox_policy: sandbox_policy.clone(),
+            }
+        }
+
+        let apply_patch_tool_type = match model_family.apply_patch_tool_type {
+            Some(ApplyPatchToolType::Freeform) => Some(ApplyPatchToolType::Freeform),
+            Some(ApplyPatchToolType::Function) => Some(ApplyPatchToolType::Function),
+            None => {
+                if *include_apply_patch_tool {
+                    Some(ApplyPatchToolType::Freeform)
+                } else {
+                    None
+                }
+            }
         };
 
         Self {
             shell_type,
-            plan_tool: include_plan_tool,
-            web_search_request: include_web_search_request,
+            plan_tool: *include_plan_tool,
+            apply_patch_tool_type,
+            web_search_request: *include_web_search_request,
         }
     }
 }
-
-// Note: Only the two-argument version of `get_openai_tools` is supported.
 
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +136,8 @@ pub(crate) enum JsonSchema {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// MCP schema allows "number" | "integer" for Number
+    #[serde(alias = "integer")]
     Number {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -134,16 +166,20 @@ fn create_shell_tool() -> OpenAiTool {
         "command".to_string(),
         JsonSchema::Array {
             items: Box::new(JsonSchema::String { description: None }),
-            description: None,
+            description: Some("The command to execute".to_string()),
         },
     );
     properties.insert(
         "workdir".to_string(),
-        JsonSchema::String { description: None },
+        JsonSchema::String {
+            description: Some("The working directory to execute the command in".to_string()),
+        },
     );
     properties.insert(
-        "timeout".to_string(),
-        JsonSchema::Number { description: None },
+        "timeout_ms".to_string(),
+        JsonSchema::Number {
+            description: Some("The timeout for the command in milliseconds".to_string()),
+        },
     );
 
     OpenAiTool::Function(ResponsesApiTool {
@@ -174,7 +210,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
         },
     );
     properties.insert(
-        "timeout".to_string(),
+        "timeout_ms".to_string(),
         JsonSchema::Number {
             description: Some("The timeout for the command in milliseconds".to_string()),
         },
@@ -190,7 +226,7 @@ fn create_shell_tool_for_sandbox(sandbox_policy: &SandboxPolicy) -> OpenAiTool {
         properties.insert(
         "justification".to_string(),
         JsonSchema::String {
-            description: Some("Only set if ask_for_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
+            description: Some("Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
         },
     );
     }
@@ -218,7 +254,7 @@ The shell tool is used to execute shell commands.
                 if !network_access {
                     "\n  - Commands that require network access\n"
                 } else {
-                    "\n- Network access is enabled, you can use curl, wget, and other network commands\n"
+                    ""
                 }
             )
         }
@@ -233,7 +269,6 @@ The shell tool is used to execute shell commands.
     - Reading files outside the current directory
     - Writing files
     - Applying patches
-    - Commands that require network access
   - Examples of commands that require escalated privileges:
     - apply_patch
     - git commit
@@ -257,11 +292,16 @@ The shell tool is used to execute shell commands.
         },
     })
 }
+/// TODO(dylan): deprecate once we get rid of json tool
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ApplyPatchToolArgs {
+    pub(crate) input: String,
+}
 
 /// Returns JSON values that are compatible with Function Calling in the
 /// Responses API:
 /// https://platform.openai.com/docs/guides/function-calling?api-mode=responses
-pub(crate) fn create_tools_json_for_responses_api(
+pub fn create_tools_json_for_responses_api(
     tools: &Vec<OpenAiTool>,
 ) -> crate::error::Result<Vec<serde_json::Value>> {
     let mut tools_json = Vec::new();
@@ -304,37 +344,6 @@ pub(crate) fn create_tools_json_for_chat_completions_api(
     Ok(tools_json)
 }
 
-/// Fix array properties that might be missing the "items" field
-/// This is needed for some MCP tools that have array parameters
-/// but don't include the required "items" field in their schema
-fn fix_array_properties(properties: &mut serde_json::Map<String, serde_json::Value>) {
-    for (key, value) in properties.iter_mut() {
-        if let Some(obj) = value.as_object_mut() {
-            // Check if this is an array type
-            if let Some(type_value) = obj.get("type") {
-                if type_value == "array" && !obj.contains_key("items") {
-                    // Add a default items field for arrays without one
-                    // For image/reference URLs, use string type as more appropriate
-                    let items_type = if key.contains("url") || key.contains("image") {
-                        json!({"type": "string"})
-                    } else {
-                        json!({"type": "object"})
-                    };
-                    obj.insert("items".to_string(), items_type);
-                    tracing::debug!("Fixed missing 'items' for array property: {}", key);
-                }
-            }
-            
-            // Recursively fix nested objects
-            if let Some(nested_props) = obj.get_mut("properties") {
-                if let Some(nested_obj) = nested_props.as_object_mut() {
-                    fix_array_properties(nested_obj);
-                }
-            }
-        }
-    }
-}
-
 pub(crate) fn mcp_tool_to_openai_tool(
     fully_qualified_name: String,
     tool: mcp_types::Tool,
@@ -352,36 +361,14 @@ pub(crate) fn mcp_tool_to_openai_tool(
     if input_schema.properties.is_none() {
         input_schema.properties = Some(serde_json::Value::Object(serde_json::Map::new()));
     }
-    
-    // Ensure properties field is always an object (not null or other types)
-    if let Some(props) = &input_schema.properties {
-        if !props.is_object() {
-            input_schema.properties = Some(serde_json::Value::Object(serde_json::Map::new()));
-        }
-    }
 
-    // Fix array properties that might be missing the "items" field
-    // Some MCP tools (like t2v_kamui_wan_v2_2_5b_fast) have array properties without items
-    if let Some(props) = input_schema.properties.as_mut() {
-        if let Some(obj) = props.as_object_mut() {
-            fix_array_properties(obj);
-        }
-    }
-
-    let serialized_input_schema = serde_json::to_value(input_schema)?;
-    
-    // Debug logging for specific problematic tools
-    if fully_qualified_name.contains("vidu_q1") || 
-       fully_qualified_name.contains("runway_aleph") ||
-       fully_qualified_name.contains("flux_krea_lora") ||
-       fully_qualified_name.contains("ideogram_character") {
-        tracing::debug!(
-            "Converting MCP tool {}: schema = {:?}", 
-            fully_qualified_name, 
-            serialized_input_schema
-        );
-    }
-    
+    // Serialize to a raw JSON value so we can sanitize schemas coming from MCP
+    // servers. Some servers omit the top-level or nested `type` in JSON
+    // Schemas (e.g. using enum/anyOf), or use unsupported variants like
+    // `integer`. Our internal JsonSchema is a small subset and requires
+    // `type`, so we coerce/sanitize here for compatibility.
+    let mut serialized_input_schema = serde_json::to_value(input_schema)?;
+    sanitize_json_schema(&mut serialized_input_schema);
     let input_schema = serde_json::from_value::<JsonSchema>(serialized_input_schema)?;
 
     Ok(ResponsesApiTool {
@@ -390,6 +377,120 @@ pub(crate) fn mcp_tool_to_openai_tool(
         strict: false,
         parameters: input_schema,
     })
+}
+
+/// Sanitize a JSON Schema (as serde_json::Value) so it can fit our limited
+/// JsonSchema enum. This function:
+/// - Ensures every schema object has a "type". If missing, infers it from
+///   common keywords (properties => object, items => array, enum/const/format => string)
+///   and otherwise defaults to "string".
+/// - Fills required child fields (e.g. array items, object properties) with
+///   permissive defaults when absent.
+fn sanitize_json_schema(value: &mut JsonValue) {
+    match value {
+        JsonValue::Bool(_) => {
+            // JSON Schema boolean form: true/false. Coerce to an accept-all string.
+            *value = json!({ "type": "string" });
+        }
+        JsonValue::Array(arr) => {
+            for v in arr.iter_mut() {
+                sanitize_json_schema(v);
+            }
+        }
+        JsonValue::Object(map) => {
+            // First, recursively sanitize known nested schema holders
+            if let Some(props) = map.get_mut("properties")
+                && let Some(props_map) = props.as_object_mut()
+            {
+                for (_k, v) in props_map.iter_mut() {
+                    sanitize_json_schema(v);
+                }
+            }
+            if let Some(items) = map.get_mut("items") {
+                sanitize_json_schema(items);
+            }
+            // Some schemas use oneOf/anyOf/allOf - sanitize their entries
+            for combiner in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+                if let Some(v) = map.get_mut(combiner) {
+                    sanitize_json_schema(v);
+                }
+            }
+
+            // Normalize/ensure type
+            let mut ty = map
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            // If type is an array (union), pick first supported; else leave to inference
+            if ty.is_none()
+                && let Some(JsonValue::Array(types)) = map.get("type")
+            {
+                for t in types {
+                    if let Some(tt) = t.as_str()
+                        && matches!(
+                            tt,
+                            "object" | "array" | "string" | "number" | "integer" | "boolean"
+                        )
+                    {
+                        ty = Some(tt.to_string());
+                        break;
+                    }
+                }
+            }
+
+            // Infer type if still missing
+            if ty.is_none() {
+                if map.contains_key("properties")
+                    || map.contains_key("required")
+                    || map.contains_key("additionalProperties")
+                {
+                    ty = Some("object".to_string());
+                } else if map.contains_key("items") || map.contains_key("prefixItems") {
+                    ty = Some("array".to_string());
+                } else if map.contains_key("enum")
+                    || map.contains_key("const")
+                    || map.contains_key("format")
+                {
+                    ty = Some("string".to_string());
+                } else if map.contains_key("minimum")
+                    || map.contains_key("maximum")
+                    || map.contains_key("exclusiveMinimum")
+                    || map.contains_key("exclusiveMaximum")
+                    || map.contains_key("multipleOf")
+                {
+                    ty = Some("number".to_string());
+                }
+            }
+            // If we still couldn't infer, default to string
+            let ty = ty.unwrap_or_else(|| "string".to_string());
+            map.insert("type".to_string(), JsonValue::String(ty.to_string()));
+
+            // Ensure object schemas have properties map
+            if ty == "object" {
+                if !map.contains_key("properties") {
+                    map.insert(
+                        "properties".to_string(),
+                        JsonValue::Object(serde_json::Map::new()),
+                    );
+                }
+                // If additionalProperties is an object schema, sanitize it too.
+                // Leave booleans as-is, since JSON Schema allows boolean here.
+                if let Some(ap) = map.get_mut("additionalProperties") {
+                    let is_bool = matches!(ap, JsonValue::Bool(_));
+                    if !is_bool {
+                        sanitize_json_schema(ap);
+                    }
+                }
+            }
+
+            // Ensure array schemas have items
+            if ty == "array" && !map.contains_key("items") {
+                map.insert("items".to_string(), json!({ "type": "string" }));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Returns a list of OpenAiTools based on the provided config and MCP tools.
@@ -411,10 +512,29 @@ pub(crate) fn get_openai_tools(
         ConfigShellToolType::LocalShell => {
             tools.push(OpenAiTool::LocalShell {});
         }
+        ConfigShellToolType::StreamableShell => {
+            tools.push(OpenAiTool::Function(
+                crate::exec_command::create_exec_command_tool_for_responses_api(),
+            ));
+            tools.push(OpenAiTool::Function(
+                crate::exec_command::create_write_stdin_tool_for_responses_api(),
+            ));
+        }
     }
 
     if config.plan_tool {
         tools.push(PLAN_TOOL.clone());
+    }
+
+    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+        match apply_patch_tool_type {
+            ApplyPatchToolType::Freeform => {
+                tools.push(create_apply_patch_freeform_tool());
+            }
+            ApplyPatchToolType::Function => {
+                tools.push(create_apply_patch_json_tool());
+            }
+        }
     }
 
     if config.web_search_request {
@@ -422,13 +542,16 @@ pub(crate) fn get_openai_tools(
     }
 
     if let Some(mcp_tools) = mcp_tools {
-        for (name, tool) in mcp_tools {
+        // Ensure deterministic ordering to maximize prompt cache hits.
+        // HashMap iteration order is non-deterministic, so sort by fully-qualified tool name.
+        let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (name, tool) in entries.into_iter() {
             match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
                 Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
                 Err(e) => {
-                    // Suppress or downgrade MCP tool conversion errors that are expected
-                    // Some MCP servers may have tools that don't fully conform to OpenAI schema
-                    tracing::debug!("Skipping MCP tool {name:?}: {e:?}");
+                    tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
                 }
             }
         }
@@ -438,10 +561,10 @@ pub(crate) fn get_openai_tools(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use crate::model_family::find_family_for_model;
     use mcp_types::ToolInputSchema;
+    use pretty_assertions::assert_eq;
 
     use super::*;
 
@@ -473,58 +596,49 @@ mod tests {
     fn test_get_openai_tools() {
         let model_family = find_family_for_model("codex-mini-latest")
             .expect("codex-mini-latest should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            true,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: true,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
-        assert_eq_tool_names(&tools, &["local_shell", "update_plan"]);
+        assert_eq_tool_names(&tools, &["local_shell", "update_plan", "web_search"]);
     }
 
     #[test]
     fn test_get_openai_tools_default_shell() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            true,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: true,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
         let tools = get_openai_tools(&config, Some(HashMap::new()));
 
-        assert_eq_tool_names(&tools, &["shell", "update_plan"]);
-    }
-
-    #[test]
-    fn test_get_openai_tools_with_web_search() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false, // plan tool disabled
-            true,  // include web_search_request
-        );
-        let tools = get_openai_tools(&config, Some(HashMap::new()));
-
-        assert_eq_tool_names(&tools, &["shell", "web_search"]);
+        assert_eq_tool_names(&tools, &["shell", "update_plan", "web_search"]);
     }
 
     #[test]
     fn test_get_openai_tools_mcp_tools() {
         let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(
-            &model_family,
-            AskForApproval::Never,
-            SandboxPolicy::ReadOnly,
-            false,
-            false,
-        );
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
         let tools = get_openai_tools(
             &config,
             Some(HashMap::from([(
@@ -546,8 +660,8 @@ mod tests {
                                     "number_property": { "type": "number" },
                                 },
                                 "required": [
-                                    "string_property",
-                                    "number_property"
+                                    "string_property".to_string(),
+                                    "number_property".to_string()
                                 ],
                                 "additionalProperties": Some(false),
                             },
@@ -563,10 +677,13 @@ mod tests {
             )])),
         );
 
-        assert_eq_tool_names(&tools, &["shell", "test_server/do_something_cool"]);
+        assert_eq_tool_names(
+            &tools,
+            &["shell", "web_search", "test_server/do_something_cool"],
+        );
 
         assert_eq!(
-            tools[1],
+            tools[2],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -604,6 +721,301 @@ mod tests {
                     additional_properties: None,
                 },
                 description: "Do something cool".to_string(),
+                strict: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_get_openai_tools_mcp_tools_sorted_by_name() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: false,
+            use_streamable_shell_tool: false,
+        });
+
+        // Intentionally construct a map with keys that would sort alphabetically.
+        let tools_map: HashMap<String, mcp_types::Tool> = HashMap::from([
+            (
+                "test_server/do".to_string(),
+                mcp_types::Tool {
+                    name: "a".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("a".to_string()),
+                },
+            ),
+            (
+                "test_server/something".to_string(),
+                mcp_types::Tool {
+                    name: "b".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("b".to_string()),
+                },
+            ),
+            (
+                "test_server/cool".to_string(),
+                mcp_types::Tool {
+                    name: "c".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({})),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("c".to_string()),
+                },
+            ),
+        ]);
+
+        let tools = get_openai_tools(&config, Some(tools_map));
+        // Expect shell first, followed by MCP tools sorted by fully-qualified name.
+        assert_eq_tool_names(
+            &tools,
+            &[
+                "shell",
+                "test_server/cool",
+                "test_server/do",
+                "test_server/something",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_property_missing_type_defaults_to_string() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
+
+        let tools = get_openai_tools(
+            &config,
+            Some(HashMap::from([(
+                "dash/search".to_string(),
+                mcp_types::Tool {
+                    name: "search".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "query": {
+                                "description": "search query"
+                            }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("Search docs".to_string()),
+                },
+            )])),
+        );
+
+        assert_eq_tool_names(&tools, &["shell", "web_search", "dash/search"]);
+
+        assert_eq!(
+            tools[2],
+            OpenAiTool::Function(ResponsesApiTool {
+                name: "dash/search".to_string(),
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::from([(
+                        "query".to_string(),
+                        JsonSchema::String {
+                            description: Some("search query".to_string())
+                        }
+                    )]),
+                    required: None,
+                    additional_properties: None,
+                },
+                description: "Search docs".to_string(),
+                strict: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_integer_normalized_to_number() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
+
+        let tools = get_openai_tools(
+            &config,
+            Some(HashMap::from([(
+                "dash/paginate".to_string(),
+                mcp_types::Tool {
+                    name: "paginate".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "page": { "type": "integer" }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("Pagination".to_string()),
+                },
+            )])),
+        );
+
+        assert_eq_tool_names(&tools, &["shell", "web_search", "dash/paginate"]);
+        assert_eq!(
+            tools[2],
+            OpenAiTool::Function(ResponsesApiTool {
+                name: "dash/paginate".to_string(),
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::from([(
+                        "page".to_string(),
+                        JsonSchema::Number { description: None }
+                    )]),
+                    required: None,
+                    additional_properties: None,
+                },
+                description: "Pagination".to_string(),
+                strict: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_array_without_items_gets_default_string_items() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
+
+        let tools = get_openai_tools(
+            &config,
+            Some(HashMap::from([(
+                "dash/tags".to_string(),
+                mcp_types::Tool {
+                    name: "tags".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "tags": { "type": "array" }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("Tags".to_string()),
+                },
+            )])),
+        );
+
+        assert_eq_tool_names(&tools, &["shell", "web_search", "dash/tags"]);
+        assert_eq!(
+            tools[2],
+            OpenAiTool::Function(ResponsesApiTool {
+                name: "dash/tags".to_string(),
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::from([(
+                        "tags".to_string(),
+                        JsonSchema::Array {
+                            items: Box::new(JsonSchema::String { description: None }),
+                            description: None
+                        }
+                    )]),
+                    required: None,
+                    additional_properties: None,
+                },
+                description: "Tags".to_string(),
+                strict: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_anyof_defaults_to_string() {
+        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            include_plan_tool: false,
+            include_apply_patch_tool: false,
+            include_web_search_request: true,
+            use_streamable_shell_tool: false,
+        });
+
+        let tools = get_openai_tools(
+            &config,
+            Some(HashMap::from([(
+                "dash/value".to_string(),
+                mcp_types::Tool {
+                    name: "value".to_string(),
+                    input_schema: ToolInputSchema {
+                        properties: Some(serde_json::json!({
+                            "value": { "anyOf": [ { "type": "string" }, { "type": "number" } ] }
+                        })),
+                        required: None,
+                        r#type: "object".to_string(),
+                    },
+                    output_schema: None,
+                    title: None,
+                    annotations: None,
+                    description: Some("AnyOf Value".to_string()),
+                },
+            )])),
+        );
+
+        assert_eq_tool_names(&tools, &["shell", "web_search", "dash/value"]);
+        assert_eq!(
+            tools[2],
+            OpenAiTool::Function(ResponsesApiTool {
+                name: "dash/value".to_string(),
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::from([(
+                        "value".to_string(),
+                        JsonSchema::String { description: None }
+                    )]),
+                    required: None,
+                    additional_properties: None,
+                },
+                description: "AnyOf Value".to_string(),
                 strict: false,
             })
         );

@@ -5,85 +5,21 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use strum_macros::Display;
 use wildmatch::WildMatchPattern;
 
 use serde::Deserialize;
 use serde::Serialize;
+use strum_macros::Display;
 
-/// Configuration for parallel execution
 #[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct ParallelExecutionConfig {
-    /// Enable parallel execution
-    #[serde(default = "default_parallel_enabled")]
-    pub enabled: bool,
-    
-    /// Maximum concurrent API calls
-    #[serde(default = "default_max_concurrent")]
-    pub max_concurrent_calls: usize,
-    
-    /// Minimum delay between API calls in milliseconds
-    #[serde(default = "default_min_delay_ms")]
-    pub min_delay_ms: u64,
-    
-    /// Maximum retry attempts
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-}
+pub struct McpServerConfig {
+    pub command: String,
 
-fn default_parallel_enabled() -> bool { true }
-fn default_max_concurrent() -> usize { 5 }
-fn default_min_delay_ms() -> u64 { 100 }
-fn default_max_retries() -> u32 { 5 }
+    #[serde(default)]
+    pub args: Vec<String>,
 
-impl Default for ParallelExecutionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_parallel_enabled(),
-            max_concurrent_calls: default_max_concurrent(),
-            min_delay_ms: default_min_delay_ms(),
-            max_retries: default_max_retries(),
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
-#[serde(untagged)]
-pub enum McpServerConfig {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: Option<HashMap<String, String>>,
-        #[serde(default = "default_mcp_enabled")]
-        enabled: bool,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        env: Option<HashMap<String, String>>,
-        #[serde(default = "default_mcp_enabled")]
-        enabled: bool,
-    },
-}
-
-fn default_mcp_enabled() -> bool { true }
-
-impl McpServerConfig {
-    pub fn is_enabled(&self) -> bool {
-        match self {
-            McpServerConfig::Stdio { enabled, .. } => *enabled,
-            McpServerConfig::Http { enabled, .. } => *enabled,
-        }
-    }
-
-    pub fn set_enabled(&mut self, value: bool) {
-        match self {
-            McpServerConfig::Stdio { enabled, .. } => *enabled = value,
-            McpServerConfig::Http { enabled, .. } => *enabled = value,
-        }
-    }
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
@@ -141,20 +77,6 @@ pub enum HistoryPersistence {
 /// Collection of settings that are specific to the TUI.
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Tui {}
-
-#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Default, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SandboxMode {
-    #[serde(rename = "read-only")]
-    #[default]
-    ReadOnly,
-
-    #[serde(rename = "workspace-write")]
-    WorkspaceWrite,
-
-    #[serde(rename = "danger-full-access")]
-    DangerFullAccess,
-}
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SandboxWorkspaceWrite {
@@ -290,4 +212,16 @@ pub enum ReasoningSummary {
     Detailed,
     /// Option to disable reasoning summaries.
     None,
+}
+
+/// Controls output length/detail on GPT-5 models via the Responses API.
+/// Serialized with lowercase values to match the OpenAI API.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Display)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum Verbosity {
+    Low,
+    #[default]
+    Medium,
+    High,
 }

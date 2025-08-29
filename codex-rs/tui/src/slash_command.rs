@@ -18,9 +18,9 @@ pub enum SlashCommand {
     Init,
     Compact,
     Diff,
+    Mention,
     Status,
     Mcp,
-    Prompts,
     Logout,
     Quit,
     #[cfg(debug_assertions)]
@@ -31,16 +31,16 @@ impl SlashCommand {
     /// User-visible description shown in the popup.
     pub fn description(self) -> &'static str {
         match self {
-            SlashCommand::Model => "choose what model and reasoning effort to use",
-            SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Quit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
+            SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
-            SlashCommand::Mcp => "manage MCP server connections",
-            SlashCommand::Prompts => "show example prompts",
+            SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",
