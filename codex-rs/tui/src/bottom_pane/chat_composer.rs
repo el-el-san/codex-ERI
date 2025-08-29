@@ -670,10 +670,6 @@ impl ChatComposer {
         self.current_file_query = Some(query);
         self.dismissed_file_popup_token = None;
     }
-
-    fn set_has_focus(&mut self, has_focus: bool) {
-        self.has_focus = has_focus;
-    }
 }
 
 impl WidgetRef for &ChatComposer {

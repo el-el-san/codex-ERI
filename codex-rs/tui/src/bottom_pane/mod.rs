@@ -502,11 +502,6 @@ impl BottomPane<'_> {
             self.request_redraw();
         }
     }
-
-    /// Request a redraw of the UI
-    fn request_redraw(&self) {
-        self.app_event_tx.send(AppEvent::RequestRedraw);
-    }
 }
 
 impl WidgetRef for &BottomPane<'_> {
