@@ -47,6 +47,7 @@ pub struct PastedImageInfo {
 }
 
 /// Capture image from system clipboard, encode to PNG, and return bytes + info.
+#[cfg(not(target_os = "android"))]
 pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
     tracing::debug!("attempting clipboard image read");
     let mut cb = arboard::Clipboard::new()
@@ -84,7 +85,16 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
     ))
 }
 
+/// Capture image from system clipboard, encode to PNG, and return bytes + info.
+#[cfg(target_os = "android")]
+pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
+    Err(PasteImageError::ClipboardUnavailable(
+        "Clipboard not available on Android".to_string(),
+    ))
+}
+
 /// Convenience: write to a temp file and return its path + info.
+#[cfg(not(target_os = "android"))]
 pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
     let (png, info) = paste_image_as_png()?;
     // Create a unique temporary file with a .png suffix to avoid collisions.
@@ -99,6 +109,14 @@ pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImag
         .keep()
         .map_err(|e| PasteImageError::IoError(e.error.to_string()))?;
     Ok((path, info))
+}
+
+/// Convenience: write to a temp file and return its path + info.
+#[cfg(target_os = "android")]
+pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
+    Err(PasteImageError::ClipboardUnavailable(
+        "Clipboard not available on Android".to_string(),
+    ))
 }
 
 /// Normalize pasted text that may represent a filesystem path.
