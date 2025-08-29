@@ -40,6 +40,18 @@ use tracing::error;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
+pub(crate) enum ParsedCommand {
+    Read { name: String, path: String },
+    ListFiles { cmd: String, path: Option<String> },
+    Search { query: Option<String>, path: Option<String>, cmd: String },
+    Format { cmd: String },
+    Test { cmd: String },
+    Lint { cmd: String, files: Vec<String> },
+    Unknown { cmd: String },
+    Noop { cmd: String },
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
     pub(crate) stdout: String,
