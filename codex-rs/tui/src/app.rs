@@ -468,15 +468,11 @@ impl App<'_> {
                     }
                     SlashCommand::Model => {
                         // TODO: Implement model selection
-                        if let AppState::Chat { widget } = &mut self.app_state {
-                            widget.add_text_to_history("Model selection not yet implemented".to_string());
-                        }
+                        tracing::info!("Model selection not yet implemented");
                     }
                     SlashCommand::Approvals => {
                         // TODO: Implement approvals configuration
-                        if let AppState::Chat { widget } = &mut self.app_state {
-                            widget.add_text_to_history("Approvals configuration not yet implemented".to_string());
-                        }
+                        tracing::info!("Approvals configuration not yet implemented");
                     }
                     #[cfg(debug_assertions)]
                     SlashCommand::TestApproval => {

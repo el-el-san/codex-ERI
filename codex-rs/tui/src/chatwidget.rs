@@ -607,7 +607,7 @@ impl ChatWidget<'_> {
                 invocation,
                 result,
             }) => {
-                self.add_to_history(crate::history_cell::new_completed_mcp_tool_call(
+                let cell = crate::history_cell::new_completed_mcp_tool_call(
                     80,
                     invocation,
                     duration,
@@ -616,7 +616,9 @@ impl ChatWidget<'_> {
                         .map(|r| r.is_error.unwrap_or(false))
                         .unwrap_or(false),
                     result,
-                ));
+                );
+                self.app_event_tx
+                    .send(AppEvent::InsertHistoryCell(cell));
             }
             EventMsg::GetHistoryEntryResponse(event) => {
                 let codex_core::protocol::GetHistoryEntryResponseEvent {
