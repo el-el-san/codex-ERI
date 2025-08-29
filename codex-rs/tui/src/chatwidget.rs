@@ -344,9 +344,9 @@ impl ChatWidget<'_> {
         self.bottom_pane.handle_paste(text);
     }
 
-    fn add_to_history(&mut self, cell: HistoryCell) {
+    fn add_to_history(&mut self, cell: impl crate::history_cell::HistoryCell + 'static) {
         self.app_event_tx
-            .send(AppEvent::InsertHistory(cell.plain_lines()));
+            .send(AppEvent::InsertHistoryCell(Box::new(cell)));
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -382,7 +382,7 @@ impl ChatWidget<'_> {
 
         // Only show text portion in conversation history for now.
         if !text.is_empty() {
-            self.add_to_history(HistoryCell::new_user_prompt(text.clone()));
+            self.add_to_history(crate::history_cell::new_user_prompt(text.clone()));
         }
     }
 
@@ -393,7 +393,7 @@ impl ChatWidget<'_> {
                 self.bottom_pane
                     .set_history_metadata(event.history_log_id, event.history_entry_count);
                 // Record session information at the top of the conversation.
-                self.add_to_history(HistoryCell::new_session_info(&self.config, event, true));
+                self.add_to_history(crate::history_cell::new_session_info(&self.config, event, true));
 
                 if let Some(user_message) = self.initial_user_message.take() {
                     // If the user provided an initial message, add it to the
@@ -932,7 +932,26 @@ impl ChatWidget<'_> {
             }
             // Close the block with a blank line for readability.
             lines.push(ratatui::text::Line::from(""));
-            self.app_event_tx.send(AppEvent::InsertHistory(lines));
+            
+            // Add to history based on stream kind
+            match kind {
+                StreamKind::Answer => {
+                    // Add assistant answer to history
+                    let answer_text = self.answer_buffer.clone();
+                    if !answer_text.is_empty() {
+                        self.add_to_history(crate::history_cell::new_agent_answer(answer_text));
+                    }
+                    self.answer_buffer.clear();
+                }
+                StreamKind::Reasoning => {
+                    // Add reasoning to history (transcript-only)
+                    let reasoning_text = self.reasoning_buffer.clone();
+                    if !reasoning_text.is_empty() {
+                        self.add_to_history(crate::history_cell::new_reasoning_block(reasoning_text, &self.config));
+                    }
+                    self.reasoning_buffer.clear();
+                }
+            }
         }
 
         // Clear the live overlay and reset state for the next stream.
@@ -1067,30 +1086,8 @@ impl ChatWidget<'_> {
         self.bottom_pane.clear_esc_backtrack_hint();
     }
 
-    /// Add a history cell to the conversation transcript
+    /// Add a history cell to the conversation transcript  
     fn add_to_history(&mut self, cell: impl crate::history_cell::HistoryCell + 'static) {
         self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(cell)));
-    }
-
-    /// Submit a text message from the user
-    pub(crate) fn submit_text_message(&mut self, text: String) {
-        use crate::history_cell;
-        use codex_core::protocol::Op;
-        use codex_core::protocol::InputItem;
-        
-        if text.is_empty() {
-            return;
-        }
-
-        // Add user message to history
-        self.add_to_history(history_cell::new_user_prompt(text.clone()));
-
-        // Send message to backend
-        let items = vec![InputItem::Text { text: text.clone() }];
-        self.codex_op_tx
-            .send(Op::UserInput { items })
-            .unwrap_or_else(|e| {
-                tracing::error!("failed to send message: {e}");
-            });
     }
 }
