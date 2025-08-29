@@ -130,8 +130,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Setup Rust
-        if: matrix.target != 'aarch64-linux-android'
+      - name: Setup Rust (Unix)
+        if: matrix.target != 'aarch64-linux-android' && matrix.os != 'windows-latest'
+        run: |
+          rustup toolchain install ${{ needs.setup.outputs.rust_version }}
+          rustup default ${{ needs.setup.outputs.rust_version }}
+          rustup target add ${{ matrix.target }}
+      
+      - name: Setup Rust (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
           rustup toolchain install ${{ needs.setup.outputs.rust_version }}
           rustup default ${{ needs.setup.outputs.rust_version }}
