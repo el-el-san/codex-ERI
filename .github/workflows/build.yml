@@ -207,13 +207,22 @@ jobs:
           # Install dependencies for vendored OpenSSL build
           sudo apt-get update && sudo apt-get install -y perl make
       
-      - name: Cache cleanup
-        if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
+      - name: Cache cleanup (Unix)
+        if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true && matrix.os != 'windows-latest'
         run: |
           rm -rf ~/.cargo/registry/index
           rm -rf ~/.cargo/registry/cache
           rm -rf ~/.cargo/git
           rm -rf target
+      
+      - name: Cache cleanup (Windows)
+        if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true && matrix.os == 'windows-latest'
+        shell: cmd
+        run: |
+          if exist "%USERPROFILE%\.cargo\registry\index" rmdir /s /q "%USERPROFILE%\.cargo\registry\index"
+          if exist "%USERPROFILE%\.cargo\registry\cache" rmdir /s /q "%USERPROFILE%\.cargo\registry\cache"
+          if exist "%USERPROFILE%\.cargo\git" rmdir /s /q "%USERPROFILE%\.cargo\git"
+          if exist "target" rmdir /s /q "target"
       
       - name: Cache cargo registry
         uses: actions/cache@v4
