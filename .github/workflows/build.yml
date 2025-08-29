@@ -270,6 +270,8 @@ jobs:
         working-directory: codex-rs
         shell: cmd
         run: |
+          echo Installing target for Windows build
+          rustup target add ${{ matrix.target }}
           if "${{ needs.setup.outputs.build_mode }}" == "release" (
             cargo build --release --target ${{ matrix.target }} --workspace
           ) else (
