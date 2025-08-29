@@ -132,16 +132,16 @@ jobs:
       
       - name: Setup Rust
         if: matrix.target != 'aarch64-linux-android'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ needs.setup.outputs.rust_version }}
-          target: ${{ matrix.target }}
+        run: |
+          rustup toolchain install ${{ needs.setup.outputs.rust_version }}
+          rustup default ${{ needs.setup.outputs.rust_version }}
+          rustup target add ${{ matrix.target }}
       
       - name: Setup Rust (Android)
         if: matrix.target == 'aarch64-linux-android'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ needs.setup.outputs.rust_version }}
+        run: |
+          rustup toolchain install ${{ needs.setup.outputs.rust_version }}
+          rustup default ${{ needs.setup.outputs.rust_version }}
       
       - name: Install Linux ARM64 cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
