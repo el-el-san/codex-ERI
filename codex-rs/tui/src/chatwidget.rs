@@ -67,7 +67,7 @@ pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane<'a>,
-    active_history_cell: Option<HistoryCell>,
+    active_history_cell: Option<Box<dyn HistoryCell>>,
     config: Config,
     initial_user_message: Option<UserMessage>,
     total_token_usage: TokenUsage,
