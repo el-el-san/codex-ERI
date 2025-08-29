@@ -724,11 +724,10 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn add_status_output(&mut self) {
-        let session_id = self.bottom_pane.session_id().clone();
         self.add_to_history(crate::history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
-            &session_id,
+            &self.session_id,
         ));
     }
 

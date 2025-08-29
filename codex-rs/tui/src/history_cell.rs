@@ -12,6 +12,7 @@ use codex_core::config::Config;
 use codex_core::plan_tool::PlanItemArg;
 use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
+use codex_core::project_doc::discover_project_doc_paths;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
@@ -908,24 +909,45 @@ pub(crate) fn new_mcp_tools_output(
             server.clone().into(),
         ]));
 
-        if !cfg.command.is_empty() {
-            let cmd_display = format!("{} {}", cfg.command, cfg.args.join(" "));
+        match cfg {
+            codex_core::config_types::McpServerConfig::Stdio { command, args, env, .. } => {
+                if !command.is_empty() {
+                    let cmd_display = format!("{} {}", command, args.join(" "));
 
-            lines.push(Line::from(vec![
-                "    • Command: ".into(),
-                cmd_display.into(),
-            ]));
-        }
+                    lines.push(Line::from(vec![
+                        "    • Command: ".into(),
+                        cmd_display.into(),
+                    ]));
+                }
 
-        if let Some(env) = cfg.env.as_ref()
-            && !env.is_empty()
-        {
-            let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            env_pairs.sort();
-            lines.push(Line::from(vec![
-                "    • Env: ".into(),
-                env_pairs.join(" ").into(),
-            ]));
+                if let Some(env) = env.as_ref()
+                    && !env.is_empty()
+                {
+                    let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                    env_pairs.sort();
+                    lines.push(Line::from(vec![
+                        "    • Env: ".into(),
+                        env_pairs.join(" ").into(),
+                    ]));
+                }
+            }
+            codex_core::config_types::McpServerConfig::Http { url, env, .. } => {
+                lines.push(Line::from(vec![
+                    "    • URL: ".into(),
+                    url.clone().into(),
+                ]));
+
+                if let Some(env) = env.as_ref()
+                    && !env.is_empty()
+                {
+                    let mut env_pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                    env_pairs.sort();
+                    lines.push(Line::from(vec![
+                        "    • Env: ".into(),
+                        env_pairs.join(" ").into(),
+                    ]));
+                }
+            }
         }
 
         if names.is_empty() {
