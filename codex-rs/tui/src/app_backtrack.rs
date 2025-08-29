@@ -152,11 +152,13 @@ impl App<'_> {
         self.backtrack.primed = true;
         self.backtrack.count = 0;  // Start at 0, will increment on next Esc
         
-        // TODO: Get session ID from chat widget when session_id() method is available
-        // For now, use None to skip session management
-        self.backtrack.base_id = None;
+        // Get session ID from chat widget if available
+        self.backtrack.base_id = self.chat_widget.as_ref().and_then(|w| w.session_id());
         
-        // TODO: Show hint in the composer when show_esc_backtrack_hint() method is available
+        // Show hint in the composer if chat widget is available
+        if let Some(ref mut widget) = self.chat_widget {
+            widget.show_esc_backtrack_hint();
+        }
         eprintln!("DEBUG: Backtrack primed - press Esc again to open overlay");
     }
 
@@ -172,8 +174,10 @@ impl App<'_> {
         self.overlay = Some(Overlay::new_transcript(lines));
         self.backtrack.overlay_preview_active = true;
         
-        // Clear the backtrack hint from composer
-        self.chat_widget.clear_esc_backtrack_hint();
+        // Clear the backtrack hint from composer (if chat widget exists)
+        if let Some(ref mut widget) = self.chat_widget {
+            widget.clear_esc_backtrack_hint();
+        }
         
         // Start at count 1 to highlight the first (most recent) user message
         self.backtrack.count = 1;
