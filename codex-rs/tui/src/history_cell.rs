@@ -12,7 +12,6 @@ use codex_core::config::Config;
 use codex_core::plan_tool::PlanItemArg;
 use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
-use codex_core::project_doc::discover_project_doc_paths;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpInvocation;
 use codex_core::protocol::SandboxPolicy;
@@ -20,7 +19,6 @@ use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
 use codex_login::get_auth_file;
 use codex_login::try_read_auth_json;
-use codex_protocol::parse_command::ParsedCommand;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -299,6 +297,15 @@ pub(crate) fn new_user_prompt(message: String) -> PlainHistoryCell {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
     lines.push(Line::from("user".cyan().bold()));
+    lines.extend(message.lines().map(|l| Line::from(l.to_string())));
+
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_agent_answer(message: String) -> PlainHistoryCell {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from("agent".green().bold()));
     lines.extend(message.lines().map(|l| Line::from(l.to_string())));
 
     PlainHistoryCell { lines }
