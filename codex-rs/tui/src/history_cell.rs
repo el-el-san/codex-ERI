@@ -99,14 +99,24 @@ pub(crate) struct TranscriptOnlyHistoryCell {
     lines: Vec<Line<'static>>,
 }
 
-#[derive(Debug)]
 pub(crate) struct ParallelExecutionGroupStart {
     pub view: crate::text_block::TextBlock,
 }
 
-#[derive(Debug)]
+impl std::fmt::Debug for ParallelExecutionGroupStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelExecutionGroupStart").finish()
+    }
+}
+
 pub(crate) struct ParallelExecutionGroupEnd {
     pub view: crate::text_block::TextBlock,
+}
+
+impl std::fmt::Debug for ParallelExecutionGroupEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelExecutionGroupEnd").finish()
+    }
 }
 
 impl HistoryCell for TranscriptOnlyHistoryCell {
