@@ -1357,6 +1357,5 @@ fn extract_first_bold(s: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    include!("chatwidget/tests.rs");
-}
+#[path = "chatwidget/tests.rs"]
+mod tests;
