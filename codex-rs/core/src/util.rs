@@ -1,6 +1,6 @@
-use std::path::Path;
 use std::time::Duration;
 use std::process::Command;
+use std::env;
 
 use rand::Rng;
 
@@ -14,102 +14,122 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     Duration::from_millis((base as f64 * jitter) as u64)
 }
 
-/// Return `true` if the project folder specified by the `Config` is inside a
-/// Git repository.
-///
-/// The check walks up the directory hierarchy looking for a `.git` file or
-/// directory (note `.git` can be a file that contains a `gitdir` entry). This
-/// approach does **not** require the `git` binary or the `git2` crate and is
-/// therefore fairly lightweight.
-///
-/// Note that this does **not** detect *work‑trees* created with
-/// `git worktree add` where the checkout lives outside the main repository
-/// directory. If you need Codex to work from such a checkout simply pass the
-/// `--allow-no-git-exec` CLI flag that disables the repo requirement.
-pub fn is_inside_git_repo(base_dir: &Path) -> bool {
-    let mut dir = base_dir.to_path_buf();
-
-    loop {
-        if dir.join(".git").exists() {
-            return true;
-        }
-
-        // Pop one component (go up one directory).  `pop` returns false when
-        // we have reached the filesystem root.
-        if !dir.pop() {
-            break;
-        }
-    }
-
-    false
-}
-
-/// Opens a URL in the default browser with environment-aware logic
-pub fn open_url(url: &str) -> Result<(), String> {
-    // Check if running in Termux
-    if std::env::var("TERMUX_VERSION").is_ok() {
-        return Command::new("termux-open-url")
+/// Open a URL in the default browser, handling various environments
+pub fn open_url(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Check for Termux environment
+    if env::var("TERMUX_VERSION").is_ok() || env::var("PREFIX").unwrap_or_default().contains("/com.termux/") {
+        // Use termux-open-url command
+        let result = Command::new("termux-open-url")
             .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to open URL in Termux: {}", e));
-    }
-
-    // Check if running in WSL
-    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
-        // Try cmd.exe first
-        if Command::new("cmd.exe")
-            .args(&["/c", "start", "", url])
-            .spawn()
-            .is_ok()
-        {
+            .spawn();
+        
+        if result.is_ok() {
             return Ok(());
         }
-        // Fallback to wslview
-        return Command::new("wslview")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to open URL in WSL: {}", e));
-    }
-
-    // Check if running in SSH or container (no display)
-    if std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok() {
-        return Err(format!("Running in SSH session. Please open the URL manually: {}", url));
+        // If termux-open-url fails, fall through to other methods
     }
     
-    if std::env::var("DISPLAY").is_err() && !cfg!(target_os = "macos") && !cfg!(target_os = "windows") {
-        return Err(format!("No display detected (container/headless). Please open the URL manually: {}", url));
+    // Check for WSL environment
+    if is_wsl() {
+        // Try cmd.exe /c start
+        let result = Command::new("cmd.exe")
+            .args(["/c", "start", url])
+            .spawn();
+        
+        if result.is_ok() {
+            return Ok(());
+        }
+        
+        // Try wslview as fallback
+        let result = Command::new("wslview")
+            .arg(url)
+            .spawn();
+        
+        if result.is_ok() {
+            return Ok(());
+        }
     }
-
-    // OS-specific browser launch
+    
+    // Check for SSH or container environment
+    if is_ssh_or_container() {
+        // Don't try to open browser automatically
+        eprintln!("Running in SSH or container environment. Please open the following URL manually:");
+        eprintln!("{}", url);
+        return Ok(());
+    }
+    
+    // Platform-specific browser opening
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
             .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to open URL on macOS: {}", e))
+            .spawn()?;
+        return Ok(());
     }
-
+    
     #[cfg(target_os = "windows")]
     {
         Command::new("cmd")
-            .args(&["/c", "start", "", url])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Failed to open URL on Windows: {}", e))
+            .args(["/c", "start", url])
+            .spawn()?;
+        return Ok(());
     }
-
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    
+    #[cfg(target_os = "linux")]
     {
-        // Linux and other Unix-like systems
-        let browsers = ["xdg-open", "firefox", "chromium", "chrome", "sensible-browser"];
-        for browser in &browsers {
-            if Command::new(browser).arg(url).spawn().is_ok() {
+        // Try xdg-open
+        let result = Command::new("xdg-open")
+            .arg(url)
+            .spawn();
+        
+        if result.is_ok() {
+            return Ok(());
+        }
+        
+        // Try common browsers as fallback
+        for browser in &["firefox", "chromium", "google-chrome", "brave", "vivaldi"] {
+            let result = Command::new(browser)
+                .arg(url)
+                .spawn();
+            
+            if result.is_ok() {
                 return Ok(());
             }
         }
-        Err(format!("Failed to open URL. Please open manually: {}", url))
+        
+        return Err("Failed to open browser".into());
     }
+    
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        Err("Unsupported platform for opening URLs".into())
+    }
+}
+
+fn is_wsl() -> bool {
+    if let Ok(kernel) = std::fs::read_to_string("/proc/version") {
+        return kernel.to_lowercase().contains("microsoft");
+    }
+    false
+}
+
+fn is_ssh_or_container() -> bool {
+    // Check if SSH_CONNECTION or SSH_CLIENT is set
+    if env::var("SSH_CONNECTION").is_ok() || env::var("SSH_CLIENT").is_ok() {
+        return true;
+    }
+    
+    // Check if running in a container
+    if std::path::Path::new("/.dockerenv").exists() {
+        return true;
+    }
+    
+    // Check for container indicators in cgroup
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") {
+        if cgroup.contains("docker") || cgroup.contains("lxc") || cgroup.contains("containerd") {
+            return true;
+        }
+    }
+    
+    false
 }
