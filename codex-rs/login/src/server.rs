@@ -32,11 +32,10 @@ pub struct ServerOptions {
     pub port: u16,
     pub open_browser: bool,
     pub force_state: Option<String>,
-    pub originator: String,
 }
 
 impl ServerOptions {
-    pub fn new(codex_home: PathBuf, client_id: String, originator: String) -> Self {
+    pub fn new(codex_home: PathBuf, client_id: String) -> Self {
         Self {
             codex_home,
             client_id: client_id.to_string(),
@@ -44,7 +43,6 @@ impl ServerOptions {
             port: DEFAULT_PORT,
             open_browser: true,
             force_state: None,
-            originator,
         }
     }
 }
@@ -83,6 +81,81 @@ impl ShutdownHandle {
     }
 }
 
+fn open_url_in_browser(url: &str) -> io::Result<()> {
+    if env::var("TERMUX_VERSION").is_ok() {
+        Command::new("termux-open-url")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .or_else(|_| {
+                eprintln!("Failed to open URL with termux-open-url. Please install Termux:API and run: pkg install termux-api");
+                eprintln!("Alternatively, manually open: {}", url);
+                Ok(())
+            })
+    } else if env::var("WSL_DISTRO_NAME").is_ok() || env::var("WSL_INTEROP").is_ok() {
+        Command::new("cmd.exe")
+            .args(["/c", "start", url])
+            .spawn()
+            .or_else(|_| Command::new("wslview").arg(url).spawn())
+            .map(|_| ())
+            .or_else(|_| {
+                eprintln!("Failed to open URL in WSL. Manually open: {}", url);
+                Ok(())
+            })
+    } else if env::var("SSH_CONNECTION").is_ok() || env::var("SSH_CLIENT").is_ok() {
+        eprintln!("Running in SSH session. Please manually open: {}", url);
+        Ok(())
+    } else if env::var("KUBERNETES_SERVICE_HOST").is_ok() 
+        || std::path::Path::new("/.dockerenv").exists() 
+        || env::var("CONTAINER").is_ok() {
+        eprintln!("Running in container. Please manually open: {}", url);
+        Ok(())
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("open").arg(url).spawn().map(|_| ()).or_else(|e| {
+                eprintln!("Failed to open URL: {}", e);
+                Ok(())
+            })
+        }
+        
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("xdg-open")
+                .arg(url)
+                .spawn()
+                .or_else(|_| Command::new("gnome-open").arg(url).spawn())
+                .or_else(|_| Command::new("kde-open").arg(url).spawn())
+                .or_else(|_| Command::new("firefox").arg(url).spawn())
+                .or_else(|_| Command::new("chromium").arg(url).spawn())
+                .or_else(|_| Command::new("google-chrome").arg(url).spawn())
+                .map(|_| ())
+                .or_else(|e| {
+                    eprintln!("Failed to open URL: {}", e);
+                    Ok(())
+                })
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("cmd")
+                .args(["/c", "start", url])
+                .spawn()
+                .map(|_| ())
+                .or_else(|e| {
+                    eprintln!("Failed to open URL: {}", e);
+                    Ok(())
+                })
+        }
+        
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            eprintln!("Unsupported platform. Please manually open: {}", url);
+            Ok(())
+        }
+    }
+}
+
 pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let pkce = generate_pkce();
     let state = opts.force_state.clone().unwrap_or_else(generate_state);
@@ -100,14 +173,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let server = Arc::new(server);
 
     let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
-    let auth_url = build_authorize_url(
-        &opts.issuer,
-        &opts.client_id,
-        &redirect_uri,
-        &pkce,
-        &state,
-        &opts.originator,
-    );
+    let auth_url = build_authorize_url(&opts.issuer, &opts.client_id, &redirect_uri, &pkce, &state);
 
     if opts.open_browser {
         let _ = open_url_in_browser(&auth_url);
@@ -290,7 +356,6 @@ fn build_authorize_url(
     redirect_uri: &str,
     pkce: &PkceCodes,
     state: &str,
-    originator: &str,
 ) -> String {
     let query = vec![
         ("response_type", "code"),
@@ -302,7 +367,6 @@ fn build_authorize_url(
         ("id_token_add_organizations", "true"),
         ("codex_cli_simplified_flow", "true"),
         ("state", state),
-        ("originator", originator),
     ];
     let qs = query
         .into_iter()
@@ -530,128 +594,4 @@ async fn obtain_api_key(issuer: &str, client_id: &str, id_token: &str) -> io::Re
     }
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
-}
-
-/// Open a URL in the default browser, handling various environments
-fn open_url_in_browser(url: &str) -> io::Result<()> {
-    // Check for Termux environment
-    if env::var("TERMUX_VERSION").is_ok() || env::var("PREFIX").unwrap_or_default().contains("/com.termux/") {
-        // Use termux-open-url command
-        let result = Command::new("termux-open-url")
-            .arg(url)
-            .spawn();
-        
-        if result.is_ok() {
-            return Ok(());
-        }
-        // If termux-open-url fails, fall through to other methods
-    }
-    
-    // Check for WSL environment
-    if is_wsl() {
-        // Try cmd.exe /c start
-        let result = Command::new("cmd.exe")
-            .args(["/c", "start", url])
-            .spawn();
-        
-        if result.is_ok() {
-            return Ok(());
-        }
-        
-        // Try wslview as fallback
-        let result = Command::new("wslview")
-            .arg(url)
-            .spawn();
-        
-        if result.is_ok() {
-            return Ok(());
-        }
-    }
-    
-    // Check for SSH or container environment
-    if is_ssh_or_container() {
-        // Don't try to open browser automatically
-        eprintln!("Running in SSH or container environment. Please open the following URL manually:");
-        eprintln!("{}", url);
-        return Ok(());
-    }
-    
-    // Platform-specific browser opening
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(url)
-            .spawn()?;
-        return Ok(());
-    }
-    
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/c", "start", url])
-            .spawn()?;
-        return Ok(());
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        // Try xdg-open
-        let result = Command::new("xdg-open")
-            .arg(url)
-            .spawn();
-        
-        if result.is_ok() {
-            return Ok(());
-        }
-        
-        // Try common browsers as fallback
-        for browser in &["firefox", "chromium", "google-chrome", "brave", "vivaldi"] {
-            let result = Command::new(browser)
-                .arg(url)
-                .spawn();
-            
-            if result.is_ok() {
-                return Ok(());
-            }
-        }
-        
-        eprintln!("Could not open browser. Please open the following URL manually:");
-        eprintln!("{}", url);
-        return Ok(());
-    }
-    
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        eprintln!("Unsupported platform for opening URLs. Please open the following URL manually:");
-        eprintln!("{}", url);
-        Ok(())
-    }
-}
-
-fn is_wsl() -> bool {
-    if let Ok(kernel) = std::fs::read_to_string("/proc/version") {
-        return kernel.to_lowercase().contains("microsoft");
-    }
-    false
-}
-
-fn is_ssh_or_container() -> bool {
-    // Check if SSH_CONNECTION or SSH_CLIENT is set
-    if env::var("SSH_CONNECTION").is_ok() || env::var("SSH_CLIENT").is_ok() {
-        return true;
-    }
-    
-    // Check if running in a container
-    if std::path::Path::new("/.dockerenv").exists() {
-        return true;
-    }
-    
-    // Check for container indicators in cgroup
-    if let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") {
-        if cgroup.contains("docker") || cgroup.contains("lxc") || cgroup.contains("containerd") {
-            return true;
-        }
-    }
-    
-    false
 }
