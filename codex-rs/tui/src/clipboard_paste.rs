@@ -71,10 +71,7 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
             .map_err(|e| PasteImageError::EncodeFailed(e.to_string()))?;
     }
 
-    tracing::debug!(
-        "clipboard image encoded to PNG ({len} bytes)",
-        len = png.len()
-    );
+    tracing::debug!("clipboard image encoded to PNG ({}) bytes", png.len());
     Ok((
         png,
         PastedImageInfo {
@@ -85,11 +82,11 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
     ))
 }
 
-/// Android version - clipboard image paste is not supported
+/// Android/Termux does not support arboard; return a clear error.
 #[cfg(target_os = "android")]
 pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
     Err(PasteImageError::ClipboardUnavailable(
-        "Clipboard image paste is not supported on Android".into()
+        "clipboard image paste is unsupported on Android".into(),
     ))
 }
 
@@ -111,11 +108,11 @@ pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImag
     Ok((path, info))
 }
 
-/// Android version - clipboard image paste is not supported
 #[cfg(target_os = "android")]
 pub fn paste_image_to_temp_png() -> Result<(PathBuf, PastedImageInfo), PasteImageError> {
+    // Keep error consistent with paste_image_as_png.
     Err(PasteImageError::ClipboardUnavailable(
-        "Clipboard image paste is not supported on Android".into()
+        "clipboard image paste is unsupported on Android".into(),
     ))
 }
 

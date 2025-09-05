@@ -431,6 +431,18 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TERM",
     "TMPDIR",
     "TZ",
+    
+    // Termux-specific environment variables
+    "TERMUX_VERSION",
+    "PREFIX",
+    "TERMUX_APK_RELEASE",
+    "TERMUX_APP_PID",
+    "ANDROID_ROOT",
+    "ANDROID_DATA",
+    
+    // LD_LIBRARY_PATH is essential for dynamic linking in Termux
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
 ];
 
 #[cfg(windows)]
