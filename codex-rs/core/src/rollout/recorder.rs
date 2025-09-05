@@ -23,7 +23,6 @@ use super::SESSIONS_SUBDIR;
 use super::list::ConversationsPage;
 use super::list::Cursor;
 use super::list::get_conversations;
-use super::policy::is_persisted_response_item;
 use crate::config::Config;
 use crate::conversation_manager::InitialHistory;
 use crate::git_info::GitInfo;
@@ -107,7 +106,6 @@ impl RolloutRecorder {
             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
         );
         let timestamp = timestamp
-            .to_offset(time::UtcOffset::UTC)
             .format(timestamp_format)
             .map_err(|e| IoError::other(format!("failed to format timestamp: {e}")))?;
 
@@ -139,11 +137,21 @@ impl RolloutRecorder {
     pub(crate) async fn record_items(&self, items: &[ResponseItem]) -> std::io::Result<()> {
         let mut filtered = Vec::new();
         for item in items {
-            // Note that function calls may look a bit strange if they are
-            // "fully qualified MCP tool calls," so we could consider
-            // reformatting them in that case.
-            if is_persisted_response_item(item) {
-                filtered.push(item.clone());
+            match item {
+                // Note that function calls may look a bit strange if they are
+                // "fully qualified MCP tool calls," so we could consider
+                // reformatting them in that case.
+                ResponseItem::Message { .. }
+                | ResponseItem::LocalShellCall { .. }
+                | ResponseItem::FunctionCall { .. }
+                | ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCall { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::Reasoning { .. } => filtered.push(item.clone()),
+                ResponseItem::WebSearchCall { .. } | ResponseItem::Other => {
+                    // These should never be serialized.
+                    continue;
+                }
             }
         }
         if filtered.is_empty() {
@@ -187,11 +195,16 @@ impl RolloutRecorder {
                 continue;
             }
             match serde_json::from_value::<ResponseItem>(v.clone()) {
-                Ok(item) => {
-                    if is_persisted_response_item(&item) {
-                        items.push(item);
-                    }
-                }
+                Ok(item) => match item {
+                    ResponseItem::Message { .. }
+                    | ResponseItem::LocalShellCall { .. }
+                    | ResponseItem::FunctionCall { .. }
+                    | ResponseItem::FunctionCallOutput { .. }
+                    | ResponseItem::CustomToolCall { .. }
+                    | ResponseItem::CustomToolCallOutput { .. }
+                    | ResponseItem::Reasoning { .. } => items.push(item),
+                    ResponseItem::WebSearchCall { .. } | ResponseItem::Other => {}
+                },
                 Err(e) => {
                     warn!("failed to parse item: {v:?}, error: {e}");
                 }
@@ -292,8 +305,17 @@ async fn rollout_writer(
         match cmd {
             RolloutCmd::AddItems(items) => {
                 for item in items {
-                    if is_persisted_response_item(&item) {
-                        writer.write_line(&item).await?;
+                    match item {
+                        ResponseItem::Message { .. }
+                        | ResponseItem::LocalShellCall { .. }
+                        | ResponseItem::FunctionCall { .. }
+                        | ResponseItem::FunctionCallOutput { .. }
+                        | ResponseItem::CustomToolCall { .. }
+                        | ResponseItem::CustomToolCallOutput { .. }
+                        | ResponseItem::Reasoning { .. } => {
+                            writer.write_line(&item).await?;
+                        }
+                        ResponseItem::WebSearchCall { .. } | ResponseItem::Other => {}
                     }
                 }
             }

@@ -439,8 +439,6 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TERMUX_APP_PID",
     "ANDROID_ROOT",
     "ANDROID_DATA",
-    
-    // LD_LIBRARY_PATH is essential for dynamic linking in Termux
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
 ];

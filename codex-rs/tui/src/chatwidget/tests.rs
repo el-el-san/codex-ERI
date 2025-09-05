@@ -19,7 +19,6 @@ use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::FileChange;
-use codex_core::protocol::InputMessageKind;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
 use codex_core::protocol::StreamErrorEvent;
@@ -35,7 +34,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::path::PathBuf;
 use tokio::sync::mpsc::unbounded_channel;
-use uuid::Uuid;
 
 fn test_config() -> Config {
     // Use base defaults to avoid depending on host state.
@@ -128,53 +126,6 @@ fn final_answer_without_newline_is_flushed_immediately() {
     );
 }
 
-#[test]
-fn resumed_initial_messages_render_history() {
-    let (mut chat, mut rx, _ops) = make_chatwidget_manual();
-
-    let configured = codex_core::protocol::SessionConfiguredEvent {
-        session_id: Uuid::nil(),
-        model: "test-model".to_string(),
-        history_log_id: 0,
-        history_entry_count: 0,
-        initial_messages: Some(vec![
-            EventMsg::UserMessage(codex_core::protocol::UserMessageEvent {
-                message: "hello from user".to_string(),
-                kind: Some(InputMessageKind::Plain),
-            }),
-            EventMsg::AgentMessage(AgentMessageEvent {
-                message: "assistant reply".to_string(),
-            }),
-        ]),
-    };
-
-    chat.handle_codex_event(Event {
-        id: "initial".into(),
-        msg: EventMsg::SessionConfigured(configured),
-    });
-
-    let cells = drain_insert_history(&mut rx);
-    let mut merged_lines = Vec::new();
-    for lines in cells {
-        let text = lines
-            .iter()
-            .flat_map(|line| line.spans.iter())
-            .map(|span| span.content.clone())
-            .collect::<String>();
-        merged_lines.push(text);
-    }
-
-    let text_blob = merged_lines.join("\n");
-    assert!(
-        text_blob.contains("hello from user"),
-        "expected replayed user message",
-    );
-    assert!(
-        text_blob.contains("assistant reply"),
-        "expected replayed agent message",
-    );
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
@@ -183,15 +134,15 @@ async fn helpers_are_available_and_do_not_panic() {
     let conversation_manager = Arc::new(ConversationManager::with_auth(CodexAuth::from_api_key(
         "test",
     )));
-    let init = ChatWidgetInit {
-        config: cfg,
-        frame_requester: crate::tui::FrameRequester::test_dummy(),
-        app_event_tx: tx,
-        initial_prompt: None,
-        initial_images: Vec::new(),
-        enhanced_keys_supported: false,
-    };
-    let mut w = ChatWidget::new(init, conversation_manager);
+    let mut w = ChatWidget::new(
+        cfg,
+        conversation_manager,
+        crate::tui::FrameRequester::test_dummy(),
+        tx,
+        None,
+        Vec::new(),
+        false,
+    );
     // Basic construction sanity.
     let _ = &mut w;
 }
@@ -233,7 +184,6 @@ fn make_chatwidget_manual() -> (
         frame_requester: crate::tui::FrameRequester::test_dummy(),
         show_welcome_banner: true,
         queued_user_messages: std::collections::VecDeque::new(),
-        suppress_session_configured_redraw: false,
     };
     (widget, rx, op_rx)
 }
@@ -263,104 +213,6 @@ fn lines_to_single_string(lines: &[ratatui::text::Line<'static>]) -> String {
         s.push('\n');
     }
     s
-}
-
-// (removed experimental resize snapshot test)
-
-#[test]
-fn exec_approval_emits_proposed_command_and_decision_history() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-
-    // Trigger an exec approval request with a short, single-line command
-    let ev = ExecApprovalRequestEvent {
-        call_id: "call-short".into(),
-        command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: Some(
-            "this is a test reason such as one that would be produced by the model".into(),
-        ),
-    };
-    chat.handle_codex_event(Event {
-        id: "sub-short".into(),
-        msg: EventMsg::ExecApprovalRequest(ev),
-    });
-
-    // Snapshot the Proposed Command cell emitted into history
-    let proposed = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected proposed command cell");
-    assert_snapshot!(
-        "exec_approval_history_proposed_short",
-        lines_to_single_string(&proposed)
-    );
-
-    // Approve via keyboard and verify a concise decision history line is added
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-    let decision = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected decision cell in history");
-    assert_snapshot!(
-        "exec_approval_history_decision_approved_short",
-        lines_to_single_string(&decision)
-    );
-}
-
-#[test]
-fn exec_approval_decision_truncates_multiline_and_long_commands() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
-
-    // Multiline command: should render proposed command fully in history with prefixes
-    let ev_multi = ExecApprovalRequestEvent {
-        call_id: "call-multi".into(),
-        command: vec!["bash".into(), "-lc".into(), "echo line1\necho line2".into()],
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: Some(
-            "this is a test reason such as one that would be produced by the model".into(),
-        ),
-    };
-    chat.handle_codex_event(Event {
-        id: "sub-multi".into(),
-        msg: EventMsg::ExecApprovalRequest(ev_multi),
-    });
-    let proposed_multi = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected proposed multiline command cell");
-    assert_snapshot!(
-        "exec_approval_history_proposed_multiline",
-        lines_to_single_string(&proposed_multi)
-    );
-
-    // Deny via keyboard; decision snippet should be single-line and elided with " ..."
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    let aborted_multi = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected aborted decision cell (multiline)");
-    assert_snapshot!(
-        "exec_approval_history_decision_aborted_multiline",
-        lines_to_single_string(&aborted_multi)
-    );
-
-    // Very long single-line command: decision snippet should be truncated <= 80 chars with trailing ...
-    let long = format!("echo {}", "a".repeat(200));
-    let ev_long = ExecApprovalRequestEvent {
-        call_id: "call-long".into(),
-        command: vec!["bash".into(), "-lc".into(), long.clone()],
-        cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: None,
-    };
-    chat.handle_codex_event(Event {
-        id: "sub-long".into(),
-        msg: EventMsg::ExecApprovalRequest(ev_long),
-    });
-    drain_insert_history(&mut rx); // proposed cell not needed for this assertion
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    let aborted_long = drain_insert_history(&mut rx)
-        .pop()
-        .expect("expected aborted decision cell (long)");
-    assert_snapshot!(
-        "exec_approval_history_decision_aborted_long",
-        lines_to_single_string(&aborted_long)
-    );
 }
 
 // --- Small helpers to tersely drive exec begin/end and snapshot active cell ---
@@ -812,9 +664,7 @@ fn approval_modal_exec_snapshot() {
         call_id: "call-approve-cmd".into(),
         command: vec!["bash".into(), "-lc".into(), "echo hello world".into()],
         cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        reason: Some(
-            "this is a test reason such as one that would be produced by the model".into(),
-        ),
+        reason: Some("Model wants to run a command".into()),
     };
     chat.handle_codex_event(Event {
         id: "sub-approve".into(),
@@ -1007,9 +857,7 @@ fn status_widget_and_approval_modal_snapshot() {
         call_id: "call-approve-exec".into(),
         command: vec!["echo".into(), "hello world".into()],
         cwd: std::path::PathBuf::from("/tmp"),
-        reason: Some(
-            "this is a test reason such as one that would be produced by the model".into(),
-        ),
+        reason: Some("Codex wants to run a command".into()),
     };
     chat.handle_codex_event(Event {
         id: "sub-approve-exec".into(),
@@ -1177,6 +1025,8 @@ fn apply_patch_manual_approval_adjusts_header() {
 
 #[test]
 fn apply_patch_manual_flow_snapshot() {
+    use insta::assert_snapshot;
+
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
     let mut proposed_changes = HashMap::new();
@@ -1747,5 +1597,5 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     }
 
     let visual = vt_lines.join("\n");
-    assert_snapshot!(visual);
+    insta::assert_snapshot!(visual);
 }
