@@ -235,14 +235,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-v2-
       
-      - name: Cache cargo target
+      - name: Cache cargo target (Unix/macOS)
+        if: matrix.os != 'windows-latest'
         uses: actions/cache@v4
         with:
           path: codex-rs/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-${{ needs.setup.outputs.build_mode }}-
-            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-
+      
+      - name: Cache cargo target (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@v4
+        with:
+          path: |
+            codex-rs/target/*/build
+            codex-rs/target/*/deps
+            codex-rs/target/*/examples
+            codex-rs/target/*/native
+            !codex-rs/target/**/*.pdb
+            !codex-rs/target/**/incremental
+            !codex-rs/target/**/deps/*.pdb
+            !codex-rs/target/**/deps/*.exp
+            !codex-rs/target/**/deps/*.lib
+            !codex-rs/target/**/examples/*.pdb
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-
       
       - name: Build (Unix)
         if: matrix.os != 'windows-latest'
