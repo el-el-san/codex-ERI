@@ -30,6 +30,7 @@ use crate::client_common::ResponsesApiRequest;
 use crate::client_common::create_reasoning_param_for_request;
 use crate::client_common::create_text_param_for_request;
 use crate::config::Config;
+use crate::default_client::create_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::error::UsageLimitReachedError;
@@ -40,7 +41,6 @@ use crate::model_provider_info::WireApi;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::create_tools_json_for_responses_api;
 use crate::protocol::TokenUsage;
-use crate::user_agent::get_codex_user_agent;
 use crate::util::backoff;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -84,10 +84,12 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
         session_id: Uuid,
     ) -> Self {
+        let client = create_client(&config.responses_originator_header);
+
         Self {
             config,
             auth_manager,
-            client: reqwest::Client::new(),
+            client,
             provider,
             session_id,
             effort,
@@ -155,14 +157,6 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
 
-        let auth_mode = auth_manager
-            .as_ref()
-            .and_then(|m| m.auth())
-            .as_ref()
-            .map(|a| a.mode);
-
-        let store = prompt.store && auth_mode != Some(AuthMode::ChatGPT);
-
         let full_instructions = prompt.get_full_instructions(&self.config.model_family);
         let tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
         let reasoning = create_reasoning_param_for_request(
@@ -171,9 +165,7 @@ impl ModelClient {
             self.summary,
         );
 
-        // Request encrypted COT if we are not storing responses,
-        // otherwise reasoning items will be referenced by ID
-        let include: Vec<String> = if !store && reasoning.is_some() {
+        let include: Vec<String> = if reasoning.is_some() {
             vec!["reasoning.encrypted_content".to_string()]
         } else {
             vec![]
@@ -202,7 +194,7 @@ impl ModelClient {
             tool_choice: "auto",
             parallel_tool_calls: false,
             reasoning,
-            store,
+            store: false,
             stream: true,
             include,
             prompt_cache_key: Some(self.session_id.to_string()),
@@ -241,10 +233,6 @@ impl ModelClient {
             {
                 req_builder = req_builder.header("chatgpt-account-id", account_id);
             }
-
-            let originator = &self.config.responses_originator_header;
-            req_builder = req_builder.header("originator", originator);
-            req_builder = req_builder.header("User-Agent", get_codex_user_agent(Some(originator)));
 
             let res = req_builder.send().await;
             if let Ok(resp) = &res {
