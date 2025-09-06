@@ -1,11 +1,15 @@
 use std::io::Cursor;
+use std::io::Read;
+use std::io::Write;
 use std::io::{self};
+use std::net::SocketAddr;
+use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::thread;
-use std::process::Command;
-use std::env;
+use std::time::Duration;
 
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
@@ -32,10 +36,11 @@ pub struct ServerOptions {
     pub port: u16,
     pub open_browser: bool,
     pub force_state: Option<String>,
+    pub originator: String,
 }
 
 impl ServerOptions {
-    pub fn new(codex_home: PathBuf, client_id: String) -> Self {
+    pub fn new(codex_home: PathBuf, client_id: String, originator: String) -> Self {
         Self {
             codex_home,
             client_id: client_id.to_string(),
@@ -43,6 +48,7 @@ impl ServerOptions {
             port: DEFAULT_PORT,
             open_browser: true,
             force_state: None,
+            originator,
         }
     }
 }
@@ -81,86 +87,11 @@ impl ShutdownHandle {
     }
 }
 
-fn open_url_in_browser(url: &str) -> io::Result<()> {
-    if env::var("TERMUX_VERSION").is_ok() {
-        Command::new("termux-open-url")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .or_else(|_| {
-                eprintln!("Failed to open URL with termux-open-url. Please install Termux:API and run: pkg install termux-api");
-                eprintln!("Alternatively, manually open: {}", url);
-                Ok(())
-            })
-    } else if env::var("WSL_DISTRO_NAME").is_ok() || env::var("WSL_INTEROP").is_ok() {
-        Command::new("cmd.exe")
-            .args(["/c", "start", url])
-            .spawn()
-            .or_else(|_| Command::new("wslview").arg(url).spawn())
-            .map(|_| ())
-            .or_else(|_| {
-                eprintln!("Failed to open URL in WSL. Manually open: {}", url);
-                Ok(())
-            })
-    } else if env::var("SSH_CONNECTION").is_ok() || env::var("SSH_CLIENT").is_ok() {
-        eprintln!("Running in SSH session. Please manually open: {}", url);
-        Ok(())
-    } else if env::var("KUBERNETES_SERVICE_HOST").is_ok() 
-        || std::path::Path::new("/.dockerenv").exists() 
-        || env::var("CONTAINER").is_ok() {
-        eprintln!("Running in container. Please manually open: {}", url);
-        Ok(())
-    } else {
-        #[cfg(target_os = "macos")]
-        {
-            Command::new("open").arg(url).spawn().map(|_| ()).or_else(|e| {
-                eprintln!("Failed to open URL: {}", e);
-                Ok(())
-            })
-        }
-        
-        #[cfg(target_os = "linux")]
-        {
-            Command::new("xdg-open")
-                .arg(url)
-                .spawn()
-                .or_else(|_| Command::new("gnome-open").arg(url).spawn())
-                .or_else(|_| Command::new("kde-open").arg(url).spawn())
-                .or_else(|_| Command::new("firefox").arg(url).spawn())
-                .or_else(|_| Command::new("chromium").arg(url).spawn())
-                .or_else(|_| Command::new("google-chrome").arg(url).spawn())
-                .map(|_| ())
-                .or_else(|e| {
-                    eprintln!("Failed to open URL: {}", e);
-                    Ok(())
-                })
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            Command::new("cmd")
-                .args(["/c", "start", url])
-                .spawn()
-                .map(|_| ())
-                .or_else(|e| {
-                    eprintln!("Failed to open URL: {}", e);
-                    Ok(())
-                })
-        }
-        
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        {
-            eprintln!("Unsupported platform. Please manually open: {}", url);
-            Ok(())
-        }
-    }
-}
-
 pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let pkce = generate_pkce();
     let state = opts.force_state.clone().unwrap_or_else(generate_state);
 
-    let server = Server::http(format!("127.0.0.1:{}", opts.port)).map_err(io::Error::other)?;
+    let server = bind_server(opts.port)?;
     let actual_port = match server.server_addr().to_ip() {
         Some(addr) => addr.port(),
         None => {
@@ -173,7 +104,14 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let server = Arc::new(server);
 
     let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
-    let auth_url = build_authorize_url(&opts.issuer, &opts.client_id, &redirect_uri, &pkce, &state);
+    let auth_url = build_authorize_url(
+        &opts.issuer,
+        &opts.client_id,
+        &redirect_uri,
+        &pkce,
+        &state,
+        &opts.originator,
+    );
 
     if opts.open_browser {
         let _ = open_url_in_browser(&auth_url);
@@ -213,19 +151,24 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
                         let response =
                             process_request(&url_raw, &opts, &redirect_uri, &pkce, actual_port, &state).await;
 
-                        let is_login_complete = matches!(response, HandledRequest::ResponseAndExit(_));
-                        match response {
-                            HandledRequest::Response(r) | HandledRequest::ResponseAndExit(r) => {
-                                let _ = tokio::task::spawn_blocking(move || req.respond(r)).await;
+                        let exit_result = match response {
+                            HandledRequest::Response(response) => {
+                                let _ = tokio::task::spawn_blocking(move || req.respond(response)).await;
+                                None
+                            }
+                            HandledRequest::ResponseAndExit { response, result } => {
+                                let _ = tokio::task::spawn_blocking(move || req.respond(response)).await;
+                                Some(result)
                             }
                             HandledRequest::RedirectWithHeader(header) => {
                                 let redirect = Response::empty(302).with_header(header);
                                 let _ = tokio::task::spawn_blocking(move || req.respond(redirect)).await;
+                                None
                             }
-                        }
+                        };
 
-                        if is_login_complete {
-                            break Ok(());
+                        if let Some(result) = exit_result {
+                            break result;
                         }
                     }
                 }
@@ -249,7 +192,10 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
 enum HandledRequest {
     Response(Response<Cursor<Vec<u8>>>),
     RedirectWithHeader(Header),
-    ResponseAndExit(Response<Cursor<Vec<u8>>>),
+    ResponseAndExit {
+        response: Response<Cursor<Vec<u8>>>,
+        result: io::Result<()>,
+    },
 }
 
 async fn process_request(
@@ -344,8 +290,18 @@ async fn process_request(
             ) {
                 resp.add_header(h);
             }
-            HandledRequest::ResponseAndExit(resp)
+            HandledRequest::ResponseAndExit {
+                response: resp,
+                result: Ok(()),
+            }
         }
+        "/cancel" => HandledRequest::ResponseAndExit {
+            response: Response::from_string("Login cancelled"),
+            result: Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Login cancelled",
+            )),
+        },
         _ => HandledRequest::Response(Response::from_string("Not Found").with_status_code(404)),
     }
 }
@@ -356,6 +312,7 @@ fn build_authorize_url(
     redirect_uri: &str,
     pkce: &PkceCodes,
     state: &str,
+    originator: &str,
 ) -> String {
     let query = vec![
         ("response_type", "code"),
@@ -367,6 +324,7 @@ fn build_authorize_url(
         ("id_token_add_organizations", "true"),
         ("codex_cli_simplified_flow", "true"),
         ("state", state),
+        ("originator", originator),
     ];
     let qs = query
         .into_iter()
@@ -380,6 +338,68 @@ fn generate_state() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn send_cancel_request(port: u16) -> io::Result<()> {
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+
+    stream.write_all(b"GET /cancel HTTP/1.1\r\n")?;
+    stream.write_all(format!("Host: 127.0.0.1:{port}\r\n").as_bytes())?;
+    stream.write_all(b"Connection: close\r\n\r\n")?;
+
+    let mut buf = [0u8; 64];
+    let _ = stream.read(&mut buf);
+    Ok(())
+}
+
+fn bind_server(port: u16) -> io::Result<Server> {
+    let bind_address = format!("127.0.0.1:{port}");
+    let mut cancel_attempted = false;
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u32 = 10;
+    const RETRY_DELAY: Duration = Duration::from_millis(200);
+
+    loop {
+        match Server::http(&bind_address) {
+            Ok(server) => return Ok(server),
+            Err(err) => {
+                attempts += 1;
+                let is_addr_in_use = err
+                    .downcast_ref::<io::Error>()
+                    .map(|io_err| io_err.kind() == io::ErrorKind::AddrInUse)
+                    .unwrap_or(false);
+
+                // If the address is in use, there is probably another instance of the login server
+                // running. Attempt to cancel it and retry.
+                if is_addr_in_use {
+                    if !cancel_attempted {
+                        cancel_attempted = true;
+                        if let Err(cancel_err) = send_cancel_request(port) {
+                            eprintln!("Failed to cancel previous login server: {cancel_err}");
+                        }
+                    }
+
+                    thread::sleep(RETRY_DELAY);
+
+                    if attempts >= MAX_ATTEMPTS {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AddrInUse,
+                            format!("Port {bind_address} is already in use"),
+                        ));
+                    }
+
+                    continue;
+                }
+
+                return Err(io::Error::other(err));
+            }
+        }
+    }
 }
 
 struct ExchangedTokens {
@@ -594,4 +614,90 @@ async fn obtain_api_key(issuer: &str, client_id: &str, id_token: &str) -> io::Re
     }
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
+}
+
+fn open_url_in_browser(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if running in Termux
+    if std::env::var("TERMUX_VERSION").is_ok() {
+        match Command::new("termux-open-url").arg(url).status() {
+            Ok(status) if status.success() => return Ok(()),
+            _ => {
+                eprintln!("Failed to open URL with termux-open-url. Please open manually: {}", url);
+                return Ok(());
+            }
+        }
+    }
+    
+    // Check if running in WSL
+    if is_wsl() {
+        // Try cmd.exe first
+        if let Ok(status) = Command::new("cmd.exe").args(["/c", "start", url]).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        // Fallback to wslview
+        if let Ok(status) = Command::new("wslview").arg(url).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        eprintln!("Failed to open URL in WSL. Please open manually: {}", url);
+        return Ok(());
+    }
+    
+    // Check if running over SSH or in container
+    if is_ssh() || is_container() {
+        eprintln!("Running in SSH/container environment. Please open this URL manually: {}", url);
+        return Ok(());
+    }
+    
+    // OS-specific browser launch
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(url).status()?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdg-open first
+        if let Ok(status) = Command::new("xdg-open").arg(url).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+        // Fallback to specific browsers
+        for browser in &["firefox", "chromium", "chrome", "google-chrome"] {
+            if let Ok(status) = Command::new(browser).arg(url).status() {
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        return Err("Failed to open browser on Linux".into());
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd").args(["/c", "start", url]).status()?;
+    }
+    
+    Ok(())
+}
+
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|s| s.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
+fn is_ssh() -> bool {
+    std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok()
+}
+
+fn is_container() -> bool {
+    std::path::Path::new("/.dockerenv").exists() || 
+    std::fs::read_to_string("/proc/1/cgroup")
+        .map(|s| s.contains("/docker") || s.contains("/containerd"))
+        .unwrap_or(false)
 }
