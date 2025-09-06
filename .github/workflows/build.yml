@@ -231,18 +231,18 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-registry-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ${{ runner.os }}-cargo-registry-v2-
       
       - name: Cache cargo target
         uses: actions/cache@v4
         with:
           path: codex-rs/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-target-${{ needs.setup.outputs.build_mode }}-
-            ${{ runner.os }}-${{ matrix.target }}-cargo-target-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-${{ needs.setup.outputs.build_mode }}-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v2-
       
       - name: Build (Unix)
         if: matrix.os != 'windows-latest'

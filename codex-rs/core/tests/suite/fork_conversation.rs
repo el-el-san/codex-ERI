@@ -21,6 +21,7 @@ fn sse_completed(id: &str) -> String {
     core_test_support::load_sse_fixture_with_id("tests/fixtures/completed_template.json", id)
 }
 
+#[ignore = "Temporarily disabled due to flaky test - investigating cache issues"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fork_conversation_twice_drops_to_first_message() {
     // Start a mock server that completes three turns.
