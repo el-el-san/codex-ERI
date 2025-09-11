@@ -179,7 +179,7 @@ fn truncate_after_dropping_last_messages(items: Vec<ResponseItem>, n: usize) -> 
 
     // Walk backwards counting only `user` Message items, find cut index.
     let mut count = 0usize;
-    let mut cut_index = 0usize;
+    let mut cut_index = items.len();
     for (idx, item) in items.iter().enumerate().rev() {
         if let ResponseItem::Message { role, .. } = item
             && role == "user"
@@ -192,7 +192,7 @@ fn truncate_after_dropping_last_messages(items: Vec<ResponseItem>, n: usize) -> 
             }
         }
     }
-    if cut_index == 0 {
+    if cut_index == 0 || cut_index >= items.len() {
         // No prefix remains after dropping; start a new conversation.
         InitialHistory::New
     } else {
