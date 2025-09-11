@@ -124,10 +124,13 @@ async fn fork_conversation_twice_drops_to_first_message() {
     .await;
     let entries_after_first_fork = match &fork1_history {
         EventMsg::ConversationHistory(ConversationHistoryResponseEvent { entries, .. }) => {
-            assert!(matches!(
-                fork1_history,
-                EventMsg::ConversationHistory(ConversationHistoryResponseEvent { ref entries, .. }) if *entries == expected_after_first
-            ));
+            if *entries != expected_after_first {
+                eprintln!("Fork1 assertion failed!");
+                eprintln!("Expected {} entries, got {} entries", expected_after_first.len(), entries.len());
+                eprintln!("Expected entries: {:#?}", expected_after_first);
+                eprintln!("Actual entries: {:#?}", entries);
+            }
+            assert_eq!(*entries, expected_after_first, "Fork1 history mismatch");
             entries.clone()
         }
         _ => panic!("expected ConversationHistory event after first fork"),
@@ -147,8 +150,16 @@ async fn fork_conversation_twice_drops_to_first_message() {
         matches!(ev, EventMsg::ConversationHistory(_))
     })
     .await;
-    assert!(matches!(
-        fork2_history,
-        EventMsg::ConversationHistory(ConversationHistoryResponseEvent { ref entries, .. }) if *entries == expected_after_second
-    ));
+    match &fork2_history {
+        EventMsg::ConversationHistory(ConversationHistoryResponseEvent { entries, .. }) => {
+            if *entries != expected_after_second {
+                eprintln!("Fork2 assertion failed!");
+                eprintln!("Expected {} entries, got {} entries", expected_after_second.len(), entries.len());
+                eprintln!("Expected entries: {:#?}", expected_after_second);
+                eprintln!("Actual entries: {:#?}", entries);
+            }
+            assert_eq!(*entries, expected_after_second, "Fork2 history mismatch");
+        }
+        _ => panic!("expected ConversationHistory event after second fork"),
+    }
 }
