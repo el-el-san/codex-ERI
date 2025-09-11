@@ -16,6 +16,7 @@ use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
 use codex_core::config::load_config_as_toml;
 use codex_core::default_client::get_codex_user_agent;
+use codex_core::default_client::ORIGINATOR;
 use codex_core::exec::ExecParams;
 use codex_core::exec_env::create_env;
 use codex_core::get_platform_sandbox;
@@ -198,7 +199,7 @@ impl CodexMessageProcessor {
 
         let opts = LoginServerOptions {
             open_browser: false,
-            ..LoginServerOptions::new(config.codex_home.clone(), CLIENT_ID.to_string())
+            ..LoginServerOptions::new(config.codex_home.clone(), CLIENT_ID.to_string(), ORIGINATOR.value.clone())
         };
 
         enum LoginChatGptReply {
