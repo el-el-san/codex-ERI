@@ -23,7 +23,8 @@ pub struct Cli {
     #[arg(
         long = "resume",
         default_value_t = false,
-        conflicts_with = "continue"
+        conflicts_with = "continue",
+        hide = true
     )]
     pub resume: bool,
 
@@ -37,7 +38,8 @@ pub struct Cli {
         id = "continue",
         long = "continue",
         default_value_t = false,
-        conflicts_with = "resume"
+        conflicts_with = "resume",
+        hide = true
     )]
     pub r#continue: bool,
 
