@@ -39,7 +39,8 @@ pub struct ServerOptions {
 }
 
 impl ServerOptions {
-    pub fn new(codex_home: PathBuf, client_id: String) -> Self {
+    /// Create options with default issuer/port and browser auto-open enabled.
+    pub fn new_simple(codex_home: PathBuf, client_id: String) -> Self {
         Self {
             codex_home,
             client_id: client_id.to_string(),
@@ -48,6 +49,12 @@ impl ServerOptions {
             open_browser: true,
             force_state: None,
         }
+    }
+
+    /// Backward/forward compatibility constructor used by upstream callers.
+    /// The third parameter is accepted for API compatibility but currently unused.
+    pub fn new(codex_home: PathBuf, client_id: String, _responses_originator_header: String) -> Self {
+        Self::new_simple(codex_home, client_id)
     }
 }
 
