@@ -1,3 +1,6 @@
+use std::fs;
+use std::io;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -13,88 +16,117 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     Duration::from_millis((base as f64 * jitter) as u64)
 }
 
-pub fn open_url(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Check if running in Termux
-    if std::env::var("TERMUX_VERSION").is_ok() {
-        match Command::new("termux-open-url").arg(url).status() {
-            Ok(status) if status.success() => return Ok(()),
-            _ => {
-                eprintln!("Failed to open URL with termux-open-url. Please open manually: {}", url);
-                return Ok(());
-            }
-        }
+/// Try to open a URL in the default browser with environment-aware behavior.
+///
+/// - Termux(Android): uses `termux-open-url`
+/// - WSL: `cmd.exe /C start` (fallback to `wslview`)
+/// - SSH/Container: do not auto-open (return an error so callers can ignore)
+/// - macOS: `open`
+/// - Linux: `xdg-open`
+/// - Windows: `cmd /C start`
+///
+/// Callers that don't want failures to be fatal (e.g. login flow) can safely
+/// ignore the `Result` to allow manual opening.
+pub fn open_url(url: &str) -> io::Result<()> {
+    if is_termux() {
+        return Command::new("termux-open-url")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(io::Error::other);
     }
-    
-    // Check if running in WSL
+
     if is_wsl() {
-        // Try cmd.exe first
-        if let Ok(status) = Command::new("cmd.exe").args(["/c", "start", url]).status() {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        // Fallback to wslview
-        if let Ok(status) = Command::new("wslview").arg(url).status() {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        eprintln!("Failed to open URL in WSL. Please open manually: {}", url);
-        return Ok(());
+        // Prefer Windows default handler via cmd.exe; if that fails, try wslview
+        let cmd_res = Command::new("cmd.exe")
+            .args(["/C", "start", "", url])
+            .spawn();
+        return match cmd_res {
+            Ok(_) => Ok(()),
+            Err(_) => Command::new("wslview")
+                .arg(url)
+                .spawn()
+                .map(|_| ())
+                .map_err(io::Error::other),
+        };
     }
-    
-    // Check if running over SSH or in container
+
     if is_ssh() || is_container() {
-        eprintln!("Running in SSH/container environment. Please open this URL manually: {}", url);
-        return Ok(());
+        // Suppress auto-open; let the caller handle informing the user.
+        return Err(io::Error::other(
+            "auto-open suppressed in SSH/container environment",
+        ));
     }
-    
-    // OS-specific browser launch
+
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg(url).status()?;
+        return Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(io::Error::other);
     }
-    
+
     #[cfg(target_os = "linux")]
     {
-        // Try xdg-open first
-        if let Ok(status) = Command::new("xdg-open").arg(url).status() {
-            if status.success() {
-                return Ok(());
-            }
-        }
-        // Fallback to specific browsers
-        for browser in &["firefox", "chromium", "chrome", "google-chrome"] {
-            if let Ok(status) = Command::new(browser).arg(url).status() {
-                if status.success() {
-                    return Ok(());
-                }
-            }
-        }
-        return Err("Failed to open browser on Linux".into());
+        return Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(io::Error::other);
     }
-    
+
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd").args(["/c", "start", url]).status()?;
+        return Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map(|_| ())
+            .map_err(io::Error::other);
     }
-    
-    Ok(())
+
+    #[allow(unreachable_code)]
+    Err(io::Error::other("unsupported platform for open_url"))
 }
 
-fn is_wsl() -> bool {
-    std::fs::read_to_string("/proc/version")
-        .map(|s| s.to_lowercase().contains("microsoft"))
-        .unwrap_or(false)
+/// Heuristic check for running inside WSL.
+pub fn is_wsl() -> bool {
+    if std::env::var("WSL_DISTRO_NAME").is_ok() {
+        return true;
+    }
+    if let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") {
+        let lower = release.to_ascii_lowercase();
+        return lower.contains("microsoft") || lower.contains("wsl");
+    }
+    false
 }
 
-fn is_ssh() -> bool {
-    std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok()
+/// Heuristic check for Android/Termux environment.
+pub fn is_termux() -> bool {
+    if std::env::var("TERMUX_VERSION").is_ok() {
+        return true;
+    }
+    if let Ok(prefix) = std::env::var("PREFIX") {
+        return prefix.contains("/data/data/com.termux");
+    }
+    false
 }
 
-fn is_container() -> bool {
-    std::path::Path::new("/.dockerenv").exists() || 
-    std::fs::read_to_string("/proc/1/cgroup")
-        .map(|s| s.contains("/docker") || s.contains("/containerd"))
-        .unwrap_or(false)
+/// Heuristic check for SSH session.
+pub fn is_ssh() -> bool {
+    std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_TTY").is_ok()
+}
+
+/// Heuristic check for common container environments.
+pub fn is_container() -> bool {
+    ["/.dockerenv", "/run/.containerenv"]
+        .into_iter()
+        .any(|p| Path::new(p).exists())
+        || std::env::var("container").is_ok()
+        || fs::read_to_string("/proc/1/cgroup")
+            .map(|s| {
+                let ls = s.to_ascii_lowercase();
+                ls.contains("docker") || ls.contains("kubepods") || ls.contains("containerd")
+            })
+            .unwrap_or(false)
 }

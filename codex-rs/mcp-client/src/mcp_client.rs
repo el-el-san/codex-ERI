@@ -431,18 +431,15 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TERM",
     "TMPDIR",
     "TZ",
-    
-    // Termux-specific environment variables (required for proper functioning)
+
+    // Android / Termux specific – required for proper dynamic linking or environment behavior
+    // These will be included if present in the parent environment.
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
     "TERMUX_APP_PID",
-    
-    // Android-specific environment variables
     "ANDROID_ROOT",
     "ANDROID_DATA",
-    
-    // Dynamic linking environment variables (critical for Termux)
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
 ];
