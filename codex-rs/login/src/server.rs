@@ -16,6 +16,7 @@ use base64::Engine;
 use chrono::Utc;
 use codex_core::auth::AuthDotJson;
 use codex_core::auth::get_auth_file;
+use codex_core::default_client::ORIGINATOR;
 use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
 use rand::RngCore;
@@ -320,7 +321,7 @@ fn build_authorize_url(
         ("id_token_add_organizations", "true"),
         ("codex_cli_simplified_flow", "true"),
         ("state", state),
-        ("originator", DEFAULT_ORIGINATOR),
+        ("originator", &ORIGINATOR.value),
     ];
     let qs = query
         .into_iter()
