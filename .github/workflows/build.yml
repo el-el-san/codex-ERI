@@ -58,9 +58,6 @@ on:
       - 'codex-rs/**'
       - '.github/workflows/build.yml'
   
-  # 定期実行（毎日深夜2時 UTC）
-  schedule:
-    - cron: '0 2 * * *'
 
 env:
   CARGO_TERM_COLOR: always
