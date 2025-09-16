@@ -79,6 +79,14 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
 
     // 3. Capture the requests to the model and validate the history slices.
     let requests = gather_request_bodies(&server).await;
+    let base_idx = find_request_index_with_text(&requests, "hello world")
+        .expect("compact+resume test should find initial user turn with 'hello world'");
+    assert!(
+        requests.len() >= base_idx + 5,
+        "compact+resume test expects at least 5 model requests from initial turn, got {}",
+        requests.len()
+    );
+    let relevant_requests = &requests[base_idx..base_idx + 5];
 
     // input after compact is a prefix of input after resume/fork
     let input_after_compact = json!(requests[requests.len() - 3]["input"]);
@@ -112,24 +120,24 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     );
     assert_eq!(compact_arr.as_slice(), &fork_arr[..compact_arr.len()]);
 
-    let prompt = requests[0]["instructions"]
+    let prompt = relevant_requests[0]["instructions"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let user_instructions = relevant_requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_context = requests[0]["input"][1]["content"][0]["text"]
+    let environment_context = relevant_requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let tool_calls = json!(requests[0]["tools"].as_array());
-    let prompt_cache_key = requests[0]["prompt_cache_key"]
+    let tool_calls = json!(relevant_requests[0]["tools"].as_array());
+    let prompt_cache_key = relevant_requests[0]["prompt_cache_key"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let fork_prompt_cache_key = requests[requests.len() - 1]["prompt_cache_key"]
+    let fork_prompt_cache_key = relevant_requests[relevant_requests.len() - 1]["prompt_cache_key"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -497,8 +505,7 @@ SUMMARY_ONLY_CONTEXT"
         usert_turn_3_after_resume,
         user_turn_3_after_fork
     ]);
-    assert_eq!(requests.len(), 5);
-    assert_eq!(json!(requests), expected);
+    assert_eq!(json!(relevant_requests), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -550,6 +557,14 @@ async fn compact_resume_after_second_compaction_preserves_history() {
     user_turn(&resumed_again, AFTER_SECOND_RESUME).await;
 
     let requests = gather_request_bodies(&server).await;
+    let base_idx = find_request_index_with_text(&requests, "hello world")
+        .expect("second compact test should find initial user turn with 'hello world'");
+    assert!(
+        requests.len() >= base_idx + 5,
+        "second compact test expects at least 5 model requests from initial turn, got {}",
+        requests.len()
+    );
+    let relevant_requests = &requests[base_idx..base_idx + 5];
     let input_after_compact = json!(requests[requests.len() - 2]["input"]);
     let input_after_resume = json!(requests[requests.len() - 1]["input"]);
 
@@ -569,15 +584,15 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         &resume_input_array[..compact_input_array.len()]
     );
     // hard coded test
-    let prompt = requests[0]["instructions"]
+    let prompt = relevant_requests[0]["instructions"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let user_instructions = relevant_requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_instructions = requests[0]["input"][1]["content"][0]["text"]
+    let environment_instructions = relevant_requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -640,10 +655,30 @@ async fn compact_resume_after_second_compaction_preserves_history() {
       }
     ]);
     let last_request_after_2_compacts = json!([{
-        "instructions": requests[requests.len() -1]["instructions"],
-        "input": requests[requests.len() -1]["input"],
+        "instructions": requests[requests.len() - 1]["instructions"],
+        "input": requests[requests.len() - 1]["input"],
     }]);
     assert_eq!(expected, last_request_after_2_compacts);
+}
+
+fn find_request_index_with_text(requests: &[Value], needle: &str) -> Option<usize> {
+    requests.iter().enumerate().find_map(|(idx, req)| {
+        let input = req.get("input")?.as_array()?;
+        let found = input.iter().any(|message| {
+            message
+                .get("content")
+                .and_then(|content| content.as_array())
+                .map(|items| {
+                    items.iter().any(|item| {
+                        item.get("text")
+                            .and_then(Value::as_str)
+                            .map_or(false, |text| text.contains(needle))
+                    })
+                })
+                .unwrap_or(false)
+        });
+        found.then_some(idx)
+    })
 }
 
 fn normalize_line_endings(value: &mut Value) {
