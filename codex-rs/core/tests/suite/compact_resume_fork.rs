@@ -79,7 +79,6 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
 
     // 3. Capture the requests to the model and validate the history slices.
     let requests = gather_request_bodies(&server).await;
-    dbg!(requests.iter().enumerate().map(|(idx, req)| (idx, request_user_texts(req))).collect::<Vec<_>>());
     let base_idx = find_request_index_with_user_text(&requests, "hello world")
         .expect("compact+resume test should find initial user turn with 'hello world'");
     assert!(
@@ -183,6 +182,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
     user_turn(&resumed_again, AFTER_SECOND_RESUME).await;
 
     let requests = gather_request_bodies(&server).await;
+    dbg!(requests.iter().enumerate().map(|(idx, req)| (idx, request_user_texts(req))).collect::<Vec<_>>());
     let base_idx = find_request_index_with_user_text(&requests, "hello world")
         .expect("second compact test should find initial user turn with 'hello world'");
     assert!(
