@@ -211,9 +211,10 @@ async fn compact_resume_after_second_compaction_preserves_history() {
     // hard coded test
     assert_eq!(relevant_requests.len(), 5);
     assert!(request_contains_user_text(&relevant_requests[0], "hello world"));
-    assert!(request_contains_user_text(&relevant_requests[1], "AFTER_COMPACT"));
-    assert!(request_contains_user_text(&relevant_requests[2], "AFTER_RESUME"));
-    assert!(request_contains_user_text(&relevant_requests[3], "AFTER_FORK"));
+    assert!(request_contains_user_text(&relevant_requests[1], SUMMARIZE_TRIGGER));
+    assert!(request_contains_user_text(&relevant_requests[2], "AFTER_COMPACT"));
+    assert!(request_contains_user_text(&relevant_requests[3], "AFTER_RESUME"));
+    assert!(request_contains_user_text(&relevant_requests[4], "AFTER_FORK"));
 
     assert!(
         requests
