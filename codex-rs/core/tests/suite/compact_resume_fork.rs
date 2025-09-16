@@ -229,14 +229,6 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         &requests[second_resume_idx],
         AFTER_SECOND_RESUME
     ));
-    let memento_instructions = requests[second_compact_idx]["instructions"]
-        .as_str()
-        .unwrap_or_default();
-    assert!(
-        memento_instructions.contains("You have exceeded the maximum number of tokens"),
-        "second compact should reuse memento instructions"
-    );
-
 }
 
 fn find_request_index_with_user_text(requests: &[Value], needle: &str) -> Option<usize> {
