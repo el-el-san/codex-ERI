@@ -79,7 +79,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
 
     // 3. Capture the requests to the model and validate the history slices.
     let requests = gather_request_bodies(&server).await;
-    let base_idx = find_request_index_with_text(&requests, "hello world")
+    let base_idx = find_request_index_with_user_text(&requests, "hello world")
         .expect("compact+resume test should find initial user turn with 'hello world'");
     assert!(
         requests.len() >= base_idx + 5,
@@ -557,7 +557,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
     user_turn(&resumed_again, AFTER_SECOND_RESUME).await;
 
     let requests = gather_request_bodies(&server).await;
-    let base_idx = find_request_index_with_text(&requests, "hello world")
+    let base_idx = find_request_index_with_user_text(&requests, "hello world")
         .expect("second compact test should find initial user turn with 'hello world'");
     assert!(
         requests.len() >= base_idx + 5,
@@ -661,21 +661,22 @@ async fn compact_resume_after_second_compaction_preserves_history() {
     assert_eq!(expected, last_request_after_2_compacts);
 }
 
-fn find_request_index_with_text(requests: &[Value], needle: &str) -> Option<usize> {
+fn find_request_index_with_user_text(requests: &[Value], needle: &str) -> Option<usize> {
     requests.iter().enumerate().find_map(|(idx, req)| {
         let input = req.get("input")?.as_array()?;
         let found = input.iter().any(|message| {
-            message
-                .get("content")
-                .and_then(|content| content.as_array())
-                .map(|items| {
-                    items.iter().any(|item| {
-                        item.get("text")
-                            .and_then(Value::as_str)
-                            .map_or(false, |text| text.contains(needle))
+            message.get("role").and_then(Value::as_str) == Some("user")
+                && message
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .map(|items| {
+                        items.iter().any(|item| {
+                            item.get("text")
+                                .and_then(Value::as_str)
+                                .map_or(false, |text| text == needle)
+                        })
                     })
-                })
-                .unwrap_or(false)
+                    .unwrap_or(false)
         });
         found.then_some(idx)
     })
