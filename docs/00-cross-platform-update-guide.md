@@ -52,7 +52,7 @@
 以下は、新しい上流から Rust 実装へ変更を取り込む際に、クロスプラットフォーム対応を保つための手順です。
 
 ### 3.1 `reqwest` への TLS 機能付与を再確認
-- 対象クレート: `chatgpt` / `core` / `ollama` / `tui` / `login`（他に `reqwest` を使うクレートが増えたら同様に）
+- 対象クレート: `core` / `ollama` / `login`（他に `reqwest` を使うクレートが増えたら同様に）
 - Cargo.toml 例: `reqwest = { version = "0.12", features = ["json", "stream", "native-tls-vendored"] }`
 - 注意: `blocking` 機能を使う箇所（`login` 等）は `features = ["json", "blocking", "native-tls-vendored"]` のように併記
 
@@ -204,3 +204,9 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 ---
 
 このガイドに沿って差分を適用すれば、上流更新のたびに同様のクロスプラットフォーム対応を素早く再現できます。追加で対応が必要になった環境が出てきた場合は、本ドキュメントに追記してください。
+
+### 2025-09-16 更新内容
+- `core/src/util.rs` に `open_url` と環境検知（Termux/WSL/SSH/Container）を実装済み
+- `login/src/server.rs` は `webbrowser` を廃止し `codex_core::util::open_url` を使用
+- `core` / `login` / `ollama` の `reqwest` に `native-tls-vendored` を付与
+- `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android と動的リンク関連の環境変数を追加
