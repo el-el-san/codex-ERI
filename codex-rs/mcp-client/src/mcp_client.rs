@@ -432,15 +432,13 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TMPDIR",
     "TZ",
 
-    // Android/Termux specific variables kept to avoid breaking dynamic linking or tools.
-    // Safe to include unconditionally on Unix; missing vars are filtered out.
+    // Android / Termux environments require these to locate system libraries and context.
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
     "TERMUX_APP_PID",
     "ANDROID_ROOT",
     "ANDROID_DATA",
-    // Dynamic loader related
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
 ];

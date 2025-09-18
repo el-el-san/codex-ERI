@@ -43,6 +43,7 @@
   - WSL: `cmd.exe /c start` もしくは `wslview`
   - SSH/Container: 自動起動は抑止し、URL の手動オープンを指示（フロー継続を阻害しない扱いに）
   - OS 別: macOS `open`、Linux `xdg-open`→各ブラウザ、Windows `cmd /c start`
+  - Linux では `BROWSER` 環境変数や `gio open`、`sensible-browser`、主要ブラウザ（Firefox/Chrome/Chromium）もフォールバックとして試行
   - 効果: 多様な実行環境での「ログイン用 URL を開く」挙動が破綻しない
 
 
@@ -73,8 +74,8 @@
   - 動的リンク: `LD_LIBRARY_PATH`, `LD_PRELOAD`
 
 ### 3.4 ふるまいの違い（失敗時の扱い）を揃える
-- `login` のブラウザ起動は、環境によりエラーではなく警告＋続行（手動オープンを促す）にしている
-- `core` ユーティリティの `open_url` は用途に応じて `Err` とするパスもあるため、呼び出し側で期待挙動を確認
+- `login` のブラウザ起動は `OpenUrlStatus::Suppressed` をハンドリングし、警告＋URL表示でフローを継続する
+- `core::util::open_url` は実行不能なケースのみ `Err` を返し、環境上の制約は `OpenUrlStatus::Suppressed` で伝達されるため、呼び出し側はメッセージ表示などを行う
 
 ### 3.5 最小限の動作確認
 - Linux（X11/Wayland）: `xdg-open` が動作すること
@@ -114,35 +115,34 @@ arboard = "3"
 
 ### 5.2 ブラウザ起動の実装（core/src/util.rs の open_url 関数）
 ```rust
-pub fn open_url(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Termux環境のチェック
-    if std::env::var("TERMUX_VERSION").is_ok() {
-        // termux-open-url コマンドを使用
+pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    if url.is_empty() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "No URL provided".into(),
+        });
     }
-    
-    // WSL環境のチェック
-    if is_wsl() {
-        // cmd.exe /c start → 失敗時 wslview
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // Termux: termux-open-url
+        // WSL: cmd.exe /c start → 失敗時 wslview
+        // SSH/Container: OpenUrlStatus::Suppressed で手動案内
+        // Linuxデスクトップ: BROWSER, xdg-open, gio open, sensible-browser, Firefox/Chrome/Chromium を順に試行
     }
-    
-    // SSH/Container環境のチェック
-    if is_ssh() || is_container() {
-        // 自動起動をやめ、URL を出力
-    }
-    
-    // OS別の処理
+
     #[cfg(target_os = "macos")]
-    // open コマンド
-    
-    #[cfg(target_os = "linux")]
-    // xdg-open → 失敗時に各ブラウザを試行
-    
+    {
+        // open コマンド
+    }
+
     #[cfg(target_os = "windows")]
-    // cmd /c start
+    {
+        // cmd /C start
+    }
 }
 ```
 
-注: `login/src/server.rs` は `codex_core::util::open_url` を使用
+注: `login/src/server.rs` は `OpenUrlStatus::Suppressed` を受け取り、URL を表示してフローを継続する
 
 ### 5.3 MCP環境変数の保持
 ```rust
@@ -153,7 +153,12 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     // Termux-specific
     "TERMUX_VERSION",
     "PREFIX",
+    "TERMUX_APK_RELEASE",
+    "TERMUX_APP_PID",
+    "ANDROID_ROOT",
+    "ANDROID_DATA",
     "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
     // ... その他必要な環境変数 ...
 ];
 ```
@@ -205,8 +210,8 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 
 このガイドに沿って差分を適用すれば、上流更新のたびに同様のクロスプラットフォーム対応を素早く再現できます。追加で対応が必要になった環境が出てきた場合は、本ドキュメントに追記してください。
 
-### 2025-09-16 更新内容
-- `core/src/util.rs` に `open_url` と環境検知（Termux/WSL/SSH/Container）を実装済み
-- `login/src/server.rs` は `webbrowser` を廃止し `codex_core::util::open_url` を使用
-- `core` / `login` / `ollama` の `reqwest` に `native-tls-vendored` を付与
-- `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android と動的リンク関連の環境変数を追加
+### 2025-09-18 更新内容
+- `core/src/util.rs` の `open_url` が `OpenUrlStatus` / `OpenUrlError` を返すようになり、環境制約時は `Suppressed` で通知
+- Linux系では `BROWSER`・`gio open`・`sensible-browser`・Firefox/Chrome/Chromium を順にフォールバック
+- `login/src/server.rs` は `OpenUrlStatus::Suppressed` を受けて自動で案内メッセージと URL を表示
+- `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Android / Termux 向けの詳細な環境変数を明示
