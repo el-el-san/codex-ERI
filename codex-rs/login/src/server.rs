@@ -14,11 +14,12 @@ use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
 use base64::Engine;
 use chrono::Utc;
-use codex_core::auth::AuthDotJson;
 use codex_core::auth::get_auth_file;
+use codex_core::auth::AuthDotJson;
 use codex_core::default_client::ORIGINATOR;
-use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
+use codex_core::token_data::TokenData;
+use codex_core::util::{open_url, OpenUrlStatus};
 use rand::RngCore;
 use tiny_http::Header;
 use tiny_http::Request;
@@ -105,10 +106,16 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let auth_url = build_authorize_url(&opts.issuer, &opts.client_id, &redirect_uri, &pkce, &state);
 
     if opts.open_browser {
-        if let Err(e) = codex_core::util::open_url(&auth_url) {
-            // Don't fail login flow; instruct manual open.
-            eprintln!("Warning: failed to auto‑open browser: {e}");
-            eprintln!("Open this URL in your browser: {auth_url}");
+        match open_url(&auth_url) {
+            Ok(OpenUrlStatus::Opened) => {}
+            Ok(OpenUrlStatus::Suppressed { reason }) => {
+                eprintln!("{reason}");
+                eprintln!("Open this URL in your browser to continue:\n{auth_url}");
+            }
+            Err(err) => {
+                eprintln!("Failed to launch a browser automatically: {err}");
+                eprintln!("Open this URL in your browser to continue:\n{auth_url}");
+            }
         }
     }
 
