@@ -432,7 +432,7 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TMPDIR",
     "TZ",
 
-    // Android / Termux environments require these to locate system libraries and context.
+    // Termux-specific environment variables (Android)
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
