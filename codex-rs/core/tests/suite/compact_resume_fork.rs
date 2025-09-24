@@ -185,7 +185,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
           "content": [
             {
               "type": "input_text",
-              "text": user_instructions
+              "text": environment_context
             }
           ]
         },
@@ -195,7 +195,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
           "content": [
             {
               "type": "input_text",
-              "text": environment_context
+              "text": "hello world"
             }
           ]
         },
@@ -254,7 +254,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
           "content": [
             {
               "type": "input_text",
-              "text": user_instructions
+              "text": environment_context
             }
           ]
         },
@@ -264,7 +264,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
           "content": [
             {
               "type": "input_text",
-              "text": environment_context
+              "text": "hello world"
             }
           ]
         },
@@ -319,7 +319,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": user_instructions
+              "text": environment_context
             }
           ]
         },
@@ -329,7 +329,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": environment_context
+              "text": "hello world"
             }
           ]
         },
@@ -404,7 +404,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": user_instructions
+              "text": environment_context
             }
           ]
         },
@@ -414,7 +414,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": environment_context
+              "text": "hello world"
             }
           ]
         },
