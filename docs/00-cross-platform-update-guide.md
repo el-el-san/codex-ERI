@@ -215,3 +215,10 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 - Linux系では `BROWSER`・`gio open`・`sensible-browser`・Firefox/Chrome/Chromium を順にフォールバック
 - `login/src/server.rs` は `OpenUrlStatus::Suppressed` を受けて自動で案内メッセージと URL を表示
 - `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Android / Termux 向けの詳細な環境変数を明示
+
+### 2025-09-24 更新内容
+- 実装の完了確認とドキュメント同期
+- GitHub Actions での全プラットフォームビルド成功を確認（Linux/macOS/Windows/Android）
+- `core/src/util.rs` の `open_url` 関数を公開APIとして完全実装
+- `login/src/server.rs` の `webbrowser` 依存削除と `codex_core::util::open_url` への移行完了
+- 実装したクロスプラットフォーム対応が正常に機能することを確認
