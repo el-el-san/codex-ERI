@@ -114,11 +114,11 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let environment_context = requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_context = requests[0]["input"][1]["content"][0]["text"]
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -136,16 +136,6 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": "gpt-5-codex",
       "instructions": prompt,
       "input": [
-        {
-          "type": "message",
-          "role": "user",
-          "content": [
-            {
-              "type": "input_text",
-              "text": user_instructions
-            }
-          ]
-        },
         {
           "type": "message",
           "role": "user",
@@ -571,11 +561,11 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let environment_instructions = requests[0]["input"][0]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_instructions = requests[0]["input"][1]["content"][0]["text"]
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -590,7 +580,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
             "content": [
               {
                 "type": "input_text",
-                "text": user_instructions
+                "text": environment_instructions
               }
             ]
           },
@@ -600,7 +590,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
             "content": [
               {
                 "type": "input_text",
-                "text": environment_instructions
+                "text": user_instructions
               }
             ]
           },
