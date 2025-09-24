@@ -4,6 +4,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 #![deny(clippy::disallowed_methods)]
 use app::App;
+pub use app::AppExitInfo;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::CodexAuth;
@@ -32,7 +33,7 @@ mod app;
 mod app_backtrack;
 mod app_event;
 mod app_event_sender;
-mod backtrack_helpers;
+mod ascii_animation;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
@@ -85,7 +86,7 @@ use codex_core::internal_storage::InternalStorage;
 pub async fn run_main(
     cli: Cli,
     codex_linux_sandbox_exe: Option<PathBuf>,
-) -> std::io::Result<codex_core::protocol::TokenUsage> {
+) -> std::io::Result<AppExitInfo> {
     let (sandbox_mode, approval_policy) = if cli.full_auto {
         (
             Some(SandboxMode::WorkspaceWrite),
@@ -257,7 +258,7 @@ async fn run_ratatui_app(
     mut internal_storage: InternalStorage,
     active_profile: Option<String>,
     should_show_trust_screen: bool,
-) -> color_eyre::Result<codex_core::protocol::TokenUsage> {
+) -> color_eyre::Result<AppExitInfo> {
     let mut config = config;
     color_eyre::install()?;
 
@@ -369,7 +370,10 @@ async fn run_ratatui_app(
             resume_picker::ResumeSelection::Exit => {
                 restore();
                 session_log::log_session_end();
-                return Ok(codex_core::protocol::TokenUsage::default());
+                return Ok(AppExitInfo {
+                    token_usage: codex_core::protocol::TokenUsage::default(),
+                    conversation_id: None,
+                });
             }
             other => other,
         }
@@ -547,20 +551,25 @@ mod tests {
     use codex_core::auth::write_auth_json;
     use codex_core::token_data::IdTokenInfo;
     use codex_core::token_data::TokenData;
-    fn make_config() -> Config {
-        // Create a unique CODEX_HOME per test to isolate auth.json writes.
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    fn get_next_codex_home() -> PathBuf {
+        static NEXT_CODEX_HOME_ID: AtomicUsize = AtomicUsize::new(0);
         let mut codex_home = std::env::temp_dir();
         let unique_suffix = format!(
             "codex_tui_test_{}_{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT_CODEX_HOME_ID.fetch_add(1, Ordering::Relaxed)
         );
         codex_home.push(unique_suffix);
-        std::fs::create_dir_all(&codex_home).expect("create unique CODEX_HOME");
+        codex_home
+    }
 
+    fn make_config() -> Config {
+        // Create a unique CODEX_HOME per test to isolate auth.json writes.
+        let codex_home = get_next_codex_home();
+        std::fs::create_dir_all(&codex_home).expect("create unique CODEX_HOME");
         Config::load_from_base_config_with_overrides(
             ConfigToml::default(),
             ConfigOverrides::default(),
