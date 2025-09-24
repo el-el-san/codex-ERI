@@ -558,6 +558,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 TurnAbortReason::Replaced => {
                     ts_println!(self, "task aborted: replaced by a new task");
                 }
+                TurnAbortReason::ReviewEnded => {
+                    ts_println!(self, "task aborted: review ended");
+                }
             },
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ConversationPath(_) => {}
@@ -570,7 +573,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
 }
 
 fn escape_command(command: &[String]) -> String {
-    try_join(command.iter().map(|s| s.as_str())).unwrap_or_else(|_| command.join(" "))
+    try_join(command.iter().map(String::as_str)).unwrap_or_else(|_| command.join(" "))
 }
 
 fn format_file_change(change: &FileChange) -> &'static str {

@@ -10,10 +10,6 @@
 use super::compact::FIRST_REPLY;
 use super::compact::SUMMARIZE_TRIGGER;
 use super::compact::SUMMARY_TEXT;
-use super::compact::ev_assistant_message;
-use super::compact::ev_completed;
-use super::compact::mount_sse_once;
-use super::compact::sse;
 use codex_core::CodexAuth;
 use codex_core::CodexConversation;
 use codex_core::ConversationManager;
@@ -27,6 +23,10 @@ use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use core_test_support::load_default_config_for_test;
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::sse;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -74,7 +74,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         "compact+resume test expects resumed path {resumed_path:?} to exist",
     );
 
-    let forked = fork_conversation(&manager, &config, resumed_path, 1).await;
+    let forked = fork_conversation(&manager, &config, resumed_path, 2).await;
     user_turn(&forked, "AFTER_FORK").await;
 
     // 3. Capture the requests to the model and validate the history slices.
@@ -100,40 +100,28 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         "after-resume input should have at least as many items as after-compact",
     );
     assert_eq!(compact_arr.as_slice(), &resume_arr[..compact_arr.len()]);
-    eprint!(
-        "len of compact: {}, len of fork: {}",
-        compact_arr.len(),
-        fork_arr.len()
-    );
-    eprintln!("input_after_fork:{}", json!(input_after_fork));
+
     assert!(
         compact_arr.len() <= fork_arr.len(),
         "after-fork input should have at least as many items as after-compact",
     );
-    assert_eq!(compact_arr.as_slice(), &fork_arr[..compact_arr.len()]);
+    assert_eq!(
+        &compact_arr.as_slice()[..compact_arr.len()],
+        &fork_arr[..compact_arr.len()]
+    );
 
     let prompt = requests[0]["instructions"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    // Find the user instructions and environment context from the first request
-    let input_messages = requests[0]["input"].as_array().expect("input should be array");
-    let mut user_instructions = String::new();
-    let mut environment_context = String::new();
-
-    for (idx, msg) in input_messages.iter().enumerate() {
-        if let Some(text) = msg["content"][0]["text"].as_str() {
-            if text.contains("<environment_context>") {
-                environment_context = text.to_string();
-                // User instructions should be in the previous message
-                if idx > 0 {
-                    if let Some(prev_text) = input_messages[idx - 1]["content"][0]["text"].as_str() {
-                        user_instructions = prev_text.to_string();
-                    }
-                }
-            }
-        }
-    }
+    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let environment_context = requests[0]["input"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let tool_calls = json!(requests[0]["tools"].as_array());
     let prompt_cache_key = requests[0]["prompt_cache_key"]
         .as_str()
@@ -143,14 +131,42 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    // The actual structure may have user instructions and environment context in different order
-    // depending on whether environment context was already recorded
-    let user_turn_1_input = requests[0]["input"].clone();
     let user_turn_1 = json!(
     {
-      "model": "gpt-5",
+      "model": "gpt-5-codex",
       "instructions": prompt,
-      "input": user_turn_1_input,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hello world"
+            }
+          ]
+        }
+      ],
       "tools": tool_calls,
       "tool_choice": "auto",
       "parallel_tool_calls": false,
@@ -164,16 +180,66 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "prompt_cache_key": prompt_cache_key
     });
-    let compact_1_input = requests[1]["input"].clone();
     let compact_1 = json!(
     {
-      "model": "gpt-5",
+      "model": "gpt-5-codex",
       "instructions": "You have exceeded the maximum number of tokens, please stop coding and instead write a short memento message for the next agent. Your note should:
 - Summarize what you finished and what still needs work. If there was a recent update_plan call, repeat its steps verbatim.
 - List outstanding TODOs with file paths / line numbers so they're easy to find.
 - Flag code that needs more tests (edge cases, performance, integration, etc.).
 - Record any open bugs, quirks, or setup steps that will make it easier for the next agent to pick up where you left off.",
-      "input": compact_1_input,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hello world"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "FIRST_REPLY"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Start Summarization"
+            }
+          ]
+        }
+      ],
       "tools": [],
       "tool_choice": "auto",
       "parallel_tool_calls": false,
@@ -187,12 +253,58 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "prompt_cache_key": prompt_cache_key
     });
-    let user_turn_2_after_compact_input = requests[2]["input"].clone();
     let user_turn_2_after_compact = json!(
     {
-      "model": "gpt-5",
+      "model": "gpt-5-codex",
       "instructions": prompt,
-      "input": user_turn_2_after_compact_input,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:
+
+hello world
+
+Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:
+
+SUMMARY_ONLY_CONTEXT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_COMPACT"
+            }
+          ]
+        }
+      ],
       "tools": tool_calls,
       "tool_choice": "auto",
       "parallel_tool_calls": false,
@@ -206,12 +318,78 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "prompt_cache_key": prompt_cache_key
     });
-    let usert_turn_3_after_resume_input = requests[3]["input"].clone();
     let usert_turn_3_after_resume = json!(
     {
-      "model": "gpt-5",
+      "model": "gpt-5-codex",
       "instructions": prompt,
-      "input": usert_turn_3_after_resume_input,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:
+
+hello world
+
+Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:
+
+SUMMARY_ONLY_CONTEXT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_COMPACT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "AFTER_COMPACT_REPLY"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_RESUME"
+            }
+          ]
+        }
+      ],
       "tools": tool_calls,
       "tool_choice": "auto",
       "parallel_tool_calls": false,
@@ -225,12 +403,78 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "prompt_cache_key": prompt_cache_key
     });
-    let user_turn_3_after_fork_input = requests[4]["input"].clone();
     let user_turn_3_after_fork = json!(
     {
-      "model": "gpt-5",
+      "model": "gpt-5-codex",
       "instructions": prompt,
-      "input": user_turn_3_after_fork_input,
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:
+
+hello world
+
+Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:
+
+SUMMARY_ONLY_CONTEXT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_COMPACT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "AFTER_COMPACT_REPLY"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_FORK"
+            }
+          ]
+        }
+      ],
       "tools": tool_calls,
       "tool_choice": "auto",
       "parallel_tool_calls": false,
@@ -244,29 +488,15 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       ],
       "prompt_cache_key": fork_prompt_cache_key
     });
-    // Validate key aspects of the requests rather than exact structure
-    assert_eq!(requests.len(), 5, "Expected 5 requests");
-
-    // First request should be for "hello world"
-    let first_input_str = json!(requests[0]["input"]).to_string();
-    assert!(first_input_str.contains("hello world"), "First request should contain 'hello world'");
-
-    // Second request should be the compact trigger
-    let second_input_str = json!(requests[1]["input"]).to_string();
-    assert!(second_input_str.contains(SUMMARIZE_TRIGGER), "Second request should contain summarize trigger");
-
-    // Third request should be after compact
-    let third_input_str = json!(requests[2]["input"]).to_string();
-    assert!(third_input_str.contains("AFTER_COMPACT"), "Third request should contain 'AFTER_COMPACT'");
-    assert!(third_input_str.contains("SUMMARY_ONLY_CONTEXT"), "Third request should contain summary context");
-
-    // Fourth request should be after resume
-    let fourth_input_str = json!(requests[3]["input"]).to_string();
-    assert!(fourth_input_str.contains("AFTER_RESUME"), "Fourth request should contain 'AFTER_RESUME'");
-
-    // Fifth request should be after fork
-    let fifth_input_str = json!(requests[4]["input"]).to_string();
-    assert!(fifth_input_str.contains("AFTER_FORK"), "Fifth request should contain 'AFTER_FORK'");
+    let expected = json!([
+        user_turn_1,
+        compact_1,
+        user_turn_2_after_compact,
+        usert_turn_3_after_resume,
+        user_turn_3_after_fork
+    ]);
+    assert_eq!(requests.len(), 5);
+    assert_eq!(json!(requests), expected);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -341,39 +571,77 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    // Find the user instructions and environment context from the first request
-    let input_messages = requests[0]["input"].as_array().expect("input should be array");
-    let mut user_instructions = String::new();
-    let mut environment_instructions = String::new();
+    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let environment_instructions = requests[0]["input"][1]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
 
-    for (idx, msg) in input_messages.iter().enumerate() {
-        if let Some(text) = msg["content"][0]["text"].as_str() {
-            if text.contains("<environment_context>") {
-                environment_instructions = text.to_string();
-                // User instructions should be in the previous message
-                if idx > 0 {
-                    if let Some(prev_text) = input_messages[idx - 1]["content"][0]["text"].as_str() {
-                        user_instructions = prev_text.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    // Validate the last request after second compact/resume
-    let last_input_str = json!(requests[requests.len() - 1]["input"]).to_string();
-    assert!(
-        last_input_str.contains("AFTER_FORK"),
-        "Last request should contain the original message 'AFTER_FORK' in the summary"
-    );
-    assert!(
-        last_input_str.contains("SUMMARY_ONLY_CONTEXT"),
-        "Last request should contain summary context"
-    );
-    assert!(
-        last_input_str.contains("AFTER_SECOND_RESUME"),
-        "Last request should contain 'AFTER_SECOND_RESUME'"
-    );
+    let expected = json!([
+      {
+        "instructions": prompt,
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": user_instructions
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": environment_instructions
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:\n\nAFTER_FORK\n\nAnother language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:\n\nSUMMARY_ONLY_CONTEXT"
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "AFTER_COMPACT_2"
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "AFTER_SECOND_RESUME"
+              }
+            ]
+          }
+        ],
+      }
+    ]);
+    let last_request_after_2_compacts = json!([{
+        "instructions": requests[requests.len() -1]["instructions"],
+        "input": requests[requests.len() -1]["input"],
+    }]);
+    assert_eq!(expected, last_request_after_2_compacts);
 }
 
 fn normalize_line_endings(value: &mut Value) {
@@ -554,14 +822,15 @@ async fn resume_conversation(
     conversation
 }
 
+#[cfg(test)]
 async fn fork_conversation(
     manager: &ConversationManager,
     config: &Config,
     path: std::path::PathBuf,
-    back_steps: usize,
+    nth_user_message: usize,
 ) -> Arc<CodexConversation> {
     let NewConversation { conversation, .. } = manager
-        .fork_conversation(back_steps, config.clone(), path)
+        .fork_conversation(nth_user_message, config.clone(), path)
         .await
         .expect("fork conversation");
     conversation
