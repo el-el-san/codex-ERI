@@ -74,7 +74,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         "compact+resume test expects resumed path {resumed_path:?} to exist",
     );
 
-    let forked = fork_conversation(&manager, &config, resumed_path, 2).await;
+    let forked = fork_conversation(&manager, &config, resumed_path, 1).await;
     user_turn(&forked, "AFTER_FORK").await;
 
     // 3. Capture the requests to the model and validate the history slices.
@@ -430,23 +430,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:
-
-hello world
-
-Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:
-
-SUMMARY_ONLY_CONTEXT"
-            }
-          ]
-        },
-        {
-          "type": "message",
-          "role": "user",
-          "content": [
-            {
-              "type": "input_text",
-              "text": "AFTER_COMPACT"
+              "text": "hello world"
             }
           ]
         },
@@ -456,7 +440,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "output_text",
-              "text": "AFTER_COMPACT_REPLY"
+              "text": "FIRST_REPLY"
             }
           ]
         },
