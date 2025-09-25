@@ -222,3 +222,17 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 - `core/src/util.rs` の `open_url` 関数を公開APIとして完全実装
 - `login/src/server.rs` の `webbrowser` 依存削除と `codex_core::util::open_url` への移行完了
 - 実装したクロスプラットフォーム対応が正常に機能することを確認
+
+### 2025-09-25 更新内容
+- ドキュメントと実装の完全な同期を実現
+- `reqwest` への `native-tls-vendored` 機能を確実に追加（`core`、`login`、`ollama` の各 `Cargo.toml`）
+- `core/src/util.rs` の `open_url` 関数実装を完了：
+  - `OpenUrlStatus` と `OpenUrlError` の型定義
+  - 環境検知関数（`is_termux`、`is_wsl`、`is_ssh`、`is_container`）の実装
+  - プラットフォーム別のブラウザ起動ロジック（Linux/macOS/Windows/Termux）
+- `login/src/server.rs` で `webbrowser` 依存を完全に削除し、`open_url` を使用
+- `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 環境変数を追加：
+  - `TERMUX_VERSION`、`PREFIX`、`TERMUX_APK_RELEASE`、`TERMUX_APP_PID`
+  - `ANDROID_ROOT`、`ANDROID_DATA`
+  - `LD_LIBRARY_PATH`、`LD_PRELOAD`（動的リンクに必須）
+- クロスプラットフォーム対応の実装が完全にドキュメント記載通りに実現

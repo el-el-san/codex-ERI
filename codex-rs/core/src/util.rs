@@ -1,5 +1,4 @@
 use std::time::Duration;
-use std::process::Command;
 
 use rand::Rng;
 
@@ -13,29 +12,21 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     Duration::from_millis((base as f64 * jitter) as u64)
 }
 
-/// Status returned by [`open_url`].
 #[derive(Debug, Clone)]
 pub enum OpenUrlStatus {
-    /// URL was successfully opened.
     Opened,
-    /// URL opening was suppressed due to environment constraints.
     Suppressed { reason: String },
 }
 
-/// Error returned by [`open_url`].
 #[derive(Debug, thiserror::Error)]
 pub enum OpenUrlError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Command failed: {0}")]
-    CommandFailed(String),
+    #[error("Failed to execute command: {0}")]
+    CommandError(String),
+    #[error("Environment error: {0}")]
+    EnvironmentError(String),
 }
 
-/// Opens the given URL using the appropriate method for the current environment.
-///
-/// Returns `OpenUrlStatus::Suppressed` for environments where automatic URL opening
-/// is not desirable (SSH, containers) or not possible. Returns `OpenUrlError` only
-/// for actual execution failures.
+/// Open URL in the default browser, handling various environment constraints.
 pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     if url.is_empty() {
         return Ok(OpenUrlStatus::Suppressed {
@@ -45,110 +36,149 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // Check for Termux first
+        // Termux detection
         if is_termux() {
-            return run_command("termux-open-url", &[url]);
+            if let Ok(output) = std::process::Command::new("termux-open-url")
+                .arg(url)
+                .output()
+            {
+                if output.status.success() {
+                    return Ok(OpenUrlStatus::Opened);
+                }
+            }
+            return Ok(OpenUrlStatus::Suppressed {
+                reason: "Termux environment detected but termux-open-url is not available. Please install termux-api: pkg install termux-api".into(),
+            });
         }
 
-        // Check for WSL
+        // WSL detection
         if is_wsl() {
-            // Try cmd.exe first, fallback to wslview
-            match run_command("cmd.exe", &["/c", "start", url]) {
-                Ok(status) => return Ok(status),
-                Err(_) => {
-                    return run_command("wslview", &[url]);
+            // Try cmd.exe first
+            if let Ok(output) = std::process::Command::new("cmd.exe")
+                .args(["/c", "start", url])
+                .output()
+            {
+                if output.status.success() {
+                    return Ok(OpenUrlStatus::Opened);
+                }
+            }
+            // Fallback to wslview
+            if let Ok(output) = std::process::Command::new("wslview").arg(url).output() {
+                if output.status.success() {
+                    return Ok(OpenUrlStatus::Opened);
+                }
+            }
+            return Ok(OpenUrlStatus::Suppressed {
+                reason: "WSL environment detected but unable to open URL. Please manually open the URL in your browser.".into(),
+            });
+        }
+
+        // SSH/Container detection - suppress automatic opening
+        if is_ssh() || is_container() {
+            return Ok(OpenUrlStatus::Suppressed {
+                reason: "SSH/Container environment detected. Please manually open the URL in your browser.".into(),
+            });
+        }
+
+        // Linux desktop environment - try various browser opening methods
+        let browser_commands = [
+            // Environment variable BROWSER
+            std::env::var("BROWSER").ok().map(|b| vec![b]),
+            // Standard Linux commands
+            Some(vec!["xdg-open".to_string()]),
+            Some(vec!["gio".to_string(), "open".to_string()]),
+            Some(vec!["sensible-browser".to_string()]),
+            // Direct browser executables
+            Some(vec!["firefox".to_string()]),
+            Some(vec!["google-chrome".to_string()]),
+            Some(vec!["chromium".to_string()]),
+            Some(vec!["chromium-browser".to_string()]),
+        ];
+
+        for browser_cmd in browser_commands.into_iter().flatten() {
+            if let Some(cmd) = browser_cmd.first() {
+                let mut command = std::process::Command::new(cmd);
+                for arg in &browser_cmd[1..] {
+                    command.arg(arg);
+                }
+                command.arg(url);
+
+                if let Ok(output) = command.output() {
+                    if output.status.success() {
+                        return Ok(OpenUrlStatus::Opened);
+                    }
                 }
             }
         }
 
-        // Check for SSH/Container environments - suppress automatic opening
-        if is_ssh() || is_container() {
-            return Ok(OpenUrlStatus::Suppressed {
-                reason: "Automatic URL opening is disabled in SSH/container environments. Please open the URL manually.".into(),
-            });
-        }
-
-        // Linux desktop environment - try various methods
-        if let Ok(browser) = std::env::var("BROWSER") {
-            if let Ok(status) = run_command(&browser, &[url]) {
-                return Ok(status);
-            }
-        }
-
-        // Try common Linux URL openers
-        let commands = [
-            ("xdg-open", vec![url]),
-            ("gio", vec!["open", url]),
-            ("sensible-browser", vec![url]),
-            ("firefox", vec![url]),
-            ("google-chrome", vec![url]),
-            ("chromium-browser", vec![url]),
-            ("chromium", vec![url]),
-        ];
-
-        for (cmd, args) in commands {
-            if let Ok(status) = run_command(cmd, &args) {
-                return Ok(status);
-            }
-        }
-
-        Err(OpenUrlError::CommandFailed("No suitable browser found".into()))
+        return Err(OpenUrlError::CommandError(
+            "No suitable browser command found".into(),
+        ));
     }
 
     #[cfg(target_os = "macos")]
     {
-        run_command("open", &[url])
+        if let Ok(output) = std::process::Command::new("open").arg(url).output() {
+            if output.status.success() {
+                return Ok(OpenUrlStatus::Opened);
+            }
+        }
+        return Err(OpenUrlError::CommandError("Failed to open URL on macOS".into()));
     }
 
     #[cfg(target_os = "windows")]
     {
-        run_command("cmd", &["/C", "start", "", url])
+        if let Ok(output) = std::process::Command::new("cmd")
+            .args(["/C", "start", url])
+            .output()
+        {
+            if output.status.success() {
+                return Ok(OpenUrlStatus::Opened);
+            }
+        }
+        return Err(OpenUrlError::CommandError("Failed to open URL on Windows".into()));
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "windows")))]
+    {
+        Ok(OpenUrlStatus::Suppressed {
+            reason: "Unsupported operating system".into(),
+        })
     }
 }
 
-/// Helper function to run a command and return appropriate status.
-fn run_command(cmd: &str, args: &[&str]) -> Result<OpenUrlStatus, OpenUrlError> {
-    let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(OpenUrlError::Io)?;
-
-    if output.status.success() {
-        Ok(OpenUrlStatus::Opened)
-    } else {
-        Err(OpenUrlError::CommandFailed(format!(
-            "Command '{}' failed with exit code: {:?}",
-            cmd, output.status.code()
-        )))
-    }
-}
-
-/// Check if we're running in Termux (Android).
+/// Detect if running in Termux environment
 fn is_termux() -> bool {
     std::env::var("TERMUX_VERSION").is_ok()
 }
 
-/// Check if we're running in WSL.
+/// Detect if running in WSL environment
 fn is_wsl() -> bool {
-    std::env::var("WSL_DISTRO_NAME").is_ok() ||
-    std::env::var("WSLENV").is_ok() ||
-    std::fs::read_to_string("/proc/version")
-        .map(|content| content.to_lowercase().contains("microsoft"))
-        .unwrap_or(false)
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        version.contains("Microsoft") || version.contains("WSL")
+    } else {
+        false
+    }
 }
 
-/// Check if we're running in an SSH session.
+/// Detect if running in SSH session
 fn is_ssh() -> bool {
-    std::env::var("SSH_CONNECTION").is_ok() ||
-    std::env::var("SSH_CLIENT").is_ok() ||
-    std::env::var("SSH_TTY").is_ok()
+    std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok()
 }
 
-/// Check if we're running in a container.
+/// Detect if running in container environment
 fn is_container() -> bool {
-    std::fs::read_to_string("/proc/1/cgroup")
-        .map(|content| content.contains("docker") || content.contains("containerd") || content.contains("lxc"))
-        .unwrap_or(false) ||
-    std::path::Path::new("/.dockerenv").exists() ||
-    std::env::var("container").is_ok()
+    // Check for Docker
+    if std::path::Path::new("/.dockerenv").exists() {
+        return true;
+    }
+
+    // Check for other container indicators
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
+        if cgroup.contains("docker") || cgroup.contains("lxc") || cgroup.contains("kubepods") {
+            return true;
+        }
+    }
+
+    false
 }
