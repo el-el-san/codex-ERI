@@ -19,6 +19,7 @@ use codex_core::auth::get_auth_file;
 use codex_core::default_client::ORIGINATOR;
 use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
+use codex_core::util::{open_url, OpenUrlStatus};
 use rand::RngCore;
 use serde_json::Value as JsonValue;
 use tiny_http::Header;
@@ -106,16 +107,16 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let auth_url = build_authorize_url(&opts.issuer, &opts.client_id, &redirect_uri, &pkce, &state);
 
     if opts.open_browser {
-        match codex_core::util::open_url(&auth_url) {
-            Ok(codex_core::util::OpenUrlStatus::Opened) => {
-                // URL successfully opened
+        match open_url(&auth_url) {
+            Ok(OpenUrlStatus::Opened) => {
+                // Browser opened successfully
             }
-            Ok(codex_core::util::OpenUrlStatus::Suppressed { reason }) => {
-                println!("Automatic browser opening is disabled: {}", reason);
+            Ok(OpenUrlStatus::Suppressed { reason }) => {
+                println!("Could not open browser automatically: {}", reason);
                 println!("Please manually open this URL in your browser: {}", auth_url);
             }
-            Err(err) => {
-                println!("Failed to open browser automatically: {}", err);
+            Err(e) => {
+                println!("Failed to open browser: {}", e);
                 println!("Please manually open this URL in your browser: {}", auth_url);
             }
         }
