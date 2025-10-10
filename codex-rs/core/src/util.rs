@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::process::Command;
 
 use rand::Rng;
 
@@ -12,21 +13,33 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     Duration::from_millis((base as f64 * jitter) as u64)
 }
 
-#[derive(Debug, Clone)]
+/// Status returned by `open_url` to indicate the result of the operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenUrlStatus {
+    /// The URL was successfully opened.
     Opened,
+    /// Opening the URL was suppressed due to environment constraints.
     Suppressed { reason: String },
 }
 
+/// Error type for `open_url` function.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenUrlError {
     #[error("Failed to execute command: {0}")]
-    CommandError(String),
-    #[error("Environment error: {0}")]
-    EnvironmentError(String),
+    ExecutionFailed(String),
+    #[error("No suitable browser command found")]
+    NoBrowserFound,
 }
 
-/// Open URL in the default browser, handling various environment constraints.
+/// Opens a URL in the default browser, with environment-specific handling.
+///
+/// This function detects the current environment (Termux, WSL, SSH, Container, etc.)
+/// and chooses the appropriate method to open the URL.
+///
+/// Returns:
+/// - `Ok(OpenUrlStatus::Opened)` if the URL was successfully opened
+/// - `Ok(OpenUrlStatus::Suppressed)` if opening was skipped due to environment constraints
+/// - `Err(OpenUrlError)` if an error occurred
 pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     if url.is_empty() {
         return Ok(OpenUrlStatus::Suppressed {
@@ -36,149 +49,152 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // Termux detection
+        // Termux: termux-open-url
         if is_termux() {
-            if let Ok(output) = std::process::Command::new("termux-open-url")
-                .arg(url)
-                .output()
-            {
-                if output.status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-            return Ok(OpenUrlStatus::Suppressed {
-                reason: "Termux environment detected but termux-open-url is not available. Please install termux-api: pkg install termux-api".into(),
-            });
+            return match Command::new("termux-open-url").arg(url).status() {
+                Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
+                Ok(_) => Err(OpenUrlError::ExecutionFailed(
+                    "termux-open-url command failed. Make sure termux-api is installed (pkg install termux-api)".into()
+                )),
+                Err(e) => Err(OpenUrlError::ExecutionFailed(format!(
+                    "Failed to run termux-open-url: {}. Install it with: pkg install termux-api", e
+                ))),
+            };
         }
 
-        // WSL detection
+        // WSL: cmd.exe /c start → 失敗時 wslview
         if is_wsl() {
-            // Try cmd.exe first
-            if let Ok(output) = std::process::Command::new("cmd.exe")
-                .args(["/c", "start", url])
-                .output()
+            if let Ok(status) = Command::new("cmd.exe")
+                .args(&["/c", "start", url])
+                .status()
             {
-                if output.status.success() {
+                if status.success() {
                     return Ok(OpenUrlStatus::Opened);
                 }
             }
             // Fallback to wslview
-            if let Ok(output) = std::process::Command::new("wslview").arg(url).output() {
-                if output.status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-            return Ok(OpenUrlStatus::Suppressed {
-                reason: "WSL environment detected but unable to open URL. Please manually open the URL in your browser.".into(),
-            });
+            return match Command::new("wslview").arg(url).status() {
+                Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
+                _ => Err(OpenUrlError::ExecutionFailed(
+                    "Both cmd.exe and wslview failed to open URL".into(),
+                )),
+            };
         }
 
-        // SSH/Container detection - suppress automatic opening
+        // SSH/Container: Suppress automatic opening
         if is_ssh() || is_container() {
             return Ok(OpenUrlStatus::Suppressed {
-                reason: "SSH/Container environment detected. Please manually open the URL in your browser.".into(),
+                reason: format!(
+                    "Running in {} environment. Please open the URL manually: {}",
+                    if is_ssh() { "SSH" } else { "container" },
+                    url
+                ),
             });
         }
 
-        // Linux desktop environment - try various browser opening methods
-        let browser_commands = [
-            // Environment variable BROWSER
-            std::env::var("BROWSER").ok().map(|b| vec![b]),
-            // Standard Linux commands
-            Some(vec!["xdg-open".to_string()]),
-            Some(vec!["gio".to_string(), "open".to_string()]),
-            Some(vec!["sensible-browser".to_string()]),
-            // Direct browser executables
-            Some(vec!["firefox".to_string()]),
-            Some(vec!["google-chrome".to_string()]),
-            Some(vec!["chromium".to_string()]),
-            Some(vec!["chromium-browser".to_string()]),
-        ];
-
-        for browser_cmd in browser_commands.into_iter().flatten() {
-            if let Some(cmd) = browser_cmd.first() {
-                let mut command = std::process::Command::new(cmd);
-                for arg in &browser_cmd[1..] {
-                    command.arg(arg);
-                }
-                command.arg(url);
-
-                if let Ok(output) = command.output() {
-                    if output.status.success() {
+        // Linux desktop: Try various methods
+        // 1. Check BROWSER environment variable
+        if let Ok(browser) = std::env::var("BROWSER") {
+            if !browser.is_empty() {
+                if let Ok(status) = Command::new(&browser).arg(url).status() {
+                    if status.success() {
                         return Ok(OpenUrlStatus::Opened);
                     }
                 }
             }
         }
 
-        return Err(OpenUrlError::CommandError(
-            "No suitable browser command found".into(),
-        ));
+        // 2. Try xdg-open
+        if let Ok(status) = Command::new("xdg-open").arg(url).status() {
+            if status.success() {
+                return Ok(OpenUrlStatus::Opened);
+            }
+        }
+
+        // 3. Try gio open
+        if let Ok(status) = Command::new("gio").args(&["open", url]).status() {
+            if status.success() {
+                return Ok(OpenUrlStatus::Opened);
+            }
+        }
+
+        // 4. Try sensible-browser
+        if let Ok(status) = Command::new("sensible-browser").arg(url).status() {
+            if status.success() {
+                return Ok(OpenUrlStatus::Opened);
+            }
+        }
+
+        // 5. Try common browsers directly
+        for browser in &["firefox", "google-chrome", "chromium", "chromium-browser"] {
+            if let Ok(status) = Command::new(browser).arg(url).status() {
+                if status.success() {
+                    return Ok(OpenUrlStatus::Opened);
+                }
+            }
+        }
+
+        Err(OpenUrlError::NoBrowserFound)
     }
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("open").arg(url).output() {
-            if output.status.success() {
-                return Ok(OpenUrlStatus::Opened);
-            }
+        match Command::new("open").arg(url).status() {
+            Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
+            Ok(_) => Err(OpenUrlError::ExecutionFailed("open command failed".into())),
+            Err(e) => Err(OpenUrlError::ExecutionFailed(format!("Failed to run open: {}", e))),
         }
-        return Err(OpenUrlError::CommandError("Failed to open URL on macOS".into()));
     }
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = std::process::Command::new("cmd")
-            .args(["/C", "start", url])
-            .output()
+        match Command::new("cmd")
+            .args(&["/C", "start", url])
+            .status()
         {
-            if output.status.success() {
-                return Ok(OpenUrlStatus::Opened);
-            }
+            Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
+            Ok(_) => Err(OpenUrlError::ExecutionFailed("cmd /C start failed".into())),
+            Err(e) => Err(OpenUrlError::ExecutionFailed(format!("Failed to run cmd: {}", e))),
         }
-        return Err(OpenUrlError::CommandError("Failed to open URL on Windows".into()));
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "windows")))]
     {
         Ok(OpenUrlStatus::Suppressed {
-            reason: "Unsupported operating system".into(),
+            reason: format!("Unsupported platform. Please open the URL manually: {}", url),
         })
     }
 }
 
-/// Detect if running in Termux environment
+/// Checks if the current environment is Termux (Android terminal emulator).
 fn is_termux() -> bool {
-    std::env::var("TERMUX_VERSION").is_ok()
+    std::env::var("TERMUX_VERSION").is_ok() || std::env::var("PREFIX").map_or(false, |p| p.contains("com.termux"))
 }
 
-/// Detect if running in WSL environment
+/// Checks if the current environment is WSL (Windows Subsystem for Linux).
 fn is_wsl() -> bool {
-    if let Ok(version) = std::fs::read_to_string("/proc/version") {
-        version.contains("Microsoft") || version.contains("WSL")
-    } else {
-        false
+    if let Ok(contents) = std::fs::read_to_string("/proc/version") {
+        return contents.to_lowercase().contains("microsoft") || contents.to_lowercase().contains("wsl");
     }
+    false
 }
 
-/// Detect if running in SSH session
+/// Checks if the current environment is an SSH session.
 fn is_ssh() -> bool {
-    std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok()
+    std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_CLIENT").is_ok()
 }
 
-/// Detect if running in container environment
+/// Checks if the current environment is a container (Docker, etc.).
 fn is_container() -> bool {
     // Check for Docker
     if std::path::Path::new("/.dockerenv").exists() {
         return true;
     }
-
     // Check for other container indicators
-    if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
-        if cgroup.contains("docker") || cgroup.contains("lxc") || cgroup.contains("kubepods") {
+    if let Ok(contents) = std::fs::read_to_string("/proc/1/cgroup") {
+        if contents.contains("docker") || contents.contains("lxc") || contents.contains("kubepods") {
             return true;
         }
     }
-
     false
 }
