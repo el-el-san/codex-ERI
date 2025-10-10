@@ -17,6 +17,7 @@ use codex_core::NewConversation;
 use codex_core::built_in_model_providers;
 use codex_core::codex::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
+use codex_core::config::OPENAI_DEFAULT_MODEL;
 use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
@@ -25,7 +26,7 @@ use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -74,7 +75,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         "compact+resume test expects resumed path {resumed_path:?} to exist",
     );
 
-    let forked = fork_conversation(&manager, &config, resumed_path, 1).await;
+    let forked = fork_conversation(&manager, &config, resumed_path, 2).await;
     user_turn(&forked, "AFTER_FORK").await;
 
     // 3. Capture the requests to the model and validate the history slices.
@@ -131,9 +132,10 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
+    let expected_model = OPENAI_DEFAULT_MODEL;
     let user_turn_1 = json!(
     {
-      "model": "gpt-5-codex",
+      "model": expected_model,
       "instructions": prompt,
       "input": [
         {
@@ -182,7 +184,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     });
     let compact_1 = json!(
     {
-      "model": "gpt-5-codex",
+      "model": expected_model,
       "instructions": prompt,
       "input": [
         {
@@ -251,7 +253,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     });
     let user_turn_2_after_compact = json!(
     {
-      "model": "gpt-5-codex",
+      "model": expected_model,
       "instructions": prompt,
       "input": [
         {
@@ -316,7 +318,7 @@ SUMMARY_ONLY_CONTEXT"
     });
     let usert_turn_3_after_resume = json!(
     {
-      "model": "gpt-5-codex",
+      "model": expected_model,
       "instructions": prompt,
       "input": [
         {
@@ -401,7 +403,7 @@ SUMMARY_ONLY_CONTEXT"
     });
     let user_turn_3_after_fork = json!(
     {
-      "model": "gpt-5-codex",
+      "model": expected_model,
       "instructions": prompt,
       "input": [
         {
@@ -430,7 +432,23 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "input_text",
-              "text": "hello world"
+              "text": "You were originally given instructions from a user over one or more turns. Here were the user messages:
+
+hello world
+
+Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:
+
+SUMMARY_ONLY_CONTEXT"
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "AFTER_COMPACT"
             }
           ]
         },
@@ -440,7 +458,7 @@ SUMMARY_ONLY_CONTEXT"
           "content": [
             {
               "type": "output_text",
-              "text": "FIRST_REPLY"
+              "text": "AFTER_COMPACT_REPLY"
             }
           ]
         },
@@ -686,13 +704,13 @@ async fn mount_initial_flow(server: &MockServer) {
             && !body.contains("\"text\":\"AFTER_RESUME\"")
             && !body.contains("\"text\":\"AFTER_FORK\"")
     };
-    mount_sse_once(server, match_first, sse1).await;
+    mount_sse_once_match(server, match_first, sse1).await;
 
     let match_compact = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("You have exceeded the maximum number of tokens")
     };
-    mount_sse_once(server, match_compact, sse2).await;
+    mount_sse_once_match(server, match_compact, sse2).await;
 
     let match_after_compact = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
@@ -700,19 +718,19 @@ async fn mount_initial_flow(server: &MockServer) {
             && !body.contains("\"text\":\"AFTER_RESUME\"")
             && !body.contains("\"text\":\"AFTER_FORK\"")
     };
-    mount_sse_once(server, match_after_compact, sse3).await;
+    mount_sse_once_match(server, match_after_compact, sse3).await;
 
     let match_after_resume = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("\"text\":\"AFTER_RESUME\"")
     };
-    mount_sse_once(server, match_after_resume, sse4).await;
+    mount_sse_once_match(server, match_after_resume, sse4).await;
 
     let match_after_fork = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains("\"text\":\"AFTER_FORK\"")
     };
-    mount_sse_once(server, match_after_fork, sse5).await;
+    mount_sse_once_match(server, match_after_fork, sse5).await;
 }
 
 async fn mount_second_compact_flow(server: &MockServer) {
@@ -727,13 +745,13 @@ async fn mount_second_compact_flow(server: &MockServer) {
         body.contains("You have exceeded the maximum number of tokens")
             && body.contains("AFTER_FORK")
     };
-    mount_sse_once(server, match_second_compact, sse6).await;
+    mount_sse_once_match(server, match_second_compact, sse6).await;
 
     let match_after_second_resume = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains(&format!("\"text\":\"{AFTER_SECOND_RESUME}\""))
     };
-    mount_sse_once(server, match_after_second_resume, sse7).await;
+    mount_sse_once_match(server, match_after_second_resume, sse7).await;
 }
 
 async fn start_test_conversation(
