@@ -124,6 +124,8 @@ use codex_protocol::protocol::InitialHistory;
 pub mod compact;
 use self::compact::build_compacted_history;
 use self::compact::collect_user_messages;
+use self::compact::content_items_to_text;
+use self::compact::is_session_prefix_message;
 
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.
@@ -677,11 +679,46 @@ impl Session {
         turn_context: &TurnContext,
         rollout_items: &[RolloutItem],
     ) -> Vec<ResponseItem> {
+        // Find the index of the last Compacted item, if any
+        let last_compacted_idx = rollout_items
+            .iter()
+            .rposition(|item| matches!(item, RolloutItem::Compacted(_)));
+
         let mut history = ConversationHistory::new();
-        for item in rollout_items {
+        for (idx, item) in rollout_items.iter().enumerate() {
             match item {
                 RolloutItem::ResponseItem(response_item) => {
-                    history.record_items(std::iter::once(response_item));
+                    // Only add ResponseItems that come after the last Compacted item,
+                    // or are session prefix messages (which should always be included)
+                    let should_add = if let Some(compacted_idx) = last_compacted_idx {
+                        if idx < compacted_idx {
+                            // For items before the last Compacted item, only keep session prefix messages
+                            if let ResponseItem::Message { role, content, .. } = response_item {
+                                if role == "user" {
+                                    if let Some(text) = content_items_to_text(content) {
+                                        is_session_prefix_message(&text)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                // Keep non-Message ResponseItems (like FunctionCall, etc.)
+                                true
+                            }
+                        } else {
+                            // Items at or after the Compacted item should be added
+                            true
+                        }
+                    } else {
+                        // No Compacted item, add all ResponseItems
+                        true
+                    };
+
+                    if should_add {
+                        history.record_items(std::iter::once(response_item));
+                    }
                 }
                 RolloutItem::Compacted(compacted) => {
                     let snapshot = history.contents();
