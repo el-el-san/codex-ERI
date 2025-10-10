@@ -236,3 +236,14 @@ const DEFAULT_ENV_VARS: &[&str] = &[
   - `ANDROID_ROOT`、`ANDROID_DATA`
   - `LD_LIBRARY_PATH`、`LD_PRELOAD`（動的リンクに必須）
 - クロスプラットフォーム対応の実装が完全にドキュメント記載通りに実現
+
+### 2025-10-10 実装完了
+- ドキュメントに基づいて、すべてのクロスプラットフォーム対応を実装完了
+- **TLS依存関係**: `core`、`ollama`、`login` の各 `Cargo.toml` に `native-tls-vendored` を追加完了
+- **ブラウザ起動処理**:
+  - `core/src/util.rs` に完全な `open_url` 関数を実装（環境検知、エラーハンドリング含む）
+  - `login/src/server.rs` を `codex_core::util::open_url` を使用するように更新
+  - `login/Cargo.toml` から `webbrowser` 依存を削除
+  - `OpenUrlStatus::Suppressed` 時に適切なメッセージとURLを表示する処理を実装
+- **MCP環境変数**: `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 環境変数を追加完了
+- すべての実装がドキュメント記載の仕様に準拠していることを確認

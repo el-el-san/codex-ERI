@@ -274,8 +274,7 @@ impl McpClient {
                 err.error.code, err.error.message
             ))),
             other => Err(anyhow!(format!(
-                "unexpected message variant received in reply path: {:?}",
-                other
+                "unexpected message variant received in reply path: {other:?}"
             ))),
         }
     }
@@ -315,13 +314,12 @@ impl McpClient {
     pub async fn initialize(
         &self,
         initialize_params: InitializeRequestParams,
-        initialize_notification_params: Option<serde_json::Value>,
         timeout: Option<Duration>,
     ) -> Result<mcp_types::InitializeResult> {
         let response = self
             .send_request::<InitializeRequest>(initialize_params, timeout)
             .await?;
-        self.send_notification::<InitializedNotification>(initialize_notification_params)
+        self.send_notification::<InitializedNotification>(None)
             .await?;
         Ok(response)
     }
@@ -432,17 +430,13 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "TMPDIR",
     "TZ",
 
-    // Termux-specific environment variables
+    // Termux-specific environment variables (required for Android/Termux environments)
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
     "TERMUX_APP_PID",
-
-    // Android-related environment variables
     "ANDROID_ROOT",
     "ANDROID_DATA",
-
-    // Dynamic linking environment variables (critical for Termux)
     "LD_LIBRARY_PATH",
     "LD_PRELOAD",
 ];
