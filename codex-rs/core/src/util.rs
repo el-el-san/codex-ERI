@@ -33,18 +33,22 @@ pub enum OpenUrlError {
 }
 
 /// Environment detection functions
+#[allow(dead_code)]
 fn is_termux() -> bool {
     std::env::var("TERMUX_VERSION").is_ok() || std::env::var("PREFIX").map_or(false, |p| p.contains("termux"))
 }
 
+#[allow(dead_code)]
 fn is_wsl() -> bool {
     std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok()
 }
 
+#[allow(dead_code)]
 fn is_ssh() -> bool {
     std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_CLIENT").is_ok() || std::env::var("SSH_TTY").is_ok()
 }
 
+#[allow(dead_code)]
 fn is_container() -> bool {
     // Check for Docker, Kubernetes, and other container environments
     std::path::Path::new("/.dockerenv").exists()
