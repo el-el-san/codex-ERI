@@ -247,48 +247,6 @@ impl RolloutRecorder {
             }
         }
 
-        // If there are Compacted items, remove all ResponseItems that come before
-        // the last Compacted item, except for session prefix messages
-        // (user_instructions and environment_context).
-        if let Some(last_compacted_idx) = items
-            .iter()
-            .rposition(|item| matches!(item, RolloutItem::Compacted(_)))
-        {
-            use crate::codex::compact::{content_items_to_text, is_session_prefix_message};
-            use codex_protocol::models::ResponseItem;
-
-            items = items
-                .into_iter()
-                .enumerate()
-                .filter(|(idx, item)| {
-                    if *idx < last_compacted_idx {
-                        match item {
-                            RolloutItem::ResponseItem(ResponseItem::Message {
-                                role,
-                                content,
-                                ..
-                            }) => {
-                                // Keep session prefix messages (user_instructions, environment_context)
-                                if role == "user" {
-                                    if let Some(text) = content_items_to_text(content) {
-                                        return is_session_prefix_message(&text);
-                                    }
-                                }
-                                // Remove all other messages before the compacted item
-                                false
-                            }
-                            // Keep all non-Message ResponseItems and other RolloutItem types
-                            _ => true,
-                        }
-                    } else {
-                        // Keep all items at or after the compacted index
-                        true
-                    }
-                })
-                .map(|(_, item)| item)
-                .collect();
-        }
-
         info!(
             "Resumed rollout with {} items, conversation ID: {:?}",
             items.len(),

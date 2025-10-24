@@ -25,7 +25,7 @@
 ### 1.3 MCP環境変数保持（Termux対応）
 - MCPサーバー起動時に`env_clear()`が呼ばれるが、Termuxで必要な環境変数が削除される問題を修正
 - 変更ファイル:
-  - `mcp-client/src/mcp_client.rs`（`DEFAULT_ENV_VARS`にTermux環境変数を追加）
+  - `rmcp-client/src/utils.rs`（`DEFAULT_ENV_VARS`にTermux環境変数を追加）
 - 追加した環境変数:
   - `TERMUX_VERSION`, `PREFIX`, `TERMUX_APK_RELEASE`, `TERMUX_APP_PID`
   - `ANDROID_ROOT`, `ANDROID_DATA`
@@ -67,7 +67,8 @@
 - `login/src/server.rs` のリダイレクト開始箇所（認可 URL を開く処理）で上記関数を使用すること
 
 ### 3.3 MCP環境変数保持の確認
-- `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` にTermux環境変数が含まれているか確認
+- `rmcp-client/src/utils.rs` の `DEFAULT_ENV_VARS` にTermux環境変数が含まれているか確認
+  - **注**: 過去のバージョンでは `mcp-client/src/mcp_client.rs` にありましたが、現在は `rmcp-client/src/utils.rs` に統一されています
 - 必要な環境変数:
   - 基本: `TERMUX_VERSION`, `PREFIX`
   - Android関連: `ANDROID_ROOT`, `ANDROID_DATA`, `TERMUX_APK_RELEASE`, `TERMUX_APP_PID`
@@ -146,11 +147,12 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 
 ### 5.3 MCP環境変数の保持
 ```rust
-// mcp-client/src/mcp_client.rs
-const DEFAULT_ENV_VARS: &[&str] = &[
+// rmcp-client/src/utils.rs
+#[cfg(unix)]
+pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     // ... 既存の環境変数 ...
-    
-    // Termux-specific
+
+    // Termux/Android-specific
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
@@ -196,7 +198,8 @@ const DEFAULT_ENV_VARS: &[&str] = &[
 ### 8.1 Termux環境でMCP機能が動作しない
 - 症状: MCPサーバーが起動するが、コマンド実行でエラーが発生
 - 原因: `env_clear()`により必要な環境変数が削除される
-- 対処: `mcp-client/src/mcp_client.rs`の`DEFAULT_ENV_VARS`を確認
+- 対処: `rmcp-client/src/utils.rs`の`DEFAULT_ENV_VARS`を確認
+  - 特に、Termux環境変数（`TERMUX_VERSION`, `PREFIX`, `LD_LIBRARY_PATH` など）が含まれているか確認
 
 ### 8.2 ブラウザが自動で開かない
 - Termux: `termux-open-url`コマンドがインストールされているか確認（`pkg install termux-api`）
@@ -247,3 +250,24 @@ const DEFAULT_ENV_VARS: &[&str] = &[
   - `OpenUrlStatus::Suppressed` 時に適切なメッセージとURLを表示する処理を実装
 - **MCP環境変数**: `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 環境変数を追加完了
 - すべての実装がドキュメント記載の仕様に準拠していることを確認
+
+### 2025-10-24 実装完了・ドキュメント同期
+- ドキュメントと実装の完全な同期を確認・修正
+- **TLS依存関係**:
+  - `core/Cargo.toml` の `reqwest` に `"native-tls-vendored"` を追加
+  - `login/Cargo.toml` の `reqwest` に `"native-tls-vendored"` を追加
+  - `ollama/Cargo.toml` の `reqwest` に `"native-tls-vendored"` を追加
+- **ブラウザ起動処理**:
+  - `core/src/util.rs` に `open_url` 関数を完全実装
+    - `OpenUrlStatus` と `OpenUrlError` 型を定義
+    - 環境検知関数を実装（`is_termux`, `is_wsl`, `is_ssh`, `is_container`）
+    - プラットフォーム別のブラウザ起動ロジック（Linux/macOS/Windows/Android/Termux）
+  - `login/src/server.rs` を修正
+    - `codex_core::util::{open_url, OpenUrlStatus}` をインポート
+    - `webbrowser::open` を `open_url` に置き換え
+    - `OpenUrlStatus::Suppressed` 時にメッセージを表示
+  - `login/Cargo.toml` から `webbrowser` 依存を削除
+- **MCP環境変数**:
+  - `rmcp-client/src/utils.rs` の `DEFAULT_ENV_VARS` に Termux/Android 環境変数を追加
+  - 追加した環境変数：`TERMUX_VERSION`, `PREFIX`, `TERMUX_APK_RELEASE`, `TERMUX_APP_PID`, `ANDROID_ROOT`, `ANDROID_DATA`, `LD_LIBRARY_PATH`, `LD_PRELOAD`
+- すべての実装がドキュメント記載の仕様に完全に準拠
