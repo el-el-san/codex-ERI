@@ -79,6 +79,10 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
                 }),
             };
         }
+        // Non-Termux Android
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "URL opening not supported on this Android environment. Please open the URL manually: ".to_string() + url,
+        });
     }
 
     #[cfg(target_os = "linux")]
