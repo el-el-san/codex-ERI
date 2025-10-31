@@ -21,7 +21,6 @@ on:
           - all
           - linux-x86_64
           - linux-aarch64
-          - android-aarch64
           - macos-x86_64
           - macos-aarch64
           - windows-x86_64
@@ -93,9 +92,6 @@ jobs:
               linux-aarch64)
                 matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"}]}'
                 ;;
-              android-aarch64)
-                matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"}]}'
-                ;;
               macos-x86_64)
                 matrix='{"include":[{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"}]}'
                 ;;
@@ -111,7 +107,7 @@ jobs:
             esac
           else
             # 全プラットフォーム
-            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
+            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
           fi
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
@@ -164,7 +160,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Setup Rust (Unix)
-        if: matrix.target != 'aarch64-linux-android' && matrix.os != 'windows-latest'
+        if: matrix.os != 'windows-latest'
         run: |
           echo "Installing Rust toolchain for target: ${{ matrix.target }}"
           rustup toolchain install ${{ needs.setup.outputs.rust_version }}
@@ -182,12 +178,6 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustup show
       
-      - name: Setup Rust (Android)
-        if: matrix.target == 'aarch64-linux-android'
-        run: |
-          rustup toolchain install ${{ needs.setup.outputs.rust_version }}
-          rustup default ${{ needs.setup.outputs.rust_version }}
-      
       - name: Install Linux ARM64 cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -197,48 +187,6 @@ jobs:
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
           echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-      
-      - name: Install Android NDK for ARM64
-        if: matrix.target == 'aarch64-linux-android'
-        run: |
-          # Android NDK r26c for API level 28 (Android 9.0) - Better OpenSSL compatibility
-          NDK_VERSION="26.3.11579264"
-          ANDROID_API_LEVEL="28"
-          
-          # Install Android SDK command-line tools
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
-          
-          # Download and install Android NDK
-          mkdir -p $HOME/android-ndk
-          cd $HOME/android-ndk
-          wget -q https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
-          unzip -q android-ndk-r26c-linux.zip
-          
-          # Set up environment variables
-          export ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r26c
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_HOME" >> $GITHUB_ENV
-          
-          # Set up Rust Android target
-          rustup target add aarch64-linux-android
-          
-          # Set environment variables for Android cross-compilation
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          
-          # Set CC and AR for proper cross-compilation
-          echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
-          echo "CXX_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++" >> $GITHUB_ENV
-          echo "AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
-          echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
-          
-          # Use vendored OpenSSL for Android instead of prebuilt
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          
-          # Install dependencies for vendored OpenSSL build
-          sudo apt-get update && sudo apt-get install -y perl make
       
       - name: Cache cleanup (Unix)
         if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true && matrix.os != 'windows-latest'
@@ -308,17 +256,6 @@ jobs:
           echo "Current toolchain:"
           rustup show
           
-          # Show environment for Android debugging
-          if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-            echo "Android build environment:"
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-            echo "CC_aarch64_linux_android=$CC_aarch64_linux_android"
-            echo "OPENSSL_STATIC=$OPENSSL_STATIC"
-            echo "cargo-ndk version:"
-            cargo ndk --version || echo "cargo-ndk not found"
-          fi
-          
           # Ensure the target is installed (redundant but safe)
           rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
           
@@ -345,7 +282,6 @@ jobs:
         if: |
           matrix.os != 'windows-latest' && 
           matrix.target != 'aarch64-unknown-linux-gnu' && 
-          matrix.target != 'aarch64-linux-android' && 
           matrix.target != 'aarch64-apple-darwin' &&
           matrix.target != 'x86_64-apple-darwin'
         working-directory: codex-rs
@@ -358,12 +294,6 @@ jobs:
         run: |
           echo "Skipping tests for Linux ARM64 cross-compilation target"
           echo "Tests cannot be run on x86_64 host for ARM64 binaries"
-      
-      - name: Skip tests for Android ARM64 (cross-compilation)
-        if: matrix.target == 'aarch64-linux-android'
-        run: |
-          echo "Skipping tests for Android ARM64 cross-compilation target"
-          echo "Tests cannot be run on x86_64 host for Android ARM64 binaries"
       
       - name: Skip tests for macOS ARM64 (cross-compilation)
         if: matrix.target == 'aarch64-apple-darwin'

@@ -1,0 +1,253 @@
+name: Build Android
+
+on:
+  # 手動実行
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Build mode'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+      platform:
+        description: 'Target platform'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - android-aarch64
+      rust_version:
+        description: 'Rust version'
+        required: true
+        default: 'stable'
+        type: choice
+        options:
+          - stable
+          - beta
+          - nightly
+      clear_cache:
+        description: 'Clear cache before build'
+        required: false
+        default: false
+        type: boolean
+
+  # プッシュ時の自動実行
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'codex-rs/**'
+      - '.github/workflows/build-android.yml'
+
+  # PR時の自動実行
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'codex-rs/**'
+      - '.github/workflows/build-android.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # プラットフォーム選択ジョブ
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      build_mode: ${{ steps.set-vars.outputs.build_mode }}
+      rust_version: ${{ steps.set-vars.outputs.rust_version }}
+    steps:
+      - id: set-vars
+        run: |
+          # workflow_dispatchの場合はinputsを使用、それ以外はデフォルト値
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build_mode=${{ inputs.build_mode }}" >> $GITHUB_OUTPUT
+            echo "rust_version=${{ inputs.rust_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "build_mode=release" >> $GITHUB_OUTPUT
+            echo "rust_version=stable" >> $GITHUB_OUTPUT
+          fi
+
+      - id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.platform }}" != "all" ]; then
+            matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"}]}'
+          else
+            matrix='{"include":[{"os":"ubuntu-latest","target":"aarch64-linux-android","platform":"android-aarch64"}]}'
+          fi
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+
+  # ビルドジョブ
+  build:
+    needs: setup
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+
+    steps:
+      - name: Free disk space (Ubuntu/Linux)
+        run: |
+          echo "Before cleanup:"
+          df -h
+
+          # Remove unnecessary pre-installed software to free up disk space
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+          # Clean up apt cache
+          sudo apt-get clean
+
+          # Remove Docker images (not needed for Rust builds)
+          docker rmi $(docker images -q) 2>/dev/null || true
+
+          echo "After cleanup:"
+          df -h
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        run: |
+          echo "Installing Rust toolchain for Android target"
+          rustup toolchain install ${{ needs.setup.outputs.rust_version }}
+          rustup default ${{ needs.setup.outputs.rust_version }}
+          rustup target add aarch64-linux-android
+          rustup show
+
+      - name: Install Android NDK for ARM64
+        run: |
+          # Android NDK r26c for API level 28 (Android 9.0) - Better OpenSSL compatibility
+          ANDROID_API_LEVEL="28"
+
+          sudo apt-get update
+          sudo apt-get install -y wget unzip perl make
+
+          mkdir -p $HOME/android-ndk
+          cd $HOME/android-ndk
+          wget -q https://dl.google.com/android/repository/android-ndk-r26c-linux.zip
+          unzip -q android-ndk-r26c-linux.zip
+
+          export ANDROID_NDK_HOME=$HOME/android-ndk/android-ndk-r26c
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "PATH=$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+
+          echo "CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang++" >> $GITHUB_ENV
+          echo "AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+
+      - name: Cache cleanup (Unix)
+        if: github.event_name == 'workflow_dispatch' && inputs.clear_cache == true
+        run: |
+          rm -rf ~/.cargo/registry/index
+          rm -rf ~/.cargo/registry/cache
+          rm -rf ~/.cargo/git
+          rm -rf target
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-v2-
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: codex-rs/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-${{ needs.setup.outputs.build_mode }}-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-target-v3-
+
+      - name: Build
+        working-directory: codex-rs
+        run: |
+          echo "Installed Rust targets:"
+          rustup +${{ needs.setup.outputs.rust_version }} target list --installed
+          echo "Current toolchain:"
+          rustup show
+          rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
+
+          if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
+            cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} --workspace
+          else
+            cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} --workspace
+          fi
+
+      - name: Skip tests for Android ARM64 (cross-compilation)
+        run: |
+          echo "Skipping tests for Android ARM64 cross-compilation target"
+          echo "Tests cannot be run on x86_64 host for Android ARM64 binaries"
+
+      - name: Prepare artifacts
+        working-directory: codex-rs
+        run: |
+          mkdir -p artifacts
+          if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
+            BUILD_DIR="target/${{ matrix.target }}/release"
+          else
+            BUILD_DIR="target/${{ matrix.target }}/debug"
+          fi
+
+          cp $BUILD_DIR/codex artifacts/ 2>/dev/null || true
+          cp $BUILD_DIR/codex-exec artifacts/ 2>/dev/null || true
+          cp $BUILD_DIR/codex-tui artifacts/ 2>/dev/null || true
+
+          cd artifacts
+          tar czf ../codex-${{ matrix.platform }}-${{ needs.setup.outputs.build_mode }}.tar.gz *
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-${{ matrix.platform }}-${{ needs.setup.outputs.build_mode }}
+          path: codex-rs/codex-*.tar.gz
+          retention-days: 7
+
+      - name: Display build info
+        run: |
+          echo "Build completed successfully!"
+          echo "Platform: ${{ matrix.platform }}"
+          echo "Target: ${{ matrix.target }}"
+          echo "Build mode: ${{ needs.setup.outputs.build_mode }}"
+          echo "Rust version: ${{ needs.setup.outputs.rust_version }}"
+
+  # サマリージョブ
+  summary:
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Mode**: ${{ needs.setup.outputs.build_mode }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rust Version**: ${{ needs.setup.outputs.rust_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Build artifacts are available in the Actions tab for download." >> $GITHUB_STEP_SUMMARY
