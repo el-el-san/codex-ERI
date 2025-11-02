@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fs;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::AtomicI64;
@@ -67,6 +68,15 @@ impl McpProcess {
         codex_home: &Path,
         env_overrides: &[(&str, Option<&str>)],
     ) -> anyhow::Result<Self> {
+        let instructions_path = codex_home.join("AGENTS.md");
+        if !instructions_path.exists() {
+            fs::write(
+                &instructions_path,
+                "Automated test run. Use the provided tools deterministically.",
+            )
+            .context("seed AGENTS.md for tests")?;
+        }
+
         // Use assert_cmd to locate the binary path and then switch to tokio::process::Command
         let std_cmd = StdCommand::cargo_bin("codex-app-server")
             .context("should find binary for codex-mcp-server")?;
