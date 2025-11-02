@@ -29,12 +29,20 @@ pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Cap
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    Config::load_from_base_config_with_overrides(
+    let mut config = Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         default_test_overrides(),
         codex_home.path().to_path_buf(),
     )
-    .expect("defaults for test should always succeed")
+    .expect("defaults for test should always succeed");
+
+    if config.user_instructions.is_none() {
+        // Ensure integration tests see a user_instructions message in the model context.
+        config.user_instructions =
+            Some("Automated test run. Produce deterministic, concise answers.".to_string());
+    }
+
+    config
 }
 
 #[cfg(target_os = "linux")]
