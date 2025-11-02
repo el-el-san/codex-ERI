@@ -23,7 +23,6 @@ on:
           - linux-aarch64
           - macos-x86_64
           - macos-aarch64
-          - windows-x86_64
           - windows-aarch64
       rust_version:
         description: 'Rust version'
@@ -98,16 +97,13 @@ jobs:
               macos-aarch64)
                 matrix='{"include":[{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"}]}'
                 ;;
-              windows-x86_64)
-                matrix='{"include":[{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"}]}'
-                ;;
               windows-aarch64)
                 matrix='{"include":[{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
                 ;;
             esac
           else
             # 全プラットフォーム
-            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"windows-x86_64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
+            matrix='{"include":[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu","platform":"linux-x86_64"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-aarch64"},{"os":"macos-latest","target":"x86_64-apple-darwin","platform":"macos-x86_64"},{"os":"macos-latest","target":"aarch64-apple-darwin","platform":"macos-aarch64"},{"os":"windows-latest","target":"aarch64-pc-windows-msvc","platform":"windows-aarch64"}]}'
           fi
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
 
