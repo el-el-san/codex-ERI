@@ -29,20 +29,12 @@ pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Cap
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    let mut config = Config::load_from_base_config_with_overrides(
+    Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
         default_test_overrides(),
         codex_home.path().to_path_buf(),
     )
-    .expect("defaults for test should always succeed");
-
-    if config.user_instructions.is_none() {
-        // Ensure integration tests see a user_instructions message in the model context.
-        config.user_instructions =
-            Some("Automated test run. Produce deterministic, concise answers.".to_string());
-    }
-
-    config
+    .expect("defaults for test should always succeed")
 }
 
 #[cfg(target_os = "linux")]
@@ -252,7 +244,7 @@ pub mod fs_wait {
         if path.exists() {
             Ok(path)
         } else {
-            Err(anyhow!("timed out waiting for {:?}", path))
+            Err(anyhow!("timed out waiting for {path:?}"))
         }
     }
 
@@ -292,7 +284,7 @@ pub mod fs_wait {
         if let Some(found) = scan_for_match(&root, predicate) {
             Ok(found)
         } else {
-            Err(anyhow!("timed out waiting for matching file in {:?}", root))
+            Err(anyhow!("timed out waiting for matching file in {root:?}"))
         }
     }
 
