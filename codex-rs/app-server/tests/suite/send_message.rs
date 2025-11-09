@@ -185,12 +185,11 @@ async fn test_send_message_raw_notifications_opt_in() -> Result<()> {
     let developer = read_raw_response_item(&mut mcp, conversation_id).await;
     assert_developer_message(&developer, "Use the test harness tools.");
 
-    let mut next_item = read_raw_response_item(&mut mcp, conversation_id).await;
-    if is_instructions_message(&next_item) {
-        assert_instructions_message(&next_item);
-        next_item = read_raw_response_item(&mut mcp, conversation_id).await;
-    }
-    assert_environment_message(&next_item);
+    let instructions = read_raw_response_item(&mut mcp, conversation_id).await;
+    assert_instructions_message(&instructions);
+
+    let environment = read_raw_response_item(&mut mcp, conversation_id).await;
+    assert_environment_message(&environment);
 
     let response: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -314,10 +313,11 @@ fn assert_instructions_message(item: &ResponseItem) {
         ResponseItem::Message { role, content, .. } => {
             assert_eq!(role, "user");
             let texts = content_texts(content);
+            let is_instructions = texts
+                .iter()
+                .any(|text| text.starts_with("# AGENTS.md instructions for "));
             assert!(
-                texts
-                    .iter()
-                    .any(|text| text.contains("<user_instructions>")),
+                is_instructions,
                 "expected instructions message, got {texts:?}"
             );
         }
@@ -337,15 +337,6 @@ fn assert_developer_message(item: &ResponseItem, expected_text: &str) {
             );
         }
         other => panic!("expected developer instructions message, got {other:?}"),
-    }
-}
-
-fn is_instructions_message(item: &ResponseItem) -> bool {
-    match item {
-        ResponseItem::Message { role, content, .. } if role == "user" => content_texts(content)
-            .iter()
-            .any(|text| text.contains("<user_instructions>")),
-        _ => false,
     }
 }
 

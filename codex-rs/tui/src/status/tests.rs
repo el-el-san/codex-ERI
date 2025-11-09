@@ -42,37 +42,24 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
-        .map(|line| sanitize_version(sanitize_directory_path(line)))
+        .map(|line| {
+            if let (Some(dir_pos), Some(pipe_idx)) = (line.find("Directory: "), line.rfind('│')) {
+                let prefix = &line[..dir_pos + "Directory: ".len()];
+                let suffix = &line[pipe_idx..];
+                let content_width = pipe_idx.saturating_sub(dir_pos + "Directory: ".len());
+                let replacement = "[[workspace]]";
+                let mut rebuilt = prefix.to_string();
+                rebuilt.push_str(replacement);
+                if content_width > replacement.len() {
+                    rebuilt.push_str(&" ".repeat(content_width - replacement.len()));
+                }
+                rebuilt.push_str(suffix);
+                rebuilt
+            } else {
+                line
+            }
+        })
         .collect()
-}
-
-fn sanitize_directory_path(line: String) -> String {
-    if let (Some(dir_pos), Some(pipe_idx)) = (line.find("Directory: "), line.rfind('│')) {
-        let prefix = &line[..dir_pos + "Directory: ".len()];
-        let suffix = &line[pipe_idx..];
-        let content_width = pipe_idx.saturating_sub(dir_pos + "Directory: ".len());
-        let replacement = "[[workspace]]";
-        let mut rebuilt = prefix.to_string();
-        rebuilt.push_str(replacement);
-        if content_width > replacement.len() {
-            rebuilt.push_str(&" ".repeat(content_width - replacement.len()));
-        }
-        rebuilt.push_str(suffix);
-        rebuilt
-    } else {
-        line
-    }
-}
-
-fn sanitize_version(mut line: String) -> String {
-    if let Some(start) = line.find("OpenAI Codex (") {
-        let version_start = start + "OpenAI Codex (".len();
-        if let Some(close_rel) = line[version_start..].find(')') {
-            let end = version_start + close_rel;
-            line.replace_range(version_start..end, "vX.Y.Z");
-        }
-    }
-    line
 }
 
 fn reset_at_from(captured_at: &chrono::DateTime<chrono::Local>, seconds: i64) -> i64 {

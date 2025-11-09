@@ -196,7 +196,6 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
             reason: format!("URL opening not supported on this platform. Please open manually: {url}"),
         });
     }
-
 }
 
 pub(crate) fn error_or_panic(message: String) {
