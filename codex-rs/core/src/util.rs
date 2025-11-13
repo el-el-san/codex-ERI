@@ -119,7 +119,9 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
             }
 
             return Ok(OpenUrlStatus::Suppressed {
-                reason: format!("Could not open browser in WSL. Please open the URL manually: {url}"),
+                reason: format!(
+                    "Could not open browser in WSL. Please open the URL manually: {url}"
+                ),
             });
         }
 
@@ -175,7 +177,9 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
         return match Command::new("open").arg(url).status() {
             Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
             Ok(_) | Err(_) => Ok(OpenUrlStatus::Suppressed {
-                reason: format!("Failed to open URL with 'open' command. Please open manually: {url}"),
+                reason: format!(
+                    "Failed to open URL with 'open' command. Please open manually: {url}"
+                ),
             }),
         };
     }
@@ -190,10 +194,17 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
         };
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "android"
+    )))]
     {
         return Ok(OpenUrlStatus::Suppressed {
-            reason: format!("URL opening not supported on this platform. Please open manually: {url}"),
+            reason: format!(
+                "URL opening not supported on this platform. Please open manually: {url}"
+            ),
         });
     }
 }
