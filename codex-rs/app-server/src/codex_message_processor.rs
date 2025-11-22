@@ -83,6 +83,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStartedNotification;
 use codex_app_server_protocol::Turn;
+use codex_app_server_protocol::TurnError;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
@@ -138,6 +139,7 @@ use codex_protocol::protocol::USER_MESSAGE_BEGIN;
 use codex_protocol::user_input::UserInput as CoreInputItem;
 use codex_utils_json_to_toml::json_to_toml;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::Error as IoError;
 use std::path::Path;
@@ -160,7 +162,8 @@ pub(crate) type PendingInterrupts = Arc<Mutex<HashMap<ConversationId, PendingInt
 /// Per-conversation accumulation of the latest states e.g. error message while a turn runs.
 #[derive(Default, Clone)]
 pub(crate) struct TurnSummary {
-    pub(crate) last_error_message: Option<String>,
+    pub(crate) file_change_started: HashSet<String>,
+    pub(crate) last_error: Option<TurnError>,
 }
 
 pub(crate) type TurnSummaryStore = Arc<Mutex<HashMap<ConversationId, TurnSummary>>>;
@@ -1167,7 +1170,7 @@ impl CodexMessageProcessor {
         let exec_params = ExecParams {
             command: params.command,
             cwd,
-            timeout_ms,
+            expiration: timeout_ms.into(),
             env,
             with_escalated_permissions: None,
             justification: None,
@@ -1239,7 +1242,7 @@ impl CodexMessageProcessor {
         let overrides = ConfigOverrides {
             model,
             config_profile: profile,
-            cwd: cwd.map(PathBuf::from),
+            cwd: cwd.clone().map(PathBuf::from),
             approval_policy,
             sandbox_mode,
             model_provider,
@@ -1254,7 +1257,7 @@ impl CodexMessageProcessor {
         // Persist windows sandbox feature.
         // TODO: persist default config in general.
         let mut cli_overrides = cli_overrides.unwrap_or_default();
-        if cfg!(target_os = "windows") && self.config.features.enabled(Feature::WindowsSandbox) {
+        if cfg!(windows) && self.config.features.enabled(Feature::WindowsSandbox) {
             cli_overrides.insert(
                 "features.enable_experimental_windows_sandbox".to_string(),
                 serde_json::json!(true),
@@ -1953,6 +1956,15 @@ impl CodexMessageProcessor {
                     include_apply_patch_tool,
                 } = overrides;
 
+                // Persist windows sandbox feature.
+                let mut cli_overrides = cli_overrides.unwrap_or_default();
+                if cfg!(windows) && self.config.features.enabled(Feature::WindowsSandbox) {
+                    cli_overrides.insert(
+                        "features.enable_experimental_windows_sandbox".to_string(),
+                        serde_json::json!(true),
+                    );
+                }
+
                 let overrides = ConfigOverrides {
                     model,
                     config_profile: profile,
@@ -1968,7 +1980,7 @@ impl CodexMessageProcessor {
                     ..Default::default()
                 };
 
-                derive_config_from_params(overrides, cli_overrides).await
+                derive_config_from_params(overrides, Some(cli_overrides)).await
             }
             None => Ok(self.config.as_ref().clone()),
         };

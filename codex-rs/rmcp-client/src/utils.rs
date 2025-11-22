@@ -167,6 +167,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "TERM",
     "TMPDIR",
     "TZ",
+    // Termux/Android-specific environment variables
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",
