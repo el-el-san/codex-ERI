@@ -20,7 +20,7 @@ use codex_core::auth::save_auth;
 use codex_core::default_client::originator;
 use codex_core::token_data::TokenData;
 use codex_core::token_data::parse_id_token;
-use codex_core::util::{open_url, OpenUrlStatus};
+use codex_core::util::{OpenUrlStatus, open_url};
 use rand::RngCore;
 use serde_json::Value as JsonValue;
 use tiny_http::Header;
@@ -127,7 +127,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     if opts.open_browser {
         match open_url(&auth_url) {
             Ok(OpenUrlStatus::Opened) => {
-                // Successfully opened browser
+                // Browser opened successfully.
             }
             Ok(OpenUrlStatus::Suppressed { reason }) => {
                 eprintln!("{}", reason);
