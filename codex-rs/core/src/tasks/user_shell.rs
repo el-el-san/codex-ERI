@@ -24,6 +24,7 @@ use crate::protocol::ExecCommandSource;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::TaskStartedEvent;
 use crate::sandboxing::ExecEnv;
+use crate::sandboxing::SandboxPermissions;
 use crate::state::TaskKind;
 use crate::tools::format_exec_output_str;
 use crate::user_shell_command::user_shell_command_record_item;
@@ -81,6 +82,7 @@ impl SessionTask for UserShellCommandTask {
                 turn_context.as_ref(),
                 EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                     call_id: call_id.clone(),
+                    process_id: None,
                     turn_id: turn_context.sub_id.clone(),
                     command: command.clone(),
                     cwd: cwd.clone(),
@@ -99,7 +101,7 @@ impl SessionTask for UserShellCommandTask {
             // should use that instead of an "arbitrarily large" timeout here.
             expiration: USER_SHELL_TIMEOUT_MS.into(),
             sandbox: SandboxType::None,
-            with_escalated_permissions: None,
+            sandbox_permissions: SandboxPermissions::UseDefault,
             justification: None,
             arg0: None,
         };
@@ -139,6 +141,7 @@ impl SessionTask for UserShellCommandTask {
                         turn_context.as_ref(),
                         EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                             call_id,
+                            process_id: None,
                             turn_id: turn_context.sub_id.clone(),
                             command: command.clone(),
                             cwd: cwd.clone(),
@@ -161,6 +164,7 @@ impl SessionTask for UserShellCommandTask {
                         turn_context.as_ref(),
                         EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                             call_id: call_id.clone(),
+                            process_id: None,
                             turn_id: turn_context.sub_id.clone(),
                             command: command.clone(),
                             cwd: cwd.clone(),
@@ -205,6 +209,7 @@ impl SessionTask for UserShellCommandTask {
                         turn_context.as_ref(),
                         EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                             call_id,
+                            process_id: None,
                             turn_id: turn_context.sub_id.clone(),
                             command,
                             cwd,

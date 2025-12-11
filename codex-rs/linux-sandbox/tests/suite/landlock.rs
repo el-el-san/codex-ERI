@@ -3,10 +3,10 @@ use codex_core::config::types::ShellEnvironmentPolicy;
 use codex_core::error::CodexErr;
 use codex_core::error::SandboxErr;
 use codex_core::exec::ExecParams;
-use codex_core::exec::SandboxType;
 use codex_core::exec::process_exec_tool_call;
 use codex_core::exec_env::create_env;
 use codex_core::protocol::SandboxPolicy;
+use codex_core::sandboxing::SandboxPermissions;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
@@ -42,7 +42,7 @@ async fn run_cmd(cmd: &[&str], writable_roots: &[PathBuf], timeout_ms: u64) {
         cwd,
         expiration: timeout_ms.into(),
         env: create_env_from_core_vars(),
-        with_escalated_permissions: None,
+        sandbox_permissions: SandboxPermissions::UseDefault,
         justification: None,
         arg0: None,
     };
@@ -60,7 +60,6 @@ async fn run_cmd(cmd: &[&str], writable_roots: &[PathBuf], timeout_ms: u64) {
     let codex_linux_sandbox_exe = Some(PathBuf::from(sandbox_program));
     let res = process_exec_tool_call(
         params,
-        SandboxType::LinuxSeccomp,
         &sandbox_policy,
         sandbox_cwd.as_path(),
         &codex_linux_sandbox_exe,
@@ -145,7 +144,7 @@ async fn assert_network_blocked(cmd: &[&str]) {
         // do not stall the suite.
         expiration: NETWORK_TIMEOUT_MS.into(),
         env: create_env_from_core_vars(),
-        with_escalated_permissions: None,
+        sandbox_permissions: SandboxPermissions::UseDefault,
         justification: None,
         arg0: None,
     };
@@ -155,7 +154,6 @@ async fn assert_network_blocked(cmd: &[&str]) {
     let codex_linux_sandbox_exe: Option<PathBuf> = Some(PathBuf::from(sandbox_program));
     let result = process_exec_tool_call(
         params,
-        SandboxType::LinuxSeccomp,
         &sandbox_policy,
         sandbox_cwd.as_path(),
         &codex_linux_sandbox_exe,

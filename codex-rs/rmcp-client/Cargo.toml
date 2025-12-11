@@ -1,7 +1,8 @@
 [package]
-edition = "2024"
 name = "codex-rmcp-client"
-version = { workspace = true }
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
@@ -50,7 +51,6 @@ tokio = { workspace = true, features = [
 ] }
 tracing = { workspace = true, features = ["log"] }
 urlencoding = { workspace = true }
-webbrowser = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]

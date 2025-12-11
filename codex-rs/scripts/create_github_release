@@ -59,6 +59,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
 
+    ensure_release_not_in_progress()
+
     # Strip the leading "v" if present.
     promote_alpha = args.promote_alpha
     if promote_alpha and promote_alpha.startswith("v"):
@@ -142,6 +144,36 @@ def run_gh_api(endpoint: str, *, method: str = "GET", payload: dict | None = Non
         return json.loads(result.stdout or "{}")
     except json.JSONDecodeError as error:
         raise ReleaseError("Failed to parse response from gh api.") from error
+
+
+def ensure_release_not_in_progress() -> None:
+    """Fail fast if a release workflow is already running or queued."""
+
+    statuses = ("in_progress", "queued")
+    runs: list[dict] = []
+    for status in statuses:
+        response = run_gh_api(
+            f"/repos/{REPO}/actions/workflows/rust-release.yml/runs?per_page=50&status={status}"
+        )
+        runs.extend(response.get("workflow_runs", []))
+
+    active_runs = [run for run in runs if run.get("status") in statuses]
+    if not active_runs:
+        return
+
+    seen_ids: set[int] = set()
+    urls: list[str] = []
+    for run in active_runs:
+        run_id = run.get("id")
+        if run_id in seen_ids:
+            continue
+        seen_ids.add(run_id)
+        urls.append(run.get("html_url", str(run_id)))
+
+    raise ReleaseError(
+        "Release workflow already running or queued; wait or cancel it before publishing: "
+        + ", ".join(urls)
+    )
 
 
 def get_branch_head() -> str:
@@ -298,8 +330,12 @@ def create_tag_ref(version: str, tag_sha: str) -> None:
 
 def determine_version(args: argparse.Namespace) -> str:
     latest_version = get_latest_release_version()
-    major, minor, patch = parse_semver(latest_version)
-    next_minor_version = format_version(major, minor + 1, patch)
+    # When determining the next version after the current release,
+    # we should always increment the minor version, but reset the
+    # patch to zero. In practice, `patch` should only be non-zero if
+    # --emergency-version-override was used.
+    major, minor, _patch = parse_semver(latest_version)
+    next_minor_version = format_version(major, minor + 1, 0)
 
     if args.publish_release:
         return next_minor_version

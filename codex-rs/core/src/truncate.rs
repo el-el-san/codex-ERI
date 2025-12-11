@@ -26,10 +26,10 @@ impl TruncationPolicy {
         }
     }
 
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, truncation_policy: TruncationPolicy) -> Self {
         let config_token_limit = config.tool_output_token_limit;
 
-        match config.model_family.truncation_policy {
+        match truncation_policy {
             TruncationPolicy::Bytes(family_bytes) => {
                 if let Some(token_limit) = config_token_limit {
                     Self::Bytes(approx_bytes_for_tokens(token_limit))
@@ -296,7 +296,7 @@ fn approx_bytes_for_tokens(tokens: usize) -> usize {
     tokens.saturating_mul(APPROX_BYTES_PER_TOKEN)
 }
 
-fn approx_tokens_from_byte_count(bytes: usize) -> u64 {
+pub(crate) fn approx_tokens_from_byte_count(bytes: usize) -> u64 {
     let bytes_u64 = bytes as u64;
     bytes_u64.saturating_add((APPROX_BYTES_PER_TOKEN as u64).saturating_sub(1))
         / (APPROX_BYTES_PER_TOKEN as u64)

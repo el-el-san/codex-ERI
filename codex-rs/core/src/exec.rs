@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::error::SandboxErr;
+use crate::get_platform_sandbox;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::ExecCommandOutputDeltaEvent;
@@ -27,6 +28,7 @@ use crate::protocol::SandboxPolicy;
 use crate::sandboxing::CommandSpec;
 use crate::sandboxing::ExecEnv;
 use crate::sandboxing::SandboxManager;
+use crate::sandboxing::SandboxPermissions;
 use crate::spawn::StdioPolicy;
 use crate::spawn::spawn_child_async;
 use crate::text_encoding::bytes_to_string_smart;
@@ -54,7 +56,7 @@ pub struct ExecParams {
     pub cwd: PathBuf,
     pub expiration: ExecExpiration,
     pub env: HashMap<String, String>,
-    pub with_escalated_permissions: Option<bool>,
+    pub sandbox_permissions: SandboxPermissions,
     pub justification: Option<String>,
     pub arg0: Option<String>,
 }
@@ -127,18 +129,23 @@ pub struct StdoutStream {
 
 pub async fn process_exec_tool_call(
     params: ExecParams,
-    sandbox_type: SandboxType,
     sandbox_policy: &SandboxPolicy,
     sandbox_cwd: &Path,
     codex_linux_sandbox_exe: &Option<PathBuf>,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<ExecToolCallOutput> {
+    let sandbox_type = match &sandbox_policy {
+        SandboxPolicy::DangerFullAccess => SandboxType::None,
+        _ => get_platform_sandbox().unwrap_or(SandboxType::None),
+    };
+    tracing::debug!("Sandbox type: {sandbox_type:?}");
+
     let ExecParams {
         command,
         cwd,
         expiration,
         env,
-        with_escalated_permissions,
+        sandbox_permissions,
         justification,
         arg0: _,
     } = params;
@@ -156,7 +163,7 @@ pub async fn process_exec_tool_call(
         cwd,
         env,
         expiration,
-        with_escalated_permissions,
+        sandbox_permissions,
         justification,
     };
 
@@ -186,7 +193,7 @@ pub(crate) async fn execute_exec_env(
         env,
         expiration,
         sandbox,
-        with_escalated_permissions,
+        sandbox_permissions,
         justification,
         arg0,
     } = env;
@@ -196,7 +203,7 @@ pub(crate) async fn execute_exec_env(
         cwd,
         expiration,
         env,
-        with_escalated_permissions,
+        sandbox_permissions,
         justification,
         arg0,
     };
@@ -477,6 +484,19 @@ pub struct ExecToolCallOutput {
     pub aggregated_output: StreamOutput<String>,
     pub duration: Duration,
     pub timed_out: bool,
+}
+
+impl Default for ExecToolCallOutput {
+    fn default() -> Self {
+        Self {
+            exit_code: 0,
+            stdout: StreamOutput::new(String::new()),
+            stderr: StreamOutput::new(String::new()),
+            aggregated_output: StreamOutput::new(String::new()),
+            duration: Duration::ZERO,
+            timed_out: false,
+        }
+    }
 }
 
 #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
@@ -838,7 +858,7 @@ mod tests {
             cwd: std::env::current_dir()?,
             expiration: 500.into(),
             env,
-            with_escalated_permissions: None,
+            sandbox_permissions: SandboxPermissions::UseDefault,
             justification: None,
             arg0: None,
         };
@@ -883,7 +903,7 @@ mod tests {
             cwd: cwd.clone(),
             expiration: ExecExpiration::Cancellation(cancel_token),
             env,
-            with_escalated_permissions: None,
+            sandbox_permissions: SandboxPermissions::UseDefault,
             justification: None,
             arg0: None,
         };
@@ -893,7 +913,6 @@ mod tests {
         });
         let result = process_exec_tool_call(
             params,
-            SandboxType::None,
             &SandboxPolicy::DangerFullAccess,
             cwd.as_path(),
             &None,

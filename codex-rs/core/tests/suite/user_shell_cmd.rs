@@ -1,7 +1,6 @@
 use anyhow::Context;
 use codex_core::ConversationManager;
 use codex_core::NewConversation;
-use codex_core::model_family::find_family_for_model;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
@@ -43,8 +42,10 @@ async fn user_shell_cmd_ls_and_cat_in_temp_dir() {
     let mut config = load_default_config_for_test(&codex_home);
     config.cwd = cwd.path().to_path_buf();
 
-    let conversation_manager =
-        ConversationManager::with_auth(codex_core::CodexAuth::from_api_key("dummy"));
+    let conversation_manager = ConversationManager::with_models_provider(
+        codex_core::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
     let NewConversation {
         conversation: codex,
         ..
@@ -100,8 +101,10 @@ async fn user_shell_cmd_can_be_interrupted() {
     // Set up isolated config and conversation.
     let codex_home = TempDir::new().unwrap();
     let config = load_default_config_for_test(&codex_home);
-    let conversation_manager =
-        ConversationManager::with_auth(codex_core::CodexAuth::from_api_key("dummy"));
+    let conversation_manager = ConversationManager::with_models_provider(
+        codex_core::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
     let NewConversation {
         conversation: codex,
         ..
@@ -275,12 +278,11 @@ async fn user_shell_command_is_truncated_only_once() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex().with_config(|config| {
-        config.tool_output_token_limit = Some(100);
-        config.model = "gpt-5.1-codex".to_string();
-        config.model_family =
-            find_family_for_model("gpt-5.1-codex").expect("gpt-5.1-codex is a model family");
-    });
+    let mut builder = test_codex()
+        .with_model("gpt-5.1-codex")
+        .with_config(|config| {
+            config.tool_output_token_limit = Some(100);
+        });
     let fixture = builder.build(&server).await?;
 
     let call_id = "user-shell-double-truncation";

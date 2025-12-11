@@ -179,7 +179,7 @@ async fn run_codex_tool_session_inner(
                         cwd,
                         call_id,
                         reason: _,
-                        risk,
+                        proposed_execpolicy_amendment: _,
                         parsed_cmd,
                     }) => {
                         handle_exec_approval_request(
@@ -192,7 +192,6 @@ async fn run_codex_tool_session_inner(
                             event.id.clone(),
                             call_id,
                             parsed_cmd,
-                            risk,
                         )
                         .await;
                         continue;
@@ -206,6 +205,10 @@ async fn run_codex_tool_session_inner(
                         break;
                     }
                     EventMsg::Warning(_) => {
+                        continue;
+                    }
+                    EventMsg::ElicitationRequest(_) => {
+                        // TODO: forward elicitation requests to the client?
                         continue;
                     }
                     EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
@@ -277,6 +280,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::McpListToolsResponse(_)
                     | EventMsg::ListCustomPromptsResponse(_)
                     | EventMsg::ExecCommandBegin(_)
+                    | EventMsg::TerminalInteraction(_)
                     | EventMsg::ExecCommandOutputDelta(_)
                     | EventMsg::ExecCommandEnd(_)
                     | EventMsg::BackgroundEvent(_)
@@ -302,6 +306,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::UndoStarted(_)
                     | EventMsg::UndoCompleted(_)
                     | EventMsg::ExitedReviewMode(_)
+                    | EventMsg::ContextCompacted(_)
                     | EventMsg::DeprecationNotice(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that
