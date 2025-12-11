@@ -112,6 +112,9 @@ pnpm-workspace.yaml
 .prettierrc.toml
 .prettierignore
 
+# downloads cache
+downloads/
+
 # Removed development tools (not needed for personal project)
 cliff.toml
 flake.nix
@@ -120,4 +123,3 @@ flake.lock
 
 
 old/
-
