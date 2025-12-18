@@ -17,10 +17,15 @@
 ### 1.2 ブラウザ起動（OS/環境別分岐）
 - `core/src/util.rs` に `open_url` 関数を追加（Termux/WSL/SSH/Container/各OS を考慮）
 - `login/src/server.rs` は `webbrowser` 依存を削除し、`codex_core::util::open_url` を使用
+- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も `webbrowser` を使わず、同等の分岐ロジックでブラウザ起動を試みる
+  - ※ `rmcp-client` は依存関係の都合で `codex-core` に依存できないため、`rmcp-client/src/utils.rs` 側にローカル実装を置く
 - 変更ファイル:
   - `core/src/util.rs`（新規関数 `open_url` と環境検知関数を追加）
   - `login/Cargo.toml`（`webbrowser` 削除）
   - `login/src/server.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
+  - `rmcp-client/src/utils.rs`（`open_url` と環境検知関数を追加）
+  - `rmcp-client/src/perform_oauth_login.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
+  - `rmcp-client/Cargo.toml`（`webbrowser` 削除）
 
 ### 1.3 MCP環境変数保持（Termux対応）
 - MCPサーバー起動時に`env_clear()`が呼ばれるが、Termuxで必要な環境変数が削除される問題を修正
@@ -65,6 +70,7 @@
   - SSH/Container: 自動起動を回避し、URL を出力
   - macOS/Linux/Windows: それぞれ `open` / `xdg-open` / `cmd /c start`
 - `login/src/server.rs` のリダイレクト開始箇所（認可 URL を開く処理）で上記関数を使用すること
+- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も同様に適用すること（`rmcp-client` は `codex-core` に依存できないため、`rmcp-client/src/utils.rs` に同等の実装を置く）
 
 ### 3.3 MCP環境変数保持の確認
 - `rmcp-client/src/utils.rs` の `DEFAULT_ENV_VARS` にTermux環境変数が含まれているか確認
@@ -96,7 +102,8 @@ diff -u upstream/codex-rs/core/src/util.rs codex-rs/core/src/util.rs
 diff -u upstream/codex-rs/login/src/server.rs codex-rs/login/src/server.rs
 diff -u upstream/codex-rs/tui/Cargo.toml codex-rs/tui/Cargo.toml
 diff -u upstream/codex-rs/tui/src/clipboard_paste.rs codex-rs/tui/src/clipboard_paste.rs
-diff -u upstream/codex-rs/mcp-client/src/mcp_client.rs codex-rs/mcp-client/src/mcp_client.rs
+diff -u upstream/codex-rs/rmcp-client/src/utils.rs codex-rs/rmcp-client/src/utils.rs
+diff -u upstream/codex-rs/rmcp-client/src/perform_oauth_login.rs codex-rs/rmcp-client/src/perform_oauth_login.rs
 ```
 
 ## 5. 参考：主な変更の実装例
