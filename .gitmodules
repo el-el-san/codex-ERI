@@ -1,0 +1,4 @@
+[submodule "downloads/codex-rs-rust-v0.60.1"]
+	path = downloads/codex-rs-rust-v0.60.1
+	url = https://github.com/openai/codex.git
+
