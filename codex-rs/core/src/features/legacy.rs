@@ -18,10 +18,6 @@ const ALIASES: &[Alias] = &[
         feature: Feature::UnifiedExec,
     },
     Alias {
-        legacy_key: "experimental_use_rmcp_client",
-        feature: Feature::RmcpClient,
-    },
-    Alias {
         legacy_key: "experimental_use_freeform_apply_patch",
         feature: Feature::ApplyPatchFreeform,
     },
@@ -50,9 +46,7 @@ pub struct LegacyFeatureToggles {
     pub include_apply_patch_tool: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
-    pub experimental_use_rmcp_client: Option<bool>,
     pub tools_web_search: Option<bool>,
-    pub tools_view_image: Option<bool>,
 }
 
 impl LegacyFeatureToggles {
@@ -77,21 +71,9 @@ impl LegacyFeatureToggles {
         );
         set_if_some(
             features,
-            Feature::RmcpClient,
-            self.experimental_use_rmcp_client,
-            "experimental_use_rmcp_client",
-        );
-        set_if_some(
-            features,
             Feature::WebSearchRequest,
             self.tools_web_search,
             "tools.web_search",
-        );
-        set_if_some(
-            features,
-            Feature::ViewImageTool,
-            self.tools_view_image,
-            "tools.view_image",
         );
     }
 }

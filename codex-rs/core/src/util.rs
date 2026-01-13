@@ -1,207 +1,41 @@
+use std::env;
+use std::fmt;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
 use rand::Rng;
-use thiserror::Error;
 use tracing::debug;
 use tracing::error;
 
 const INITIAL_DELAY_MS: u64 = 200;
 const BACKOFF_FACTOR: f64 = 2.0;
 
-/// Status of URL opening attempt.
-#[derive(Debug, Clone)]
-pub enum OpenUrlStatus {
-    /// URL was successfully opened.
-    Opened,
-    /// URL opening was suppressed due to environment constraints.
-    Suppressed { reason: String },
-}
-
-/// Error that occurred while attempting to open URL.
-#[derive(Debug, Clone, Error)]
-pub enum OpenUrlError {
-    #[error("Failed to execute command: {0}")]
-    ExecutionFailed(String),
-    #[error("No suitable browser command found")]
-    NoBrowserFound,
-}
-
-/// Detect whether we are running under Termux.
-#[allow(dead_code)]
-fn is_termux() -> bool {
-    std::env::var("TERMUX_VERSION").is_ok()
-        || std::env::var("PREFIX").map_or(false, |p| p.contains("termux"))
-}
-
-/// Detect whether we are running under WSL.
-#[allow(dead_code)]
-fn is_wsl() -> bool {
-    std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok()
-}
-
-/// Detect whether we are running under SSH.
-#[allow(dead_code)]
-fn is_ssh() -> bool {
-    std::env::var("SSH_CONNECTION").is_ok()
-        || std::env::var("SSH_CLIENT").is_ok()
-        || std::env::var("SSH_TTY").is_ok()
-}
-
-/// Detect whether we are running inside a container.
-#[allow(dead_code)]
-fn is_container() -> bool {
-    std::path::Path::new("/.dockerenv").exists()
-        || std::path::Path::new("/run/.containerenv").exists()
-        || std::env::var("KUBERNETES_SERVICE_HOST").is_ok()
-        || std::env::var("DOCKER_HOST").is_ok()
-}
-
-/// Open URL with appropriate command for the current environment.
-pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    if url.is_empty() {
-        return Ok(OpenUrlStatus::Suppressed {
-            reason: "No URL provided".into(),
-        });
-    }
-
-    #[cfg(target_os = "android")]
-    {
-        if is_termux() {
-            return match Command::new("termux-open-url").arg(url).status() {
-                Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
-                Ok(_) | Err(_) => Ok(OpenUrlStatus::Suppressed {
-                    reason: format!(
-                        "termux-open-url failed or not available. Please open the URL manually: {url}"
-                    ),
-                }),
-            };
-        }
-
-        return Ok(OpenUrlStatus::Suppressed {
-            reason: format!(
-                "URL opening not supported on this Android environment. Please open the URL manually: {url}"
-            ),
-        });
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if is_termux() {
-            return match Command::new("termux-open-url").arg(url).status() {
-                Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
-                Ok(_) | Err(_) => Ok(OpenUrlStatus::Suppressed {
-                    reason: format!(
-                        "termux-open-url failed or not available. Please open the URL manually: {url}"
-                    ),
-                }),
-            };
-        }
-
-        if is_wsl() {
-            if let Ok(status) = Command::new("cmd.exe").args(["/c", "start", url]).status() {
-                if status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-
-            if let Ok(status) = Command::new("wslview").arg(url).status() {
-                if status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-
-            return Ok(OpenUrlStatus::Suppressed {
-                reason: format!(
-                    "Could not open browser in WSL. Please open the URL manually: {url}"
-                ),
-            });
-        }
-
-        if is_ssh() || is_container() {
-            return Ok(OpenUrlStatus::Suppressed {
-                reason: format!(
-                    "Running in SSH/container environment. Please open the URL manually: {url}"
-                ),
-            });
-        }
-
-        if let Ok(browser) = std::env::var("BROWSER") {
-            if let Ok(status) = Command::new(&browser).arg(url).status() {
-                if status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-        }
-
-        if let Ok(status) = Command::new("xdg-open").arg(url).status() {
-            if status.success() {
-                return Ok(OpenUrlStatus::Opened);
-            }
-        }
-
-        if let Ok(status) = Command::new("gio").args(["open", url]).status() {
-            if status.success() {
-                return Ok(OpenUrlStatus::Opened);
-            }
-        }
-
-        if let Ok(status) = Command::new("sensible-browser").arg(url).status() {
-            if status.success() {
-                return Ok(OpenUrlStatus::Opened);
-            }
-        }
-
-        for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
-            if let Ok(status) = Command::new(browser).arg(url).status() {
-                if status.success() {
-                    return Ok(OpenUrlStatus::Opened);
-                }
-            }
-        }
-
-        return Ok(OpenUrlStatus::Suppressed {
-            reason: format!("No suitable browser found. Please open the URL manually: {url}"),
-        });
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        return match Command::new("open").arg(url).status() {
-            Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
-            Ok(_) | Err(_) => Ok(OpenUrlStatus::Suppressed {
-                reason: format!(
-                    "Failed to open URL with 'open' command. Please open manually: {url}"
-                ),
-            }),
-        };
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return match Command::new("cmd").args(["/C", "start", url]).status() {
-            Ok(status) if status.success() => Ok(OpenUrlStatus::Opened),
-            Ok(_) | Err(_) => Ok(OpenUrlStatus::Suppressed {
-                reason: format!("Failed to open URL. Please open manually: {url}"),
-            }),
-        };
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android"
-    )))]
-    {
-        return Ok(OpenUrlStatus::Suppressed {
-            reason: format!(
-                "URL opening not supported on this platform. Please open manually: {url}"
-            ),
-        });
-    }
+/// Emit structured feedback metadata as key/value pairs.
+///
+/// This logs a tracing event with `target: "feedback_tags"`. If
+/// `codex_feedback::CodexFeedback::metadata_layer()` is installed, these fields are captured and
+/// later attached as tags when feedback is uploaded.
+///
+/// Values are wrapped with [`tracing::field::DebugValue`], so the expression only needs to
+/// implement [`std::fmt::Debug`].
+///
+/// Example:
+///
+/// ```rust
+/// codex_core::feedback_tags!(model = "gpt-5", cached = true);
+/// codex_core::feedback_tags!(provider = provider_id, request_id = request_id);
+/// ```
+#[macro_export]
+macro_rules! feedback_tags {
+    ($( $key:ident = $value:expr ),+ $(,)?) => {
+        ::tracing::info!(
+            target: "feedback_tags",
+            $( $key = ::tracing::field::debug(&$value) ),+
+        );
+    };
 }
 
 pub(crate) fn backoff(attempt: u64) -> Duration {
@@ -212,7 +46,7 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
 }
 
 pub(crate) fn error_or_panic(message: impl std::string::ToString) {
-    if cfg!(debug_assertions) || env!("CARGO_PKG_VERSION").contains("alpha") {
+    if cfg!(debug_assertions) {
         panic!("{}", message.to_string());
     } else {
         error!("{}", message.to_string());
@@ -242,6 +76,283 @@ pub fn resolve_path(base: &Path, path: &PathBuf) -> PathBuf {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenUrlStatus {
+    Opened,
+    Suppressed { reason: String },
+}
+
+#[derive(Debug)]
+pub struct OpenUrlError {
+    message: String,
+}
+
+impl OpenUrlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for OpenUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for OpenUrlError {}
+
+pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "No URL provided".to_string(),
+        });
+    }
+
+    open_url_platform(url)
+}
+
+pub fn is_termux() -> bool {
+    env::var_os("TERMUX_VERSION").is_some() || env::var_os("TERMUX_APP_PID").is_some()
+}
+
+pub fn is_wsl() -> bool {
+    env::var_os("WSL_INTEROP").is_some()
+        || env::var_os("WSL_DISTRO_NAME").is_some()
+        || env::var_os("WSLENV").is_some()
+}
+
+pub fn is_ssh() -> bool {
+    env::var_os("SSH_CONNECTION").is_some()
+        || env::var_os("SSH_CLIENT").is_some()
+        || env::var_os("SSH_TTY").is_some()
+}
+
+pub fn is_container() -> bool {
+    env::var_os("container").is_some()
+        || Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    if is_termux() {
+        return open_url_termux(url);
+    }
+    if is_wsl() {
+        return open_url_wsl(url);
+    }
+    if is_ssh() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "SSH session detected; open the URL manually.".to_string(),
+        });
+    }
+    if is_container() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "Container environment detected; open the URL manually.".to_string(),
+        });
+    }
+
+    open_url_linux(url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("open", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("open command not found")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("cmd", &["/C", "start", "", url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("cmd command not found")),
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows"
+)))]
+fn open_url_platform(_url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    Ok(OpenUrlStatus::Suppressed {
+        reason: "Unsupported platform; open the URL manually.".to_string(),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_termux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("termux-open-url", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new(
+            "termux-open-url not found; install termux-api",
+        )),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_wsl(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+    if let Some(status) = record_outcome(
+        "cmd.exe",
+        run_command("cmd.exe", &["/c", "start", "", url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("wslview", run_command("wslview", &[url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+
+    Err(open_url_failed(failures))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_linux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+
+    for candidate in browser_env_candidates() {
+        let program = &candidate[0];
+        if let Some(status) = record_outcome(
+            program,
+            run_command_with_url(program, &candidate[1..], url)?,
+            &mut failures,
+        ) {
+            return Ok(status);
+        }
+    }
+
+    if let Some(status) =
+        record_outcome("xdg-open", run_command("xdg-open", &[url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("gio", run_command("gio", &["open", url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome(
+        "sensible-browser",
+        run_command("sensible-browser", &[url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
+
+    for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
+        if let Some(status) = record_outcome(browser, run_command(browser, &[url])?, &mut failures)
+        {
+            return Ok(status);
+        }
+    }
+
+    Err(open_url_failed(failures))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn browser_env_candidates() -> Vec<Vec<String>> {
+    let Ok(value) = env::var("BROWSER") else {
+        return Vec::new();
+    };
+
+    value
+        .split(':')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            match shlex::split(entry) {
+                Some(parts) if !parts.is_empty() => Some(parts),
+                _ => Some(vec![entry.to_string()]),
+            }
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn run_command_with_url(
+    program: &str,
+    args: &[String],
+    url: &str,
+) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    command.arg(url);
+    run_command_status(program, command)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_failed(failures: Vec<String>) -> OpenUrlError {
+    if failures.is_empty() {
+        OpenUrlError::new("No supported browser launcher found")
+    } else {
+        let failures = failures.join("; ");
+        OpenUrlError::new(format!("Browser launch failed: {failures}"))
+    }
+}
+
+enum CommandOutcome {
+    Success,
+    Failure(String),
+    NotFound,
+}
+
+fn run_command(program: &str, args: &[&str]) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    run_command_status(program, command)
+}
+
+fn run_command_status(program: &str, mut command: Command) -> Result<CommandOutcome, OpenUrlError> {
+    match command.status() {
+        Ok(status) => {
+            if status.success() {
+                Ok(CommandOutcome::Success)
+            } else {
+                Ok(CommandOutcome::Failure(format!(
+                    "{program} exited with {status}"
+                )))
+            }
+        }
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                Ok(CommandOutcome::NotFound)
+            } else {
+                Err(OpenUrlError::new(format!("failed to run {program}: {err}")))
+            }
+        }
+    }
+}
+
+fn record_outcome(
+    program: &str,
+    outcome: CommandOutcome,
+    failures: &mut Vec<String>,
+) -> Option<OpenUrlStatus> {
+    match outcome {
+        CommandOutcome::Success => Some(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => {
+            failures.push(message);
+            None
+        }
+        CommandOutcome::NotFound => {
+            failures.push(format!("{program} not found"));
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +379,13 @@ mod tests {
         let text = r#"{"message": "test"}"#;
         let message = try_parse_error_message(text);
         assert_eq!(message, r#"{"message": "test"}"#);
+    }
+
+    #[test]
+    fn feedback_tags_macro_compiles() {
+        #[derive(Debug)]
+        struct OnlyDebug;
+
+        feedback_tags!(model = "gpt-5", cached = true, debug_only = OnlyDebug);
     }
 }

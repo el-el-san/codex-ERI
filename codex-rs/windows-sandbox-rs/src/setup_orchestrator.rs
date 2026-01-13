@@ -52,7 +52,10 @@ pub fn run_setup_refresh(
     codex_home: &Path,
 ) -> Result<()> {
     // Skip in danger-full-access.
-    if matches!(policy, SandboxPolicy::DangerFullAccess) {
+    if matches!(
+        policy,
+        SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. }
+    ) {
         return Ok(());
     }
     let (read_roots, write_roots) = build_payload_roots(
@@ -77,10 +80,6 @@ pub fn run_setup_refresh(
     let json = serde_json::to_vec(&payload)?;
     let b64 = BASE64_STANDARD.encode(json);
     let exe = find_setup_exe();
-    log_note(
-        &format!("setup refresh: invoking {}", exe.display()),
-        Some(&sandbox_dir(codex_home)),
-    );
     // Refresh should never request elevation; ensure verb isn't set and we don't trigger UAC.
     let mut cmd = Command::new(&exe);
     cmd.arg(&b64).stdout(Stdio::null()).stderr(Stdio::null());
@@ -195,6 +194,11 @@ fn canonical_existing(paths: &[PathBuf]) -> Vec<PathBuf> {
 
 pub(crate) fn gather_read_roots(command_cwd: &Path, policy: &SandboxPolicy) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
     for p in [
         PathBuf::from(r"C:\Windows"),
         PathBuf::from(r"C:\Program Files"),
@@ -404,15 +408,12 @@ fn build_payload_roots(
     read_roots_override: Option<Vec<PathBuf>>,
     write_roots_override: Option<Vec<PathBuf>>,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let sbx_dir = sandbox_dir(codex_home);
-    let mut write_roots = if let Some(roots) = write_roots_override {
+    let write_roots = if let Some(roots) = write_roots_override {
         canonical_existing(&roots)
     } else {
         gather_write_roots(policy, policy_cwd, command_cwd, env_map)
     };
-    if !write_roots.contains(&sbx_dir) {
-        write_roots.push(sbx_dir.clone());
-    }
+    let write_roots = filter_sensitive_write_roots(write_roots, codex_home);
     let mut read_roots = if let Some(roots) = read_roots_override {
         canonical_existing(&roots)
     } else {
@@ -421,4 +422,18 @@ fn build_payload_roots(
     let write_root_set: HashSet<PathBuf> = write_roots.iter().cloned().collect();
     read_roots.retain(|root| !write_root_set.contains(root));
     (read_roots, write_roots)
+}
+
+fn filter_sensitive_write_roots(mut roots: Vec<PathBuf>, codex_home: &Path) -> Vec<PathBuf> {
+    // Never grant capability write access to CODEX_HOME or anything under CODEX_HOME/.sandbox.
+    // These locations contain sandbox control/state and must remain tamper-resistant.
+    let codex_home_key = crate::audit::normalize_path_key(codex_home);
+    let sbx_dir_key = crate::audit::normalize_path_key(&sandbox_dir(codex_home));
+    let sbx_dir_prefix = format!("{}/", sbx_dir_key.trim_end_matches('/'));
+
+    roots.retain(|root| {
+        let key = crate::audit::normalize_path_key(root);
+        key != codex_home_key && key != sbx_dir_key && !key.starts_with(&sbx_dir_prefix)
+    });
+    roots
 }

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -156,164 +158,280 @@ pub(crate) fn apply_default_headers(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OpenUrlStatus {
     Opened,
     Suppressed { reason: String },
 }
 
-#[allow(dead_code)]
-fn is_termux() -> bool {
-    env::var("TERMUX_VERSION").is_ok() || env::var("PREFIX").map_or(false, |p| p.contains("termux"))
+#[derive(Debug)]
+pub(crate) struct OpenUrlError {
+    message: String,
 }
 
-#[allow(dead_code)]
-fn is_wsl() -> bool {
-    env::var("WSL_DISTRO_NAME").is_ok() || env::var("WSL_INTEROP").is_ok()
+impl OpenUrlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
-#[allow(dead_code)]
-fn is_ssh() -> bool {
-    env::var("SSH_CONNECTION").is_ok()
-        || env::var("SSH_CLIENT").is_ok()
-        || env::var("SSH_TTY").is_ok()
+impl fmt::Display for OpenUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
 }
 
-#[allow(dead_code)]
-fn is_container() -> bool {
-    Path::new("/.dockerenv").exists()
-        || Path::new("/run/.containerenv").exists()
-        || env::var("KUBERNETES_SERVICE_HOST").is_ok()
-        || env::var("DOCKER_HOST").is_ok()
-}
+impl std::error::Error for OpenUrlError {}
 
-pub(crate) fn open_url(url: &str) -> OpenUrlStatus {
+pub(crate) fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let url = url.trim();
     if url.is_empty() {
-        return OpenUrlStatus::Suppressed {
-            reason: "No URL provided".into(),
-        };
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "No URL provided".to_string(),
+        });
     }
 
-    #[cfg(target_os = "android")]
-    {
-        if is_termux() {
-            return match Command::new("termux-open-url").arg(url).status() {
-                Ok(status) if status.success() => OpenUrlStatus::Opened,
-                Ok(_) | Err(_) => OpenUrlStatus::Suppressed {
-                    reason: "termux-open-url failed or not available".into(),
-                },
-            };
-        }
+    open_url_platform(url)
+}
 
-        return OpenUrlStatus::Suppressed {
-            reason: "URL opening not supported on this Android environment".into(),
-        };
+fn is_termux() -> bool {
+    env::var_os("TERMUX_VERSION").is_some() || env::var_os("TERMUX_APP_PID").is_some()
+}
+
+fn is_wsl() -> bool {
+    env::var_os("WSL_INTEROP").is_some()
+        || env::var_os("WSL_DISTRO_NAME").is_some()
+        || env::var_os("WSLENV").is_some()
+}
+
+fn is_ssh() -> bool {
+    env::var_os("SSH_CONNECTION").is_some()
+        || env::var_os("SSH_CLIENT").is_some()
+        || env::var_os("SSH_TTY").is_some()
+}
+
+fn is_container() -> bool {
+    env::var_os("container").is_some()
+        || Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    if is_termux() {
+        return open_url_termux(url);
+    }
+    if is_wsl() {
+        return open_url_wsl(url);
+    }
+    if is_ssh() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "SSH session detected; open the URL manually.".to_string(),
+        });
+    }
+    if is_container() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "Container environment detected; open the URL manually.".to_string(),
+        });
     }
 
-    #[cfg(target_os = "linux")]
+    open_url_linux(url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("open", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("open command not found")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("cmd", &["/C", "start", "", url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("cmd command not found")),
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows"
+)))]
+fn open_url_platform(_url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    Ok(OpenUrlStatus::Suppressed {
+        reason: "Unsupported platform; open the URL manually.".to_string(),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_termux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("termux-open-url", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new(
+            "termux-open-url not found; install termux-api",
+        )),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_wsl(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+    if let Some(status) = record_outcome(
+        "cmd.exe",
+        run_command("cmd.exe", &["/c", "start", "", url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("wslview", run_command("wslview", &[url])?, &mut failures)
     {
-        if is_termux() {
-            return match Command::new("termux-open-url").arg(url).status() {
-                Ok(status) if status.success() => OpenUrlStatus::Opened,
-                Ok(_) | Err(_) => OpenUrlStatus::Suppressed {
-                    reason: "termux-open-url failed or not available".into(),
-                },
-            };
+        return Ok(status);
+    }
+
+    Err(open_url_failed(failures))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_linux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+
+    for candidate in browser_env_candidates() {
+        let program = &candidate[0];
+        if let Some(status) = record_outcome(
+            program,
+            run_command_with_url(program, &candidate[1..], url)?,
+            &mut failures,
+        ) {
+            return Ok(status);
         }
+    }
 
-        if is_wsl() {
-            if let Ok(status) = Command::new("cmd.exe").args(["/c", "start", url]).status()
-                && status.success()
-            {
-                return OpenUrlStatus::Opened;
-            }
+    if let Some(status) =
+        record_outcome("xdg-open", run_command("xdg-open", &[url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("gio", run_command("gio", &["open", url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome(
+        "sensible-browser",
+        run_command("sensible-browser", &[url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
 
-            if let Ok(status) = Command::new("wslview").arg(url).status()
-                && status.success()
-            {
-                return OpenUrlStatus::Opened;
-            }
-
-            return OpenUrlStatus::Suppressed {
-                reason: "Could not open browser in WSL".into(),
-            };
-        }
-
-        if is_ssh() || is_container() {
-            return OpenUrlStatus::Suppressed {
-                reason: "Running in SSH/container environment".into(),
-            };
-        }
-
-        if let Ok(browser) = env::var("BROWSER") {
-            if let Ok(status) = Command::new(&browser).arg(url).status()
-                && status.success()
-            {
-                return OpenUrlStatus::Opened;
-            }
-        }
-
-        if let Ok(status) = Command::new("xdg-open").arg(url).status()
-            && status.success()
+    for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
+        if let Some(status) = record_outcome(browser, run_command(browser, &[url])?, &mut failures)
         {
-            return OpenUrlStatus::Opened;
+            return Ok(status);
         }
+    }
 
-        if let Ok(status) = Command::new("gio").args(["open", url]).status()
-            && status.success()
-        {
-            return OpenUrlStatus::Opened;
-        }
+    Err(open_url_failed(failures))
+}
 
-        if let Ok(status) = Command::new("sensible-browser").arg(url).status()
-            && status.success()
-        {
-            return OpenUrlStatus::Opened;
-        }
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn browser_env_candidates() -> Vec<Vec<String>> {
+    let Ok(value) = env::var("BROWSER") else {
+        return Vec::new();
+    };
 
-        for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
-            if let Ok(status) = Command::new(browser).arg(url).status()
-                && status.success()
-            {
-                return OpenUrlStatus::Opened;
+    value
+        .split(':')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            match shlex::split(entry) {
+                Some(parts) if !parts.is_empty() => Some(parts),
+                _ => Some(vec![entry.to_string()]),
+            }
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn run_command_with_url(
+    program: &str,
+    args: &[String],
+    url: &str,
+) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    command.arg(url);
+    run_command_status(program, command)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_failed(failures: Vec<String>) -> OpenUrlError {
+    if failures.is_empty() {
+        OpenUrlError::new("No supported browser launcher found")
+    } else {
+        let failures = failures.join("; ");
+        OpenUrlError::new(format!("Browser launch failed: {failures}"))
+    }
+}
+
+enum CommandOutcome {
+    Success,
+    Failure(String),
+    NotFound,
+}
+
+fn run_command(program: &str, args: &[&str]) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    run_command_status(program, command)
+}
+
+fn run_command_status(program: &str, mut command: Command) -> Result<CommandOutcome, OpenUrlError> {
+    match command.status() {
+        Ok(status) => {
+            if status.success() {
+                Ok(CommandOutcome::Success)
+            } else {
+                Ok(CommandOutcome::Failure(format!(
+                    "{program} exited with {status}"
+                )))
             }
         }
-
-        return OpenUrlStatus::Suppressed {
-            reason: "No suitable browser found".into(),
-        };
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                Ok(CommandOutcome::NotFound)
+            } else {
+                Err(OpenUrlError::new(format!("failed to run {program}: {err}")))
+            }
+        }
     }
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        return match Command::new("open").arg(url).status() {
-            Ok(status) if status.success() => OpenUrlStatus::Opened,
-            Ok(_) | Err(_) => OpenUrlStatus::Suppressed {
-                reason: "Failed to open URL with 'open' command".into(),
-            },
-        };
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return match Command::new("cmd").args(["/C", "start", url]).status() {
-            Ok(status) if status.success() => OpenUrlStatus::Opened,
-            Ok(_) | Err(_) => OpenUrlStatus::Suppressed {
-                reason: "Failed to open URL".into(),
-            },
-        };
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "android"
-    )))]
-    {
-        return OpenUrlStatus::Suppressed {
-            reason: "URL opening not supported on this platform".into(),
-        };
+fn record_outcome(
+    program: &str,
+    outcome: CommandOutcome,
+    failures: &mut Vec<String>,
+) -> Option<OpenUrlStatus> {
+    match outcome {
+        CommandOutcome::Success => Some(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => {
+            failures.push(message);
+            None
+        }
+        CommandOutcome::NotFound => {
+            failures.push(format!("{program} not found"));
+            None
+        }
     }
 }
 
@@ -330,7 +448,6 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "TERM",
     "TMPDIR",
     "TZ",
-    // Termux/Android-specific environment variables
     "TERMUX_VERSION",
     "PREFIX",
     "TERMUX_APK_RELEASE",

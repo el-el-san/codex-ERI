@@ -159,9 +159,11 @@ fn esc_hint_line(esc_backtrack_hint: bool) -> Line<'static> {
 
 fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut commands = Line::from("");
+    let mut shell_commands = Line::from("");
     let mut newline = Line::from("");
     let mut file_paths = Line::from("");
     let mut paste_image = Line::from("");
+    let mut external_editor = Line::from("");
     let mut edit_previous = Line::from("");
     let mut quit = Line::from("");
     let mut show_transcript = Line::from("");
@@ -170,9 +172,11 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
         if let Some(text) = descriptor.overlay_entry(state) {
             match descriptor.id {
                 ShortcutId::Commands => commands = text,
+                ShortcutId::ShellCommands => shell_commands = text,
                 ShortcutId::InsertNewline => newline = text,
                 ShortcutId::FilePaths => file_paths = text,
                 ShortcutId::PasteImage => paste_image = text,
+                ShortcutId::ExternalEditor => external_editor = text,
                 ShortcutId::EditPrevious => edit_previous = text,
                 ShortcutId::Quit => quit = text,
                 ShortcutId::ShowTranscript => show_transcript = text,
@@ -182,9 +186,11 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
 
     let ordered = vec![
         commands,
+        shell_commands,
         newline,
         file_paths,
         paste_image,
+        external_editor,
         edit_previous,
         quit,
         Line::from(""),
@@ -258,9 +264,11 @@ fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ShortcutId {
     Commands,
+    ShellCommands,
     InsertNewline,
     FilePaths,
     PasteImage,
+    ExternalEditor,
     EditPrevious,
     Quit,
     ShowTranscript,
@@ -341,6 +349,15 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         label: " for commands",
     },
     ShortcutDescriptor {
+        id: ShortcutId::ShellCommands,
+        bindings: &[ShortcutBinding {
+            key: key_hint::plain(KeyCode::Char('!')),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " for shell commands",
+    },
+    ShortcutDescriptor {
         id: ShortcutId::InsertNewline,
         bindings: &[
             ShortcutBinding {
@@ -380,6 +397,15 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
         ],
         prefix: "",
         label: " to paste images",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::ExternalEditor,
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('g')),
+            condition: DisplayCondition::Always,
+        }],
+        prefix: "",
+        label: " to edit in external editor",
     },
     ShortcutDescriptor {
         id: ShortcutId::EditPrevious,

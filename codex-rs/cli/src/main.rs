@@ -44,6 +44,7 @@ use codex_core::features::Feature;
 use codex_core::features::FeatureOverrides;
 use codex_core::features::Features;
 use codex_core::features::is_known_feature_key;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 /// Codex CLI
 ///
@@ -282,7 +283,7 @@ struct StdioToUdsCommand {
 fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<String> {
     let AppExitInfo {
         token_usage,
-        conversation_id,
+        thread_id: conversation_id,
         ..
     } = exit_info;
 
@@ -417,14 +418,6 @@ fn stage_str(stage: codex_core::features::Stage) -> &'static str {
     }
 }
 
-/// As early as possible in the process lifecycle, apply hardening measures. We
-/// skip this in debug builds to avoid interfering with debugging.
-#[ctor::ctor]
-#[cfg(not(debug_assertions))]
-fn pre_main_hardening() {
-    codex_process_hardening::pre_main_hardening();
-}
-
 fn main() -> anyhow::Result<()> {
     arg0_dispatch_or_else(|codex_linux_sandbox_exe| async move {
         cli_main(codex_linux_sandbox_exe).await?;
@@ -479,7 +472,12 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
             None => {
-                codex_app_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+                codex_app_server::run_main(
+                    codex_linux_sandbox_exe,
+                    root_config_overrides,
+                    codex_core::config_loader::LoaderOverrides::default(),
+                )
+                .await?;
             }
             Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
                 codex_app_server_protocol::generate_ts(
@@ -687,7 +685,13 @@ async fn is_tui2_enabled(cli: &TuiCli) -> std::io::Result<bool> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     let codex_home = find_codex_home()?;
-    let config_toml = load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides).await?;
+    let cwd = cli.cwd.clone();
+    let config_cwd = match cwd.as_deref() {
+        Some(path) => AbsolutePathBuf::from_absolute_path(path)?,
+        None => AbsolutePathBuf::current_dir()?,
+    };
+    let config_toml =
+        load_config_as_toml_with_cli_overrides(&codex_home, &config_cwd, cli_kv_overrides).await?;
     let config_profile = config_toml.get_config_profile(cli.config_profile.clone())?;
     let overrides = FeatureOverrides::default();
     let features = Features::from_config(&config_toml, &config_profile, overrides);
@@ -778,7 +782,7 @@ mod tests {
     use super::*;
     use assert_matches::assert_matches;
     use codex_core::protocol::TokenUsage;
-    use codex_protocol::ConversationId;
+    use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
 
     fn finalize_from_args(args: &[&str]) -> TuiCli {
@@ -818,9 +822,7 @@ mod tests {
         };
         AppExitInfo {
             token_usage,
-            conversation_id: conversation
-                .map(ConversationId::from_string)
-                .map(Result::unwrap),
+            thread_id: conversation.map(ThreadId::from_string).map(Result::unwrap),
             update_action: None,
         }
     }
@@ -829,7 +831,7 @@ mod tests {
     fn format_exit_messages_skips_zero_usage() {
         let exit_info = AppExitInfo {
             token_usage: TokenUsage::default(),
-            conversation_id: None,
+            thread_id: None,
             update_action: None,
         };
         let lines = format_exit_messages(exit_info, false);
