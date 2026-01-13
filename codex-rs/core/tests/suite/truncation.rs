@@ -5,7 +5,6 @@ use anyhow::Context;
 use anyhow::Result;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
-use codex_core::features::Feature;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
@@ -23,9 +22,9 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use escargot::CargoBuild;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -412,16 +411,9 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()> 
     .await;
 
     // Compile the rmcp stdio test server and configure it.
-    let rmcp_test_server_bin = CargoBuild::new()
-        .package("codex-rmcp-client")
-        .bin("test_stdio_server")
-        .run()?
-        .path()
-        .to_string_lossy()
-        .into_owned();
+    let rmcp_test_server_bin = stdio_server_bin()?;
 
     let mut builder = test_codex().with_config(move |config| {
-        config.features.enable(Feature::RmcpClient);
         config.mcp_servers.insert(
             server_name.to_string(),
             codex_core::config::types::McpServerConfig {
@@ -499,19 +491,12 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
     .await;
 
     // Build the stdio rmcp server and pass a tiny PNG via data URL so it can construct ImageContent.
-    let rmcp_test_server_bin = CargoBuild::new()
-        .package("codex-rmcp-client")
-        .bin("test_stdio_server")
-        .run()?
-        .path()
-        .to_string_lossy()
-        .into_owned();
+    let rmcp_test_server_bin = stdio_server_bin()?;
 
     // 1x1 PNG data URL
     let openai_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/ee9bQAAAABJRU5ErkJggg==";
 
     let mut builder = test_codex().with_config(move |config| {
-        config.features.enable(Feature::RmcpClient);
         config.mcp_servers.insert(
             server_name.to_string(),
             McpServerConfig {
@@ -765,16 +750,9 @@ async fn mcp_tool_call_output_not_truncated_with_custom_limit() -> Result<()> {
     )
     .await;
 
-    let rmcp_test_server_bin = CargoBuild::new()
-        .package("codex-rmcp-client")
-        .bin("test_stdio_server")
-        .run()?
-        .path()
-        .to_string_lossy()
-        .into_owned();
+    let rmcp_test_server_bin = stdio_server_bin()?;
 
     let mut builder = test_codex().with_config(move |config| {
-        config.features.enable(Feature::RmcpClient);
         config.tool_output_token_limit = Some(50_000);
         config.mcp_servers.insert(
             server_name.to_string(),

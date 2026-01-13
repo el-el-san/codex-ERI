@@ -39,6 +39,7 @@ rmcp = { workspace = true, default-features = false, features = [
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+shlex = { workspace = true }
 tiny_http = { workspace = true }
 tokio = { workspace = true, features = [
     "io-util",
@@ -54,7 +55,7 @@ urlencoding = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]
-escargot = { workspace = true }
+codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }

@@ -267,9 +267,14 @@ impl OauthLoginFlow {
             );
 
             match open_url(auth_url) {
-                OpenUrlStatus::Opened => {}
-                OpenUrlStatus::Suppressed { reason } => {
-                    println!("(Browser launch suppressed: {reason}; please copy the URL above manually.)");
+                Ok(OpenUrlStatus::Opened) => {}
+                Ok(OpenUrlStatus::Suppressed { reason }) => {
+                    println!(
+                        "(Browser launch suppressed: {reason}. Please copy the URL above manually.)"
+                    );
+                }
+                Err(err) => {
+                    println!("(Browser launch failed: {err}. Please copy the URL above manually.)");
                 }
             }
         }
