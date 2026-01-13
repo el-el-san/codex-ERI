@@ -89,6 +89,7 @@ jobs:
   build:
     needs: setup
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
@@ -192,9 +193,11 @@ jobs:
           rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
 
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
-            cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} --workspace
+            cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} \
+              -p codex-cli -p codex-exec -p codex-tui
           else
-            cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} --workspace
+            cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} \
+              -p codex-cli -p codex-exec -p codex-tui
           fi
 
       - name: Skip tests for Android ARM64 (cross-compilation)
