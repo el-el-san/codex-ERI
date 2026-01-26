@@ -28,4 +28,4 @@ shlex = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-reqwest = { workspace = true, features = ["native-tls-vendored"] }
+reqwest = { workspace = true }
