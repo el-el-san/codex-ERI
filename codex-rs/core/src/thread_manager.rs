@@ -19,6 +19,7 @@ use crate::rollout::RolloutRecorder;
 use crate::rollout::truncation;
 use crate::skills::SkillsManager;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::McpServerRefreshConfig;
@@ -157,6 +158,10 @@ impl ThreadManager {
             .await
     }
 
+    pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {
+        self.state.models_manager.list_collaboration_modes()
+    }
+
     pub async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.state.threads.read().await.keys().copied().collect()
     }
@@ -230,6 +235,15 @@ impl ThreadManager {
         self.state.threads.write().await.remove(thread_id)
     }
 
+    /// Closes all threads open in this ThreadManager
+    pub async fn remove_and_close_all_threads(&self) -> CodexResult<()> {
+        for thread in self.state.threads.read().await.values() {
+            thread.submit(Op::Shutdown).await?;
+        }
+        self.state.threads.write().await.clear();
+        Ok(())
+    }
+
     /// Fork an existing thread by taking messages up to the given position (not including
     /// the message at the given position) and starting a new thread with identical
     /// configuration (unless overridden by the caller's `config`). The new thread will have
@@ -300,11 +314,22 @@ impl ThreadManagerState {
         config: Config,
         agent_control: AgentControl,
     ) -> CodexResult<NewThread> {
-        self.spawn_thread(
+        self.spawn_new_thread_with_source(config, agent_control, self.session_source.clone())
+            .await
+    }
+
+    pub(crate) async fn spawn_new_thread_with_source(
+        &self,
+        config: Config,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+    ) -> CodexResult<NewThread> {
+        self.spawn_thread_with_source(
             config,
             InitialHistory::New,
             Arc::clone(&self.auth_manager),
             agent_control,
+            session_source,
         )
         .await
     }
@@ -317,6 +342,24 @@ impl ThreadManagerState {
         auth_manager: Arc<AuthManager>,
         agent_control: AgentControl,
     ) -> CodexResult<NewThread> {
+        self.spawn_thread_with_source(
+            config,
+            initial_history,
+            auth_manager,
+            agent_control,
+            self.session_source.clone(),
+        )
+        .await
+    }
+
+    pub(crate) async fn spawn_thread_with_source(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+    ) -> CodexResult<NewThread> {
         let CodexSpawnOk {
             codex, thread_id, ..
         } = Codex::spawn(
@@ -325,7 +368,7 @@ impl ThreadManagerState {
             Arc::clone(&self.models_manager),
             Arc::clone(&self.skills_manager),
             initial_history,
-            self.session_source.clone(),
+            session_source,
             agent_control,
         )
         .await?;
@@ -352,7 +395,8 @@ impl ThreadManagerState {
             codex,
             session_configured.rollout_path.clone(),
         ));
-        self.threads.write().await.insert(thread_id, thread.clone());
+        let mut threads = self.threads.write().await;
+        threads.insert(thread_id, thread.clone());
 
         Ok(NewThread {
             thread_id,
@@ -396,6 +440,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
             }],
+            end_turn: None,
         }
     }
     fn assistant_msg(text: &str) -> ResponseItem {
@@ -405,6 +450,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
             }],
+            end_turn: None,
         }
     }
 
@@ -462,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn ignores_session_prefix_messages_when_truncating() {
         let (session, turn_context) = make_session_and_context().await;
-        let mut items = session.build_initial_context(&turn_context);
+        let mut items = session.build_initial_context(&turn_context).await;
         items.push(user_msg("feature request"));
         items.push(assistant_msg("ack"));
         items.push(user_msg("second question"));

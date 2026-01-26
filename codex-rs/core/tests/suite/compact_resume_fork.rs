@@ -278,6 +278,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "tool_choice": "auto",
       "parallel_tool_calls": false,
       "reasoning": {
+        "effort": "medium",
         "summary": "auto"
       },
       "store": false,
@@ -348,6 +349,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "tool_choice": "auto",
       "parallel_tool_calls": false,
       "reasoning": {
+        "effort": "medium",
         "summary": "auto"
       },
       "store": false,
@@ -409,6 +411,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "tool_choice": "auto",
       "parallel_tool_calls": false,
       "reasoning": {
+        "effort": "medium",
         "summary": "auto"
       },
       "store": false,
@@ -511,6 +514,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "tool_choice": "auto",
       "parallel_tool_calls": false,
       "reasoning": {
+        "effort": "medium",
         "summary": "auto"
       },
       "store": false,
@@ -634,6 +638,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "tool_choice": "auto",
       "parallel_tool_calls": false,
       "reasoning": {
+        "effort": "medium",
         "summary": "auto"
       },
       "store": false,
@@ -1008,7 +1013,7 @@ async fn compact_conversation(conversation: &Arc<CodexThread>) {
 }
 
 async fn fetch_conversation_path(conversation: &Arc<CodexThread>) -> std::path::PathBuf {
-    conversation.rollout_path()
+    conversation.rollout_path().expect("rollout path")
 }
 
 async fn resume_conversation(
