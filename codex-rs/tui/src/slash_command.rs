@@ -20,11 +20,13 @@ pub enum SlashCommand {
     Experimental,
     Skills,
     Review,
+    Rename,
     New,
     Resume,
     Fork,
     Init,
     Compact,
+    Plan,
     Collab,
     Agent,
     // Undo,
@@ -32,12 +34,14 @@ pub enum SlashCommand {
     Mention,
     Status,
     Mcp,
+    Apps,
     Logout,
     Quit,
     Exit,
     Feedback,
     Rollout,
     Ps,
+    Personality,
     TestApproval,
 }
 
@@ -50,6 +54,7 @@ impl SlashCommand {
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Review => "review my current changes and find issues",
+            SlashCommand::Rename => "rename the current thread",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Fork => "fork the current chat",
             // SlashCommand::Undo => "ask Codex to undo a turn",
@@ -60,13 +65,16 @@ impl SlashCommand {
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Ps => "list background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Personality => "choose a communication style for Codex",
+            SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Collab => "change collaboration mode (experimental)",
             SlashCommand::Agent => "switch the active agent thread",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Permissions => "choose what Codex is allowed to do",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
-            SlashCommand::Experimental => "toggle beta features",
+            SlashCommand::Experimental => "toggle experimental features",
             SlashCommand::Mcp => "list configured MCP tools",
+            SlashCommand::Apps => "manage apps",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -89,6 +97,7 @@ impl SlashCommand {
             | SlashCommand::Compact
             // | SlashCommand::Undo
             | SlashCommand::Model
+            | SlashCommand::Personality
             | SlashCommand::Approvals
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox
@@ -96,16 +105,19 @@ impl SlashCommand {
             | SlashCommand::Review
             | SlashCommand::Logout => false,
             SlashCommand::Diff
+            | SlashCommand::Rename
             | SlashCommand::Mention
             | SlashCommand::Skills
             | SlashCommand::Status
             | SlashCommand::Ps
             | SlashCommand::Mcp
+            | SlashCommand::Apps
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
+            SlashCommand::Plan => true,
             SlashCommand::Collab => true,
             SlashCommand::Agent => true,
         }
