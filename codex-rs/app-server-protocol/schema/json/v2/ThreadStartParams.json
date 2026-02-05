@@ -29,6 +29,7 @@
     },
     "Personality": {
       "enum": [
+        "none",
         "friendly",
         "pragmatic"
       ],
@@ -76,15 +77,6 @@
     "developerInstructions": {
       "type": [
         "string",
-        "null"
-      ]
-    },
-    "dynamicTools": {
-      "items": {
-        "$ref": "#/definitions/DynamicToolSpec"
-      },
-      "type": [
-        "array",
         "null"
       ]
     },
