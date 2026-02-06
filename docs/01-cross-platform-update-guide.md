@@ -36,6 +36,14 @@
   - `ANDROID_ROOT`, `ANDROID_DATA`
   - `LD_LIBRARY_PATH`, `LD_PRELOAD`（動的リンクに必須）
 
+### 1.4 Androidビルド警告の抑止（clipboard_paste）
+- Androidターゲットで `tui/src/clipboard_paste.rs` の unused import / dead_code 警告が出るため、条件付きコンパイルで抑止
+- 変更内容:
+  - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
+  - `PasteImageError` / Android版 `paste_image_as_png` に `#[cfg_attr(target_os = "android", allow(dead_code))]` を付与
+- 変更ファイル:
+  - `tui/src/clipboard_paste.rs`
+
 ## 2. 変更の意図と効果
 
 - TLS 依存の安定化（`native-tls-vendored`）
@@ -91,6 +99,11 @@
 - WSL: `cmd.exe /c start` または `wslview` のいずれかで開けること
 - Termux（Android）: `termux-open-url` で URL が開くこと、MCP機能が正常動作すること
 - SSH/Container: 自動オープンは抑止され、URL が出力されること
+
+### 3.6 Androidビルドでの警告抑止（clipboard_paste）
+- `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
+  - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
+  - `PasteImageError` と Android版 `paste_image_as_png` に `#[cfg_attr(target_os = "android", allow(dead_code))]` を付与
 
 ## 4. 実用的な差分確認コマンド
 
@@ -216,6 +229,12 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 症状: HTTPSリクエストでTLS/SSL関連のエラー
 - 対処: `reqwest`の`native-tls-vendored`機能が有効になっているか確認
 
+### 8.4 Androidビルドで unused/dead_code 警告が出る
+- 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る
+- 対処: Android向けの条件付きコンパイルを適用
+  - `#[cfg(not(target_os = "android"))] use tempfile::Builder;`
+  - `#[cfg_attr(target_os = "android", allow(dead_code))]` を `PasteImageError` と Android版 `paste_image_as_png` に付与
+
 ---
 
 このガイドに沿って差分を適用すれば、上流更新のたびに同様のクロスプラットフォーム対応を素早く再現できます。追加で対応が必要になった環境が出てきた場合は、本ドキュメントに追記してください。
@@ -257,6 +276,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `OpenUrlStatus::Suppressed` 時に適切なメッセージとURLを表示する処理を実装
 - **MCP環境変数**: `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 環境変数を追加完了
 - すべての実装がドキュメント記載の仕様に準拠していることを確認
+
+### 2026-02-06 更新内容
+- Androidビルドの警告抑止対応を追記
+  - `tui/src/clipboard_paste.rs` の `tempfile::Builder` import を非Androidに限定
+  - `PasteImageError` / Android版 `paste_image_as_png` に `allow(dead_code)` を付与
 
 ### 2025-10-24 実装完了・ドキュメント同期
 - ドキュメントと実装の完全な同期を確認・修正
