@@ -298,7 +298,7 @@ unwrap_used = "deny"
 ignored = ["icu_provider", "openssl-sys", "codex-utils-readiness", "codex-secrets"]
 
 [profile.release]
-lto = "fat"
+lto = "thin"
 # Because we bundle some of these executables with the TypeScript CLI, we
 # remove everything to make the binary as small as possible.
 strip = "symbols"
