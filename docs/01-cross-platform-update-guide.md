@@ -100,7 +100,12 @@
 - Termux（Android）: `termux-open-url` で URL が開くこと、MCP機能が正常動作すること
 - SSH/Container: 自動オープンは抑止され、URL が出力されること
 
-### 3.6 Androidビルドでの警告抑止（clipboard_paste）
+### 3.6 Androidでのファイルロック非対応（arg0）
+- `arg0/src/lib.rs` で `File::try_lock()` がAndroidのファイルシステムで非対応のためエラーになる
+- `prepend_path_entry_for_codex_aliases` 内と `try_lock_dir` 内の `try_lock()` 呼び出しを `#[cfg(not(target_os = "android"))]` で除外
+- Android版では `try_lock_dir` はロック確認なしで常に `Some(lock_file)` を返す
+
+### 3.7 Androidビルドでの警告抑止（clipboard_paste）
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
   - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
   - `PasteImageError` と Android版 `paste_image_as_png` に `#[cfg_attr(target_os = "android", allow(dead_code))]` を付与
@@ -229,7 +234,12 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 症状: HTTPSリクエストでTLS/SSL関連のエラー
 - 対処: `reqwest`の`native-tls-vendored`機能が有効になっているか確認
 
-### 8.4 Androidビルドで unused/dead_code 警告が出る
+### 8.4 Androidで "try_lock() not supported" 警告が出る
+- 症状: `WARNING: proceeding, even though we could not update PATH: try_lock() not supported`
+- 原因: Androidのファイルシステムが `flock()` をサポートしていない
+- 対処: `arg0/src/lib.rs` の `try_lock()` 呼び出しを `#[cfg(not(target_os = "android"))]` で除外
+
+### 8.5 Androidビルドで unused/dead_code 警告が出る
 - 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る
 - 対処: Android向けの条件付きコンパイルを適用
   - `#[cfg(not(target_os = "android"))] use tempfile::Builder;`
