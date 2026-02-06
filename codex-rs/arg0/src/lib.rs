@@ -211,6 +211,8 @@ pub fn prepend_path_entry_for_codex_aliases() -> std::io::Result<Arg0PathEntryGu
         .create(true)
         .truncate(false)
         .open(&lock_path)?;
+    // try_lock() is not supported on some Android filesystems.
+    #[cfg(not(target_os = "android"))]
     lock_file.try_lock()?;
 
     for filename in &[
@@ -302,6 +304,14 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
         Err(err) => return Err(err),
     };
 
+    // try_lock() is not supported on some Android filesystems;
+    // treat the dir as unlocked so the janitor can clean it up.
+    #[cfg(target_os = "android")]
+    {
+        return Ok(Some(lock_file));
+    }
+
+    #[cfg(not(target_os = "android"))]
     match lock_file.try_lock() {
         Ok(()) => Ok(Some(lock_file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
