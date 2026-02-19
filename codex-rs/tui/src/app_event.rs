@@ -11,14 +11,15 @@
 use std::path::PathBuf;
 
 use codex_chatgpt::connectors::AppInfo;
-use codex_common::approval_presets::ApprovalPreset;
 use codex_core::protocol::Event;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_file_search::FileMatch;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
+use codex_utils_approval_presets::ApprovalPreset;
 
 use crate::bottom_pane::ApprovalRequest;
+use crate::bottom_pane::StatusLineItem;
 use crate::history_cell::HistoryCell;
 
 use codex_core::features::Feature;
@@ -35,13 +36,8 @@ pub(crate) enum WindowsSandboxEnableMode {
     Legacy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub(crate) enum WindowsSandboxFallbackReason {
-    ElevationFailed,
-}
-
 #[derive(Debug, Clone)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) struct ConnectorsSnapshot {
     pub(crate) connectors: Vec<AppInfo>,
 }
@@ -96,21 +92,45 @@ pub(crate) enum AppEvent {
     RateLimitSnapshotFetched(RateLimitSnapshot),
 
     /// Result of prefetching connectors.
-    ConnectorsLoaded(Result<ConnectorsSnapshot, String>),
+    ConnectorsLoaded {
+        result: Result<ConnectorsSnapshot, String>,
+        is_final: bool,
+    },
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
     /// Open the app link view in the bottom pane.
     OpenAppLink {
+        app_id: String,
         title: String,
         description: Option<String>,
         instructions: String,
         url: String,
         is_installed: bool,
+        is_enabled: bool,
+    },
+
+    /// Open the provided URL in the user's browser.
+    OpenUrlInBrowser {
+        url: String,
+    },
+
+    /// Refresh app connector state and mention bindings.
+    RefreshConnectors {
+        force_refetch: bool,
     },
 
     InsertHistoryCell(Box<dyn HistoryCell>),
+
+    /// Apply rollback semantics to local transcript cells.
+    ///
+    /// This is emitted when rollback was not initiated by the current
+    /// backtrack flow so trimming occurs in AppEvent queue order relative to
+    /// inserted history cells.
+    ApplyThreadRollback {
+        num_turns: u32,
+    },
 
     StartCommitAnimation,
     StopCommitAnimation,
@@ -180,13 +200,31 @@ pub(crate) enum AppEvent {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     OpenWindowsSandboxFallbackPrompt {
         preset: ApprovalPreset,
-        reason: WindowsSandboxFallbackReason,
     },
 
     /// Begin the elevated Windows sandbox setup flow.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     BeginWindowsSandboxElevatedSetup {
         preset: ApprovalPreset,
+    },
+
+    /// Begin the non-elevated Windows sandbox setup flow.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    BeginWindowsSandboxLegacySetup {
+        preset: ApprovalPreset,
+    },
+
+    /// Begin a non-elevated grant of read access for an additional directory.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    BeginWindowsSandboxGrantReadRoot {
+        path: String,
+    },
+
+    /// Result of attempting to grant read access for an additional directory.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    WindowsSandboxGrantReadRootCompleted {
+        path: PathBuf,
+        error: Option<String>,
     },
 
     /// Enable the Windows sandbox feature and switch to Agent mode.
@@ -255,6 +293,12 @@ pub(crate) enum AppEvent {
         enabled: bool,
     },
 
+    /// Enable or disable an app by connector ID.
+    SetAppEnabled {
+        id: String,
+        enabled: bool,
+    },
+
     /// Notify that the manage skills popup was closed.
     ManageSkillsClosed,
 
@@ -292,6 +336,18 @@ pub(crate) enum AppEvent {
 
     /// Launch the external editor after a normal draw has completed.
     LaunchExternalEditor,
+
+    /// Async update of the current git branch for status line rendering.
+    StatusLineBranchUpdated {
+        cwd: PathBuf,
+        branch: Option<String>,
+    },
+    /// Apply a user-confirmed status-line item ordering/selection.
+    StatusLineSetup {
+        items: Vec<StatusLineItem>,
+    },
+    /// Dismiss the status-line setup UI without changing config.
+    StatusLineSetupCancelled,
 }
 
 /// The exit strategy requested by the UI layer.
@@ -315,5 +371,6 @@ pub(crate) enum FeedbackCategory {
     BadResult,
     GoodResult,
     Bug,
+    SafetyCheck,
     Other,
 }

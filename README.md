@@ -1,7 +1,7 @@
 <h1 align="center">Codex CLI (ERI fork)</h1>
 
 ## このリポジトリについて
-- OpenAI Rust 版 Codex CLI v0.98.0 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-02-05 の upstream rust-v0.98.0）。
+- OpenAI Rust 版 Codex CLI v0.104.0 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-02-18 の upstream rust-v0.104.0）。
 - Termux / WSL / SSH / コンテナでもビルド・ログイン・MCP が破綻しないよう、必要最小限のパッチだけを維持します。
 - 主要ソースは `codex-rs/` 配下の Cargo ワークスペースで、Rust 1.90（`rust-toolchain.toml`）を前提としています。
 
@@ -56,7 +56,7 @@ codex apply                           # 直近の diff を git apply 相当で�
 - `--output-schema schema.json`（非対話 `codex exec` で最終レスポンスの JSON 形を指定）
 
 ## 設定
-- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.98.0 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
+- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.104.0 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
 - ログは `~/.codex/log/` に保存されます。
 
 ## 環境別のログイン挙動
