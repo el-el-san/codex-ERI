@@ -23,6 +23,23 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
+pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 8;
+pub const DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS: i64 = 30;
+pub const DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS: i64 = 12;
+pub const DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL: usize = 1_024;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsSandboxModeToml {
+    Elevated,
+    Unelevated,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct WindowsToml {
+    pub sandbox: Option<WindowsSandboxModeToml>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpServerDisabledReason {
@@ -49,6 +66,10 @@ pub struct McpServerConfig {
     /// When `false`, Codex skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
 
     /// Reason this server was disabled after applying requirements.
     #[serde(skip)]
@@ -114,6 +135,8 @@ pub(crate) struct RawMcpServerConfig {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
+    pub required: Option<bool>,
+    #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
@@ -138,6 +161,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         };
         let tool_timeout_sec = raw.tool_timeout_sec;
         let enabled = raw.enabled.unwrap_or_else(default_enabled);
+        let required = raw.required.unwrap_or_default();
         let enabled_tools = raw.enabled_tools.clone();
         let disabled_tools = raw.disabled_tools.clone();
         let scopes = raw.scopes.clone();
@@ -192,6 +216,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             startup_timeout_sec,
             tool_timeout_sec,
             enabled,
+            required,
             disabled_reason: None,
             enabled_tools,
             disabled_tools,
@@ -332,6 +357,112 @@ pub struct FeedbackConfigToml {
     pub enabled: Option<bool>,
 }
 
+/// Memories settings loaded from config.toml.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct MemoriesToml {
+    /// Maximum number of recent raw memories retained for global consolidation.
+    pub max_raw_memories_for_global: Option<usize>,
+    /// Maximum age of the threads used for memories.
+    pub max_rollout_age_days: Option<i64>,
+    /// Maximum number of rollout candidates processed per pass.
+    pub max_rollouts_per_startup: Option<usize>,
+    /// Minimum idle time between last thread activity and memory creation (hours). > 12h recommended.
+    pub min_rollout_idle_hours: Option<i64>,
+    /// Model used for thread summarisation.
+    pub phase_1_model: Option<String>,
+    /// Model used for memory consolidation.
+    pub phase_2_model: Option<String>,
+}
+
+/// Effective memories settings after defaults are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoriesConfig {
+    pub max_raw_memories_for_global: usize,
+    pub max_rollout_age_days: i64,
+    pub max_rollouts_per_startup: usize,
+    pub min_rollout_idle_hours: i64,
+    pub phase_1_model: Option<String>,
+    pub phase_2_model: Option<String>,
+}
+
+impl Default for MemoriesConfig {
+    fn default() -> Self {
+        Self {
+            max_raw_memories_for_global: DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_GLOBAL,
+            max_rollout_age_days: DEFAULT_MEMORIES_MAX_ROLLOUT_AGE_DAYS,
+            max_rollouts_per_startup: DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP,
+            min_rollout_idle_hours: DEFAULT_MEMORIES_MIN_ROLLOUT_IDLE_HOURS,
+            phase_1_model: None,
+            phase_2_model: None,
+        }
+    }
+}
+
+impl From<MemoriesToml> for MemoriesConfig {
+    fn from(toml: MemoriesToml) -> Self {
+        let defaults = Self::default();
+        Self {
+            max_raw_memories_for_global: toml
+                .max_raw_memories_for_global
+                .unwrap_or(defaults.max_raw_memories_for_global)
+                .min(4096),
+            max_rollout_age_days: toml
+                .max_rollout_age_days
+                .unwrap_or(defaults.max_rollout_age_days)
+                .clamp(0, 90),
+            max_rollouts_per_startup: toml
+                .max_rollouts_per_startup
+                .unwrap_or(defaults.max_rollouts_per_startup)
+                .min(128),
+            min_rollout_idle_hours: toml
+                .min_rollout_idle_hours
+                .unwrap_or(defaults.min_rollout_idle_hours)
+                .clamp(1, 48),
+            phase_1_model: toml.phase_1_model,
+            phase_2_model: toml.phase_2_model,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AppDisabledReason {
+    Unknown,
+    User,
+}
+
+impl fmt::Display for AppDisabledReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AppDisabledReason::Unknown => write!(f, "unknown"),
+            AppDisabledReason::User => write!(f, "user"),
+        }
+    }
+}
+
+/// Config values for a single app/connector.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppConfig {
+    /// When `false`, Codex does not surface this app.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+
+    /// Reason this app was disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<AppDisabledReason>,
+}
+
+/// App/connector settings loaded from `config.toml`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppsConfigToml {
+    /// Per-app settings keyed by app ID (for example `[apps.google_drive]`).
+    #[serde(default, flatten)]
+    pub apps: HashMap<String, AppConfig>,
+}
+
 // ===== OTEL configuration =====
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -391,6 +522,9 @@ pub struct OtelConfigToml {
 
     /// Optional trace exporter
     pub trace_exporter: Option<OtelExporterKind>,
+
+    /// Optional metrics exporter
+    pub metrics_exporter: Option<OtelExporterKind>,
 }
 
 /// Effective OTEL settings after defaults are applied.
@@ -486,6 +620,12 @@ pub struct Tui {
     /// scrollback in terminal multiplexers like Zellij that follow the xterm spec.
     #[serde(default)]
     pub alternate_screen: AltScreenMode,
+
+    /// Ordered list of status line item identifiers.
+    ///
+    /// When set, the TUI renders the selected items as the status line.
+    #[serde(default)]
+    pub status_line: Option<Vec<String>>,
 }
 
 const fn default_true() -> bool {
@@ -691,6 +831,7 @@ mod tests {
             }
         );
         assert!(cfg.enabled);
+        assert!(!cfg.required);
         assert!(cfg.enabled_tools.is_none());
         assert!(cfg.disabled_tools.is_none());
     }
@@ -797,6 +938,20 @@ mod tests {
         .expect("should deserialize disabled server config");
 
         assert!(!cfg.enabled);
+        assert!(!cfg.required);
+    }
+
+    #[test]
+    fn deserialize_required_server_config() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            command = "echo"
+            required = true
+        "#,
+        )
+        .expect("should deserialize required server config");
+
+        assert!(cfg.required);
     }
 
     #[test]
