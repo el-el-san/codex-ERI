@@ -206,6 +206,13 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `.gitignore`の過度に広範なパターン（例：`test*`）に注意
 - テストファイルやfixtureファイルがGitに追跡されているか確認が必要
 
+### 6.4 Androidクロスビルド時のリンク時間対策（LTO）
+- `codex-rs/Cargo.toml` の `[profile.release]` で `lto = "thin"` を維持する
+- 背景: `lto = "fat"` だと Android 向けクロスビルドでリンク工程が長時間化し、CI で `exit code 143`（プロセス終了）を誘発する場合がある
+- 再適用時チェック:
+  - `codex-rs/Cargo.toml` の `[profile.release]` が `lto = "thin"` になっているか
+  - GitHub Actions `Build Android` で `Build` ステップが完走するか
+
 ## 7. 最近の更新履歴
 
 ### 2025-09-06 更新内容
@@ -244,6 +251,13 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 対処: Android向けの条件付きコンパイルを適用
   - `#[cfg(not(target_os = "android"))] use tempfile::Builder;`
   - `#[cfg_attr(target_os = "android", allow(dead_code))]` を `PasteImageError` と Android版 `paste_image_as_png` に付与
+
+### 8.6 Androidビルドで exit code 143 が出る
+- 症状: GitHub Actions の `Build Android` ジョブで `Build` ステップ終盤に `Process completed with exit code 143`
+- 主因候補: release リンク工程の長時間化（特に `lto = "fat"`）
+- 対処:
+  - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に設定
+  - 修正後に再 push し、`Build Android` が成功することを確認
 
 ---
 
@@ -291,6 +305,15 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - Androidビルドの警告抑止対応を追記
   - `tui/src/clipboard_paste.rs` の `tempfile::Builder` import を非Androidに限定
   - `PasteImageError` / Android版 `paste_image_as_png` に `allow(dead_code)` を付与
+
+### 2026-02-19 更新内容
+- 上流 `rust-v0.104.0` 同期時の再適用ポイントを反映
+  - `core/login/ollama` の `reqwest` に `native-tls-vendored` を再適用
+  - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに再適用
+  - `rmcp-client` の Termux/Android 環境変数保持を再適用
+  - `arg0` / `tui` の Android 向け条件分岐を再適用
+- GitHub Actions `Build Android` での `exit code 143` 対策として
+  `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に設定し、Androidビルド成功を確認
 
 ### 2025-10-24 実装完了・ドキュメント同期
 - ドキュメントと実装の完全な同期を確認・修正
