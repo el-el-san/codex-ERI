@@ -5,13 +5,13 @@
 //! booleans through multiple types, call sites consult a single `Features`
 //! container attached to `Config`.
 
-use crate::config::CONFIG_TOML_FILE;
 use crate::config::Config;
 use crate::config::ConfigToml;
 use crate::config::profile::ConfigProfile;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::WarningEvent;
+use codex_config::CONFIG_TOML_FILE;
 use codex_otel::OtelManager;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -84,8 +84,12 @@ pub enum Feature {
     JsReplToolsOnly,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
+    /// Route shell tool execution through the zsh exec bridge.
+    ShellZshFork,
     /// Include the freeform apply_patch tool.
     ApplyPatchFreeform,
+    /// Allow requesting additional filesystem permissions while staying sandboxed.
+    RequestPermissions,
     /// Allow the model to request web searches that fetch live content.
     WebSearchRequest,
     /// Allow the model to request web searches that fetch cached content.
@@ -130,11 +134,19 @@ pub enum Feature {
     /// Prompt for missing skill env var dependencies.
     SkillEnvVarDependencyPrompt,
     /// Steer feature flag - when enabled, Enter submits immediately instead of queuing.
+    /// Kept for config backward compatibility; behavior is always steer-enabled.
     Steer,
+    /// Allow request_user_input in Default collaboration mode.
+    DefaultModeRequestUserInput,
     /// Enable collaboration modes (Plan, Default).
+    /// Kept for config backward compatibility; behavior is always collaboration-modes-enabled.
     CollaborationModes,
     /// Enable personality selection in the TUI.
     Personality,
+    /// Enable voice transcription in the TUI composer.
+    VoiceTranscription,
+    /// Enable experimental realtime voice conversation mode in the TUI.
+    RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
     /// Use the Responses API WebSocket transport for OpenAI by default.
@@ -248,6 +260,9 @@ impl Features {
 
     pub fn emit_metrics(&self, otel: &OtelManager) {
         for feature in FEATURES {
+            if matches!(feature.stage, Stage::Removed) {
+                continue;
+            }
             if self.enabled(feature.id) != feature.default_enabled {
                 otel.counter(
                     "codex.feature.state",
@@ -368,7 +383,7 @@ fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>
                 None
             } else {
                 Some(format!(
-                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://github.com/openai/codex/blob/main/docs/config.md#feature-flags for details."
+                    "Enable it with `--enable {canonical}` or `[features].{canonical}` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details."
                 ))
             };
             (summary, details)
@@ -432,6 +447,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: !cfg!(windows),
     },
     FeatureSpec {
+        id: Feature::ShellZshFork,
+        key: "shell_zsh_fork",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ShellSnapshot,
         key: "shell_snapshot",
         stage: Stage::Stable,
@@ -440,7 +461,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::JsRepl,
         key: "js_repl",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "JavaScript REPL",
+            menu_description: "Enable a persistent Node-backed JavaScript REPL for interactive website debugging and other inline JavaScript execution capabilities. Requires Node >= v22.22.0 installed.",
+            announcement: "NEW: JavaScript REPL is now available in /experimental. Enable it, then start a new chat or restart Codex to use it.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
@@ -483,12 +508,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Sqlite,
         key: "sqlite",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::MemoryTool,
-        key: "memory_tool",
+        key: "memories",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -501,6 +526,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ApplyPatchFreeform,
         key: "apply_patch_freeform",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RequestPermissions,
+        key: "request_permissions",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -600,13 +631,19 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Steer,
         key: "steer",
-        stage: Stage::Stable,
+        stage: Stage::Removed,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::DefaultModeRequestUserInput,
+        key: "default_mode_request_user_input",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
-        stage: Stage::Stable,
+        stage: Stage::Removed,
         default_enabled: true,
     },
     FeatureSpec {
@@ -616,9 +653,25 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::VoiceTranscription,
+        key: "voice_transcription",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RealtimeConversation,
+        key: "realtime_conversation",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::PreventIdleSleep,
         key: "prevent_idle_sleep",
-        stage: if cfg!(target_os = "macos") {
+        stage: if cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        )) {
             Stage::Experimental {
                 name: "Prevent sleep while running",
                 menu_description: "Keep your computer awake while Codex is running a thread.",
@@ -717,10 +770,9 @@ mod tests {
     fn default_enabled_features_are_stable() {
         for spec in FEATURES {
             if spec.default_enabled {
-                assert_eq!(
-                    spec.stage,
-                    Stage::Stable,
-                    "feature `{}` is enabled by default but is not stable ({:?})",
+                assert!(
+                    matches!(spec.stage, Stage::Stable | Stage::Removed),
+                    "feature `{}` is enabled by default but is not stable/removed ({:?})",
                     spec.key,
                     spec.stage
                 );
@@ -746,6 +798,23 @@ mod tests {
             Stage::UnderDevelopment
         );
         assert_eq!(Feature::UseLinuxSandboxBwrap.default_enabled(), false);
+    }
+
+    #[test]
+    fn js_repl_is_experimental_and_user_toggleable() {
+        let spec = Feature::JsRepl.info();
+        let stage = spec.stage;
+        let expected_node_version = include_str!("../../node-version.txt").trim_end();
+
+        assert!(matches!(stage, Stage::Experimental { .. }));
+        assert_eq!(stage.experimental_menu_name(), Some("JavaScript REPL"));
+        assert_eq!(
+            stage.experimental_menu_description().map(str::to_owned),
+            Some(format!(
+                "Enable a persistent Node-backed JavaScript REPL for interactive website debugging and other inline JavaScript execution capabilities. Requires Node >= v{expected_node_version} installed."
+            ))
+        );
+        assert_eq!(Feature::JsRepl.default_enabled(), false);
     }
 
     #[test]
