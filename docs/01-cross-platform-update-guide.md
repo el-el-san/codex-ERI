@@ -307,7 +307,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `PasteImageError` / Android版 `paste_image_as_png` に `allow(dead_code)` を付与
 
 ### 2026-02-19 更新内容
-- 上流 `rust-v0.104.0` 同期時の再適用ポイントを反映
+- 上流 `rust-v0.107.0` 同期時の再適用ポイントを反映
   - `core/login/ollama` の `reqwest` に `native-tls-vendored` を再適用
   - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに再適用
   - `rmcp-client` の Termux/Android 環境変数保持を再適用

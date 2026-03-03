@@ -1,6 +1,5 @@
 use super::LoaderOverrides;
 use super::load_config_layers_state;
-use crate::config::CONFIG_TOML_FILE;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::ConfigToml;
@@ -15,6 +14,7 @@ use crate::config_loader::ConfigRequirementsWithSources;
 use crate::config_loader::RequirementSource;
 use crate::config_loader::load_requirements_toml;
 use crate::config_loader::version_for_toml;
+use codex_config::CONFIG_TOML_FILE;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::AskForApproval;
@@ -153,7 +153,7 @@ async fn returns_config_error_for_schema_error_in_user_config() {
     let config_error = config_error_from_io(&err);
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
     let expected_config_error =
-        super::diagnostics::config_error_from_config_toml(&config_path, contents)
+        codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
             .expect("schema error");
     assert_eq!(config_error, &expected_config_error);
 }
@@ -166,7 +166,7 @@ fn schema_error_points_to_feature_value() {
     std::fs::write(&config_path, contents).expect("write config");
 
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
-    let error = super::diagnostics::config_error_from_config_toml(&config_path, contents)
+    let error = codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
         .expect("schema error");
 
     let value_line = contents.lines().nth(1).expect("value line");
@@ -1390,6 +1390,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["rm"]),
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1415,6 +1416,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["git", "status"]),
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1426,6 +1428,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["hg", "status"]),
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1509,6 +1512,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["rm".to_string()],
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1547,6 +1551,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["rm".to_string()],
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1561,6 +1566,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["git".to_string(), "push".to_string()],
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
