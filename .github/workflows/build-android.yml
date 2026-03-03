@@ -194,10 +194,14 @@ jobs:
 
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
             cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} \
-              -p codex-cli -p codex-exec -p codex-tui
+              -p codex-cli -p codex-exec
+            cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} \
+              -p codex-tui --no-default-features
           else
             cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} \
-              -p codex-cli -p codex-exec -p codex-tui
+              -p codex-cli -p codex-exec
+            cargo +${{ needs.setup.outputs.rust_version }} build --target ${{ matrix.target }} \
+              -p codex-tui --no-default-features
           fi
 
       - name: Skip tests for Android ARM64 (cross-compilation)
