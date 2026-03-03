@@ -22,7 +22,6 @@ codex-cloud-tasks-client = { path = "../cloud-tasks-client", features = [
 ] }
 codex-core = { path = "../core" }
 codex-login = { path = "../login" }
-codex-tui = { path = "../tui" }
 codex-utils-cli = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 ratatui = { workspace = true }
@@ -36,6 +35,12 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicode-width = { workspace = true }
 owo-colors = { workspace = true, features = ["supports-colors"] }
 supports-color = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+codex-tui = { path = "../tui", default-features = false }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+codex-tui = { path = "../tui" }
 
 [dependencies.async-trait]
 workspace = true
