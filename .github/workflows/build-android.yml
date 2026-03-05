@@ -191,6 +191,8 @@ jobs:
           echo "Current toolchain:"
           rustup show
           rustup +${{ needs.setup.outputs.rust_version }} target add ${{ matrix.target }} || true
+          # Ensure Android C++ ABI symbols resolve when static libc++ is pulled in by native deps.
+          export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-lc++abi"
 
           if [ "${{ needs.setup.outputs.build_mode }}" = "release" ]; then
             cargo +${{ needs.setup.outputs.rust_version }} build --release --target ${{ matrix.target }} \
