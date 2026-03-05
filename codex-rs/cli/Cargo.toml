@@ -37,6 +37,7 @@ codex-responses-api-proxy = { workspace = true }
 codex-rmcp-client = { workspace = true }
 codex-state = { workspace = true }
 codex-stdio-to-uds = { workspace = true }
+codex-tui = { workspace = true }
 libc = { workspace = true }
 owo-colors = { workspace = true }
 regex-lite = { workspace = true }
@@ -55,12 +56,6 @@ tracing = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 codex_windows_sandbox = { package = "codex-windows-sandbox", path = "../windows-sandbox-rs" }
-
-[target.'cfg(target_os = "android")'.dependencies]
-codex-tui = { path = "../tui", default-features = false }
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
-codex-tui = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
