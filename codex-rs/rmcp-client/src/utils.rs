@@ -1,38 +1,14 @@
+use anyhow::Result;
+use reqwest::ClientBuilder;
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderName;
+use reqwest::header::HeaderValue;
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::io;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
-
-use anyhow::Context;
-use anyhow::Result;
-use anyhow::anyhow;
-use reqwest::ClientBuilder;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderName;
-use reqwest::header::HeaderValue;
-use rmcp::service::ServiceError;
-use tokio::time;
-
-pub(crate) async fn run_with_timeout<F, T>(
-    fut: F,
-    timeout: Option<Duration>,
-    label: &str,
-) -> Result<T>
-where
-    F: std::future::Future<Output = Result<T, ServiceError>>,
-{
-    if let Some(duration) = timeout {
-        let result = time::timeout(duration, fut)
-            .await
-            .with_context(|| anyhow!("timed out awaiting {label} after {duration:?}"))?;
-        result.map_err(|err| anyhow!("{label} failed: {err}"))
-    } else {
-        fut.await.map_err(|err| anyhow!("{label} failed: {err}"))
-    }
-}
 
 pub(crate) fn create_env_for_mcp_server(
     extra_env: Option<HashMap<String, String>>,

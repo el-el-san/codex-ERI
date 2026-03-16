@@ -325,6 +325,16 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `tui` の Android 向け警告抑止
   - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
 
+### 2026-03-16 更新内容
+- 上流 `rust-v0.114.0` を取り込み、`codex-rs` を同期
+- 再適用した差分:
+  - `core/login/ollama` の `reqwest` に `native-tls-vendored`
+  - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに統一
+  - `rmcp-client` の Termux/Android 環境変数保持
+  - `arg0` の Android `try_lock()` 回避
+  - `tui` の Android 向け警告抑止
+  - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
+
 ### 2025-10-24 実装完了・ドキュメント同期
 - ドキュメントと実装の完全な同期を確認・修正
 - **TLS依存関係**:
