@@ -30,15 +30,15 @@ pub fn ensure_non_interactive_pager(env_map: &mut HashMap<String, String>) {
 
 // Keep PATH and PATHEXT stable for callers that rely on inheriting the parent process env.
 pub fn inherit_path_env(env_map: &mut HashMap<String, String>) {
-    if !env_map.contains_key("PATH") {
-        if let Ok(path) = env::var("PATH") {
-            env_map.insert("PATH".into(), path);
-        }
+    if !env_map.contains_key("PATH")
+        && let Ok(path) = env::var("PATH")
+    {
+        env_map.insert("PATH".into(), path);
     }
-    if !env_map.contains_key("PATHEXT") {
-        if let Ok(pathext) = env::var("PATHEXT") {
-            env_map.insert("PATHEXT".into(), pathext);
-        }
+    if !env_map.contains_key("PATHEXT")
+        && let Ok(pathext) = env::var("PATHEXT")
+    {
+        env_map.insert("PATHEXT".into(), pathext);
     }
 }
 
@@ -159,7 +159,7 @@ pub fn apply_no_network_to_env(env_map: &mut HashMap<String, String>) -> Result<
         .entry("GIT_ALLOW_PROTOCOLS".into())
         .or_insert_with(|| "".into());
 
-    let base = ensure_denybin(&["ssh", "scp"], None)?;
+    let base = ensure_denybin(&["ssh", "scp"], /*denybin_dir*/ None)?;
     for tool in ["curl", "wget"] {
         for ext in [".bat", ".cmd"] {
             let p = base.join(format!("{}{}", tool, ext));

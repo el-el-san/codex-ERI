@@ -85,7 +85,7 @@ async fn models_client_hits_models_endpoint() {
             availability_nux: None,
             apply_patch_tool_type: None,
             web_search_tool_type: Default::default(),
-            truncation_policy: TruncationPolicyConfig::bytes(10_000),
+            truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
             supports_parallel_tool_calls: false,
             supports_image_detail_original: false,
             context_window: Some(272_000),
@@ -93,8 +93,8 @@ async fn models_client_hits_models_endpoint() {
             effective_context_window_percent: 95,
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
-            prefer_websockets: false,
             used_fallback_model_metadata: false,
+            supports_search_tool: false,
         }],
     };
 

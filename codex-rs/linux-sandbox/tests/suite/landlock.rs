@@ -4,6 +4,7 @@ use codex_core::config::types::ShellEnvironmentPolicy;
 use codex_core::error::CodexErr;
 use codex_core::error::Result;
 use codex_core::error::SandboxErr;
+use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecParams;
 use codex_core::exec::process_exec_tool_call;
 use codex_core::exec_env::create_env;
@@ -44,7 +45,7 @@ const BWRAP_UNAVAILABLE_ERR: &str = "build-time bubblewrap is not available in t
 
 fn create_env_from_core_vars() -> HashMap<String, String> {
     let policy = ShellEnvironmentPolicy::default();
-    create_env(&policy, None)
+    create_env(&policy, /*thread_id*/ None)
 }
 
 #[expect(clippy::print_stdout)]
@@ -63,16 +64,22 @@ async fn run_cmd_output(
     writable_roots: &[PathBuf],
     timeout_ms: u64,
 ) -> codex_core::exec::ExecToolCallOutput {
-    run_cmd_result_with_writable_roots(cmd, writable_roots, timeout_ms, false, false)
-        .await
-        .expect("sandboxed command should execute")
+    run_cmd_result_with_writable_roots(
+        cmd,
+        writable_roots,
+        timeout_ms,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ false,
+    )
+    .await
+    .expect("sandboxed command should execute")
 }
 
 async fn run_cmd_result_with_writable_roots(
     cmd: &[&str],
     writable_roots: &[PathBuf],
     timeout_ms: u64,
-    use_bwrap_sandbox: bool,
+    use_legacy_landlock: bool,
     network_access: bool,
 ) -> Result<codex_core::exec::ExecToolCallOutput> {
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
@@ -96,7 +103,7 @@ async fn run_cmd_result_with_writable_roots(
         file_system_sandbox_policy,
         network_sandbox_policy,
         timeout_ms,
-        use_bwrap_sandbox,
+        use_legacy_landlock,
     )
     .await
 }
@@ -108,7 +115,7 @@ async fn run_cmd_result_with_policies(
     file_system_sandbox_policy: FileSystemSandboxPolicy,
     network_sandbox_policy: NetworkSandboxPolicy,
     timeout_ms: u64,
-    use_bwrap_sandbox: bool,
+    use_legacy_landlock: bool,
 ) -> Result<codex_core::exec::ExecToolCallOutput> {
     let cwd = std::env::current_dir().expect("cwd should exist");
     let sandbox_cwd = cwd.clone();
@@ -116,10 +123,12 @@ async fn run_cmd_result_with_policies(
         command: cmd.iter().copied().map(str::to_owned).collect(),
         cwd,
         expiration: timeout_ms.into(),
+        capture_policy: ExecCapturePolicy::ShellTool,
         env: create_env_from_core_vars(),
         network: None,
         sandbox_permissions: SandboxPermissions::UseDefault,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
         justification: None,
         arg0: None,
     };
@@ -133,8 +142,8 @@ async fn run_cmd_result_with_policies(
         network_sandbox_policy,
         sandbox_cwd.as_path(),
         &codex_linux_sandbox_exe,
-        use_bwrap_sandbox,
-        None,
+        use_legacy_landlock,
+        /*stdout_stream*/ None,
     )
     .await
 }
@@ -155,8 +164,8 @@ async fn should_skip_bwrap_tests() -> bool {
         &["bash", "-lc", "true"],
         &[],
         NETWORK_TIMEOUT_MS,
-        true,
-        true,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
     )
     .await
     {
@@ -216,8 +225,8 @@ async fn test_dev_null_write() {
         // We have seen timeouts when running this test in CI on GitHub,
         // so we are using a generous timeout until we can diagnose further.
         LONG_TIMEOUT_MS,
-        true,
-        true,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
     )
     .await
     .expect("sandboxed command should execute");
@@ -240,8 +249,8 @@ async fn bwrap_populates_minimal_dev_nodes() {
         ],
         &[],
         LONG_TIMEOUT_MS,
-        true,
-        true,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
     )
     .await
     .expect("sandboxed command should execute");
@@ -278,8 +287,8 @@ async fn bwrap_preserves_writable_dev_shm_bind_mount() {
         ],
         &[PathBuf::from("/dev/shm")],
         LONG_TIMEOUT_MS,
-        true,
-        true,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
     )
     .await
     .expect("sandboxed command should execute");
@@ -310,6 +319,32 @@ async fn test_writable_root() {
 }
 
 #[tokio::test]
+async fn sandbox_ignores_missing_writable_roots_under_bwrap() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let existing_root = tempdir.path().join("existing");
+    let missing_root = tempdir.path().join("missing");
+    std::fs::create_dir(&existing_root).expect("create existing root");
+
+    let output = run_cmd_result_with_writable_roots(
+        &["bash", "-lc", "printf sandbox-ok"],
+        &[existing_root, missing_root],
+        LONG_TIMEOUT_MS,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
+    )
+    .await
+    .expect("sandboxed command should execute");
+
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.stdout.text, "sandbox-ok");
+}
+
+#[tokio::test]
 async fn test_no_new_privs_is_enabled() {
     let output = run_cmd_output(
         &["bash", "-lc", "grep '^NoNewPrivs:' /proc/self/status"],
@@ -331,7 +366,7 @@ async fn test_no_new_privs_is_enabled() {
 #[tokio::test]
 #[should_panic(expected = "Sandbox(Timeout")]
 async fn test_timeout() {
-    run_cmd(&["sleep", "2"], &[], 50).await;
+    run_cmd(&["sleep", "2"], &[], /*timeout_ms*/ 50).await;
 }
 
 /// Helper that runs `cmd` under the Linux sandbox and asserts that the command
@@ -348,10 +383,12 @@ async fn assert_network_blocked(cmd: &[&str]) {
         // Give the tool a generous 2-second timeout so even slow DNS timeouts
         // do not stall the suite.
         expiration: NETWORK_TIMEOUT_MS.into(),
+        capture_policy: ExecCapturePolicy::ShellTool,
         env: create_env_from_core_vars(),
         network: None,
         sandbox_permissions: SandboxPermissions::UseDefault,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
         justification: None,
         arg0: None,
     };
@@ -366,8 +403,8 @@ async fn assert_network_blocked(cmd: &[&str]) {
         NetworkSandboxPolicy::from(&sandbox_policy),
         sandbox_cwd.as_path(),
         &codex_linux_sandbox_exe,
-        false,
-        None,
+        /*use_legacy_landlock*/ false,
+        /*stdout_stream*/ None,
     )
     .await;
 
@@ -442,8 +479,8 @@ async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
             ],
             &[tmpdir.path().to_path_buf()],
             LONG_TIMEOUT_MS,
-            true,
-            true,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ true,
         )
         .await,
         ".git write should be denied under bubblewrap",
@@ -458,8 +495,8 @@ async fn sandbox_blocks_git_and_codex_writes_inside_writable_root() {
             ],
             &[tmpdir.path().to_path_buf()],
             LONG_TIMEOUT_MS,
-            true,
-            true,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ true,
         )
         .await,
         ".codex write should be denied under bubblewrap",
@@ -495,8 +532,8 @@ async fn sandbox_blocks_codex_symlink_replacement_attack() {
             ],
             &[tmpdir.path().to_path_buf()],
             LONG_TIMEOUT_MS,
-            true,
-            true,
+            /*use_legacy_landlock*/ false,
+            /*network_access*/ true,
         )
         .await,
         ".codex symlink replacement should be denied",
@@ -515,6 +552,12 @@ async fn sandbox_blocks_explicit_split_policy_carveouts_under_bwrap() {
     let blocked = tmpdir.path().join("blocked");
     std::fs::create_dir_all(&blocked).expect("create blocked dir");
     let blocked_target = blocked.join("secret.txt");
+    // These tests bypass the usual legacy-policy bridge, so explicitly keep
+    // the sandbox helper binary and minimal runtime paths readable.
+    let sandbox_helper_dir = PathBuf::from(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+        .parent()
+        .expect("sandbox helper should have a parent")
+        .to_path_buf();
 
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: vec![AbsolutePathBuf::try_from(tmpdir.path()).expect("absolute tempdir")],
@@ -524,6 +567,19 @@ async fn sandbox_blocks_explicit_split_policy_carveouts_under_bwrap() {
         exclude_slash_tmp: true,
     };
     let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Minimal,
+            },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::try_from(sandbox_helper_dir.as_path())
+                    .expect("absolute helper dir"),
+            },
+            access: FileSystemAccessMode::Read,
+        },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: AbsolutePathBuf::try_from(tmpdir.path()).expect("absolute tempdir"),
@@ -548,13 +604,95 @@ async fn sandbox_blocks_explicit_split_policy_carveouts_under_bwrap() {
             file_system_sandbox_policy,
             NetworkSandboxPolicy::Enabled,
             LONG_TIMEOUT_MS,
-            true,
+            /*use_legacy_landlock*/ false,
         )
         .await,
         "explicit split-policy carveout should be denied under bubblewrap",
     );
 
     assert_ne!(output.exit_code, 0);
+}
+
+#[tokio::test]
+async fn sandbox_reenables_writable_subpaths_under_unreadable_parents() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let tmpdir = tempfile::tempdir().expect("tempdir");
+    let blocked = tmpdir.path().join("blocked");
+    let allowed = blocked.join("allowed");
+    std::fs::create_dir_all(&allowed).expect("create blocked/allowed dir");
+    let allowed_target = allowed.join("note.txt");
+    // These tests bypass the usual legacy-policy bridge, so explicitly keep
+    // the sandbox helper binary and minimal runtime paths readable.
+    let sandbox_helper_dir = PathBuf::from(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+        .parent()
+        .expect("sandbox helper should have a parent")
+        .to_path_buf();
+
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: vec![AbsolutePathBuf::try_from(tmpdir.path()).expect("absolute tempdir")],
+        read_only_access: Default::default(),
+        network_access: true,
+        exclude_tmpdir_env_var: true,
+        exclude_slash_tmp: true,
+    };
+    let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Minimal,
+            },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::try_from(sandbox_helper_dir.as_path())
+                    .expect("absolute helper dir"),
+            },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::try_from(tmpdir.path()).expect("absolute tempdir"),
+            },
+            access: FileSystemAccessMode::Write,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::try_from(blocked.as_path()).expect("absolute blocked dir"),
+            },
+            access: FileSystemAccessMode::None,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: AbsolutePathBuf::try_from(allowed.as_path()).expect("absolute allowed dir"),
+            },
+            access: FileSystemAccessMode::Write,
+        },
+    ]);
+    let output = run_cmd_result_with_policies(
+        &[
+            "bash",
+            "-lc",
+            &format!(
+                "printf allowed > {} && cat {}",
+                allowed_target.to_string_lossy(),
+                allowed_target.to_string_lossy()
+            ),
+        ],
+        sandbox_policy,
+        file_system_sandbox_policy,
+        NetworkSandboxPolicy::Enabled,
+        LONG_TIMEOUT_MS,
+        /*use_legacy_landlock*/ false,
+    )
+    .await
+    .expect("nested writable carveout should execute under bubblewrap");
+
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.stdout.text.trim(), "allowed");
 }
 
 #[tokio::test]
@@ -599,7 +737,7 @@ async fn sandbox_blocks_root_read_carveouts_under_bwrap() {
             file_system_sandbox_policy,
             NetworkSandboxPolicy::Enabled,
             LONG_TIMEOUT_MS,
-            true,
+            /*use_legacy_landlock*/ false,
         )
         .await,
         "root-read carveout should be denied under bubblewrap",

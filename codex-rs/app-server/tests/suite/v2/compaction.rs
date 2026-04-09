@@ -50,19 +50,19 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
     let server = responses::start_mock_server().await;
     let sse1 = responses::sse(vec![
         responses::ev_assistant_message("m1", "FIRST_REPLY"),
-        responses::ev_completed_with_tokens("r1", 70_000),
+        responses::ev_completed_with_tokens("r1", /*total_tokens*/ 70_000),
     ]);
     let sse2 = responses::sse(vec![
         responses::ev_assistant_message("m2", "SECOND_REPLY"),
-        responses::ev_completed_with_tokens("r2", 330_000),
+        responses::ev_completed_with_tokens("r2", /*total_tokens*/ 330_000),
     ]);
     let sse3 = responses::sse(vec![
         responses::ev_assistant_message("m3", "LOCAL_SUMMARY"),
-        responses::ev_completed_with_tokens("r3", 200),
+        responses::ev_completed_with_tokens("r3", /*total_tokens*/ 200),
     ]);
     let sse4 = responses::sse(vec![
         responses::ev_assistant_message("m4", "FINAL_REPLY"),
-        responses::ev_completed_with_tokens("r4", 120),
+        responses::ev_completed_with_tokens("r4", /*total_tokens*/ 120),
     ]);
     responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
 
@@ -72,7 +72,7 @@ async fn auto_compaction_local_emits_started_and_completed_items() -> Result<()>
         &server.uri(),
         &BTreeMap::default(),
         AUTO_COMPACT_LIMIT,
-        None,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         COMPACT_PROMPT,
     )?;
@@ -110,15 +110,15 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
     let server = responses::start_mock_server().await;
     let sse1 = responses::sse(vec![
         responses::ev_assistant_message("m1", "FIRST_REPLY"),
-        responses::ev_completed_with_tokens("r1", 70_000),
+        responses::ev_completed_with_tokens("r1", /*total_tokens*/ 70_000),
     ]);
     let sse2 = responses::sse(vec![
         responses::ev_assistant_message("m2", "SECOND_REPLY"),
-        responses::ev_completed_with_tokens("r2", 330_000),
+        responses::ev_completed_with_tokens("r2", /*total_tokens*/ 330_000),
     ]);
     let sse3 = responses::sse(vec![
         responses::ev_assistant_message("m3", "FINAL_REPLY"),
-        responses::ev_completed_with_tokens("r3", 120),
+        responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
     ]);
     let responses_log = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3]).await;
 
@@ -149,7 +149,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         &BTreeMap::default(),
         REMOTE_AUTO_COMPACT_LIMIT,
         Some(true),
-        "openai",
+        "mock_provider",
         COMPACT_PROMPT,
     )?;
     write_chatgpt_auth(
@@ -158,15 +158,7 @@ async fn auto_compaction_remote_emits_started_and_completed_items() -> Result<()
         AuthCredentialsStoreMode::File,
     )?;
 
-    let server_base_url = format!("{}/v1", server.uri());
-    let mut mcp = McpProcess::new_with_env(
-        codex_home.path(),
-        &[
-            ("OPENAI_BASE_URL", Some(server_base_url.as_str())),
-            ("OPENAI_API_KEY", None),
-        ],
-    )
-    .await?;
+    let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_id = start_thread(&mut mcp).await?;
@@ -205,7 +197,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let server = responses::start_mock_server().await;
     let sse = responses::sse(vec![
         responses::ev_assistant_message("m1", "MANUAL_COMPACT_SUMMARY"),
-        responses::ev_completed_with_tokens("r1", 200),
+        responses::ev_completed_with_tokens("r1", /*total_tokens*/ 200),
     ]);
     responses::mount_sse_sequence(&server, vec![sse]).await;
 
@@ -215,7 +207,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         &server.uri(),
         &BTreeMap::default(),
         AUTO_COMPACT_LIMIT,
-        None,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         COMPACT_PROMPT,
     )?;
@@ -265,7 +257,7 @@ async fn thread_compact_start_rejects_invalid_thread_id() -> Result<()> {
         &server.uri(),
         &BTreeMap::default(),
         AUTO_COMPACT_LIMIT,
-        None,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         COMPACT_PROMPT,
     )?;
@@ -301,7 +293,7 @@ async fn thread_compact_start_rejects_unknown_thread_id() -> Result<()> {
         &server.uri(),
         &BTreeMap::default(),
         AUTO_COMPACT_LIMIT,
-        None,
+        /*requires_openai_auth*/ None,
         "mock_provider",
         COMPACT_PROMPT,
     )?;

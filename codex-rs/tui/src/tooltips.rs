@@ -1,4 +1,4 @@
-use codex_core::features::FEATURES;
+use codex_features::FEATURES;
 use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
@@ -16,7 +16,7 @@ const FAST_TOOLTIP: &str = "*New* Use **/fast** to enable our fastest inference 
 const OTHER_TOOLTIP: &str = "*New* Build faster with the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
 const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
 const FREE_GO_TOOLTIP: &str =
-    "*New* Codex is included in your plan for free through *March 2nd* – let’s build together.";
+    "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
 
 const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
 
@@ -60,11 +60,13 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
     // Leave small chance for a random tooltip to be shown.
     if rng.random_ratio(8, 10) {
         match plan {
-            Some(PlanType::Plus)
-            | Some(PlanType::Business)
-            | Some(PlanType::Team)
-            | Some(PlanType::Enterprise)
-            | Some(PlanType::Pro) => {
+            Some(plan_type)
+                if matches!(
+                    plan_type,
+                    PlanType::Plus | PlanType::Enterprise | PlanType::Pro
+                ) || plan_type.is_team_like()
+                    || plan_type.is_business_like() =>
+            {
                 return Some(pick_paid_tooltip(&mut rng, fast_mode_enabled).to_string());
             }
             Some(PlanType::Go) | Some(PlanType::Free) => {
@@ -289,7 +291,9 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for seed in 0..32 {
             let mut rng = StdRng::seed_from_u64(seed);
-            seen.insert(pick_paid_tooltip(&mut rng, false));
+            seen.insert(pick_paid_tooltip(
+                &mut rng, /*fast_mode_enabled*/ false,
+            ));
         }
 
         let expected = std::collections::BTreeSet::from([paid_app_tooltip(), FAST_TOOLTIP]);
@@ -301,7 +305,7 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for seed in 0..8 {
             let mut rng = StdRng::seed_from_u64(seed);
-            seen.insert(pick_paid_tooltip(&mut rng, true));
+            seen.insert(pick_paid_tooltip(&mut rng, /*fast_mode_enabled*/ true));
         }
 
         let expected = std::collections::BTreeSet::from([paid_app_tooltip()]);

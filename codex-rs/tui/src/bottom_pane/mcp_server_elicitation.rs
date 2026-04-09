@@ -5,11 +5,14 @@ use std::path::PathBuf;
 use codex_app_server_protocol::McpElicitationEnumSchema;
 use codex_app_server_protocol::McpElicitationPrimitiveSchema;
 use codex_app_server_protocol::McpElicitationSingleSelectEnumSchema;
+use codex_app_server_protocol::McpServerElicitationRequest;
+use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::approvals::ElicitationRequestEvent;
 use codex_protocol::mcp::RequestId as McpRequestId;
+#[cfg(test)]
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
@@ -25,7 +28,6 @@ use ratatui::widgets::Widget;
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::ChatComposer;
@@ -40,6 +42,8 @@ use crate::bottom_pane::selection_popup_common::menu_surface_padding_height;
 use crate::bottom_pane::selection_popup_common::render_menu_surface;
 use crate::bottom_pane::selection_popup_common::render_rows;
 use crate::render::renderable::Renderable;
+use crate::text_formatting::format_json_compact;
+use crate::text_formatting::truncate_text;
 
 const ANSWER_PLACEHOLDER: &str = "Type your answer";
 const OPTIONAL_ANSWER_PLACEHOLDER: &str = "Type your answer (optional)";
@@ -54,9 +58,20 @@ const APPROVAL_DECLINE_VALUE: &str = "decline";
 const APPROVAL_CANCEL_VALUE: &str = "cancel";
 const APPROVAL_META_KIND_KEY: &str = "codex_approval_kind";
 const APPROVAL_META_KIND_MCP_TOOL_CALL: &str = "mcp_tool_call";
+const APPROVAL_META_KIND_TOOL_SUGGESTION: &str = "tool_suggestion";
 const APPROVAL_PERSIST_KEY: &str = "persist";
 const APPROVAL_PERSIST_SESSION_VALUE: &str = "session";
 const APPROVAL_PERSIST_ALWAYS_VALUE: &str = "always";
+const APPROVAL_TOOL_PARAMS_KEY: &str = "tool_params";
+const APPROVAL_TOOL_PARAMS_DISPLAY_KEY: &str = "tool_params_display";
+const APPROVAL_TOOL_PARAM_DISPLAY_LIMIT: usize = 3;
+const APPROVAL_TOOL_PARAM_VALUE_TRUNCATE_GRAPHEMES: usize = 60;
+const TOOL_TYPE_KEY: &str = "tool_type";
+const TOOL_ID_KEY: &str = "tool_id";
+const TOOL_NAME_KEY: &str = "tool_name";
+const TOOL_SUGGEST_SUGGEST_TYPE_KEY: &str = "suggest_type";
+const TOOL_SUGGEST_REASON_KEY: &str = "suggest_reason";
+const TOOL_SUGGEST_INSTALL_URL_KEY: &str = "install_url";
 
 #[derive(Clone, PartialEq, Default)]
 struct ComposerDraft {
@@ -117,14 +132,45 @@ enum McpServerElicitationResponseMode {
     ApprovalAction,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolSuggestionToolType {
+    Connector,
+    Plugin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolSuggestionType {
+    Install,
+    Enable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToolSuggestionRequest {
+    pub(crate) tool_type: ToolSuggestionToolType,
+    pub(crate) suggest_type: ToolSuggestionType,
+    pub(crate) suggest_reason: String,
+    pub(crate) tool_id: String,
+    pub(crate) tool_name: String,
+    pub(crate) install_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct McpToolApprovalDisplayParam {
+    name: String,
+    value: Value,
+    display_name: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct McpServerElicitationFormRequest {
     thread_id: ThreadId,
     server_name: String,
     request_id: McpRequestId,
     message: String,
+    approval_display_params: Vec<McpToolApprovalDisplayParam>,
     response_mode: McpServerElicitationResponseMode,
     fields: Vec<McpServerElicitationField>,
+    tool_suggestion: Option<ToolSuggestionRequest>,
 }
 
 #[derive(Default)]
@@ -157,6 +203,36 @@ impl FooterTip {
 }
 
 impl McpServerElicitationFormRequest {
+    pub(crate) fn from_app_server_request(
+        thread_id: ThreadId,
+        request_id: McpRequestId,
+        request: McpServerElicitationRequestParams,
+    ) -> Option<Self> {
+        let McpServerElicitationRequestParams {
+            server_name,
+            request,
+            ..
+        } = request;
+        let McpServerElicitationRequest::Form {
+            meta,
+            message,
+            requested_schema,
+        } = request
+        else {
+            return None;
+        };
+
+        let requested_schema = serde_json::to_value(requested_schema).ok()?;
+        Self::from_parts(
+            thread_id,
+            server_name,
+            request_id,
+            meta,
+            message,
+            requested_schema,
+        )
+    }
+
     pub(crate) fn from_event(
         thread_id: ThreadId,
         request: ElicitationRequestEvent,
@@ -170,6 +246,25 @@ impl McpServerElicitationFormRequest {
             return None;
         };
 
+        Self::from_parts(
+            thread_id,
+            request.server_name,
+            request.id,
+            meta,
+            message,
+            requested_schema,
+        )
+    }
+
+    fn from_parts(
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: McpRequestId,
+        meta: Option<Value>,
+        message: String,
+        requested_schema: Value,
+    ) -> Option<Self> {
+        let tool_suggestion = parse_tool_suggestion_request(meta.as_ref());
         let is_tool_approval = meta
             .as_ref()
             .and_then(Value::as_object)
@@ -185,12 +280,19 @@ impl McpServerElicitationFormRequest {
         });
         let is_tool_approval_action =
             is_tool_approval && (requested_schema.is_null() || is_empty_object_schema);
+        let approval_display_params = if is_tool_approval_action {
+            parse_tool_approval_display_params(meta.as_ref())
+        } else {
+            Vec::new()
+        };
 
-        let (response_mode, fields) = if requested_schema.is_null()
-            || (is_tool_approval && is_empty_object_schema)
+        let (response_mode, fields) = if tool_suggestion.is_some()
+            && (requested_schema.is_null() || is_empty_object_schema)
         {
+            (McpServerElicitationResponseMode::FormContent, Vec::new())
+        } else if requested_schema.is_null() || (is_tool_approval && is_empty_object_schema) {
             let mut options = vec![McpServerElicitationOption {
-                label: "Approve Once".to_string(),
+                label: "Allow".to_string(),
                 description: Some("Run the tool and continue.".to_string()),
                 value: Value::String(APPROVAL_ACCEPT_ONCE_VALUE.to_string()),
             }];
@@ -201,7 +303,7 @@ impl McpServerElicitationFormRequest {
                 )
             {
                 options.push(McpServerElicitationOption {
-                    label: "Approve this session".to_string(),
+                    label: "Allow for this session".to_string(),
                     description: Some(
                         "Run the tool and remember this choice for this session.".to_string(),
                     ),
@@ -261,13 +363,69 @@ impl McpServerElicitationFormRequest {
 
         Some(Self {
             thread_id,
-            server_name: request.server_name,
-            request_id: request.id,
+            server_name,
+            request_id,
             message,
+            approval_display_params,
             response_mode,
             fields,
+            tool_suggestion,
         })
     }
+
+    pub(crate) fn tool_suggestion(&self) -> Option<&ToolSuggestionRequest> {
+        self.tool_suggestion.as_ref()
+    }
+
+    pub(crate) fn thread_id(&self) -> ThreadId {
+        self.thread_id
+    }
+
+    pub(crate) fn server_name(&self) -> &str {
+        self.server_name.as_str()
+    }
+
+    pub(crate) fn request_id(&self) -> &McpRequestId {
+        &self.request_id
+    }
+}
+
+fn parse_tool_suggestion_request(meta: Option<&Value>) -> Option<ToolSuggestionRequest> {
+    let meta = meta?.as_object()?;
+    if meta.get(APPROVAL_META_KIND_KEY).and_then(Value::as_str)
+        != Some(APPROVAL_META_KIND_TOOL_SUGGESTION)
+    {
+        return None;
+    }
+
+    let tool_type = match meta.get(TOOL_TYPE_KEY).and_then(Value::as_str) {
+        Some("connector") => ToolSuggestionToolType::Connector,
+        Some("plugin") => ToolSuggestionToolType::Plugin,
+        _ => return None,
+    };
+    let suggest_type = match meta
+        .get(TOOL_SUGGEST_SUGGEST_TYPE_KEY)
+        .and_then(Value::as_str)
+    {
+        Some("install") => ToolSuggestionType::Install,
+        Some("enable") => ToolSuggestionType::Enable,
+        _ => return None,
+    };
+
+    Some(ToolSuggestionRequest {
+        tool_type,
+        suggest_type,
+        suggest_reason: meta
+            .get(TOOL_SUGGEST_REASON_KEY)
+            .and_then(Value::as_str)?
+            .to_string(),
+        tool_id: meta.get(TOOL_ID_KEY).and_then(Value::as_str)?.to_string(),
+        tool_name: meta.get(TOOL_NAME_KEY).and_then(Value::as_str)?.to_string(),
+        install_url: meta
+            .get(TOOL_SUGGEST_INSTALL_URL_KEY)
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    })
 }
 
 fn tool_approval_supports_persist_mode(meta: Option<&Value>, expected_mode: &str) -> bool {
@@ -286,6 +444,109 @@ fn tool_approval_supports_persist_mode(meta: Option<&Value>, expected_mode: &str
             .any(|value| value == expected_mode),
         _ => false,
     }
+}
+
+fn parse_tool_approval_display_params(meta: Option<&Value>) -> Vec<McpToolApprovalDisplayParam> {
+    let Some(meta) = meta.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+
+    let display_params = meta
+        .get(APPROVAL_TOOL_PARAMS_DISPLAY_KEY)
+        .and_then(Value::as_array)
+        .map(|display_params| {
+            display_params
+                .iter()
+                .filter_map(parse_tool_approval_display_param)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !display_params.is_empty() {
+        return display_params;
+    }
+
+    let mut fallback_params = meta
+        .get(APPROVAL_TOOL_PARAMS_KEY)
+        .and_then(Value::as_object)
+        .map(|tool_params| {
+            tool_params
+                .iter()
+                .map(|(name, value)| McpToolApprovalDisplayParam {
+                    name: name.clone(),
+                    value: value.clone(),
+                    display_name: name.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    fallback_params.sort_by(|left, right| left.name.cmp(&right.name));
+    fallback_params
+}
+
+fn parse_tool_approval_display_param(value: &Value) -> Option<McpToolApprovalDisplayParam> {
+    let value = value.as_object()?;
+    let name = value.get("name")?.as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let display_name = value
+        .get("display_name")
+        .and_then(Value::as_str)
+        .unwrap_or(name)
+        .trim();
+    if display_name.is_empty() {
+        return None;
+    }
+    Some(McpToolApprovalDisplayParam {
+        name: name.to_string(),
+        value: value.get("value")?.clone(),
+        display_name: display_name.to_string(),
+    })
+}
+
+fn format_tool_approval_display_message(
+    message: &str,
+    approval_display_params: &[McpToolApprovalDisplayParam],
+) -> String {
+    let message = message.trim();
+    if approval_display_params.is_empty() {
+        return message.to_string();
+    }
+
+    let mut sections = Vec::new();
+    if !message.is_empty() {
+        sections.push(message.to_string());
+    }
+    let param_lines = approval_display_params
+        .iter()
+        .take(APPROVAL_TOOL_PARAM_DISPLAY_LIMIT)
+        .map(format_tool_approval_display_param_line)
+        .collect::<Vec<_>>();
+    if !param_lines.is_empty() {
+        sections.push(param_lines.join("\n"));
+    }
+    let mut message = sections.join("\n\n");
+    message.push('\n');
+    message
+}
+
+fn format_tool_approval_display_param_line(param: &McpToolApprovalDisplayParam) -> String {
+    format!(
+        "{}: {}",
+        param.display_name,
+        format_tool_approval_display_param_value(&param.value)
+    )
+}
+
+fn format_tool_approval_display_param_value(value: &Value) -> String {
+    let formatted = match value {
+        Value::String(text) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+        _ => {
+            let compact_json = value.to_string();
+            format_json_compact(&compact_json).unwrap_or(compact_json)
+        }
+    };
+    truncate_text(&formatted, APPROVAL_TOOL_PARAM_VALUE_TRUNCATE_GRAPHEMES)
 }
 
 fn parse_fields_from_schema(requested_schema: &Value) -> Option<Vec<McpServerElicitationField>> {
@@ -691,12 +952,16 @@ impl McpServerElicitationOverlay {
     }
 
     fn current_prompt_text(&self) -> String {
+        let request_message = format_tool_approval_display_message(
+            &self.request.message,
+            &self.request.approval_display_params,
+        );
         let Some(field) = self.current_field() else {
-            return self.request.message.clone();
+            return request_message;
         };
         let mut sections = Vec::new();
-        if !self.request.message.trim().is_empty() {
-            sections.push(self.request.message.trim().to_string());
+        if !request_message.trim().is_empty() {
+            sections.push(request_message);
         }
         let field_prompt = if field.label.trim().is_empty()
             || field.prompt.trim().is_empty()
@@ -868,16 +1133,14 @@ impl McpServerElicitationOverlay {
     }
 
     fn dispatch_cancel(&self) {
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
-            thread_id: self.request.thread_id,
-            op: Op::ResolveElicitation {
-                server_name: self.request.server_name.clone(),
-                request_id: self.request.request_id.clone(),
-                decision: ElicitationAction::Cancel,
-                content: None,
-                meta: None,
-            },
-        });
+        self.app_event_tx.resolve_elicitation(
+            self.request.thread_id,
+            self.request.server_name.clone(),
+            self.request.request_id.clone(),
+            ElicitationAction::Cancel,
+            /*content*/ None,
+            /*meta*/ None,
+        );
     }
 
     fn submit_answers(&mut self) {
@@ -889,34 +1152,33 @@ impl McpServerElicitationOverlay {
         }
         self.validation_error = None;
         if self.request.response_mode == McpServerElicitationResponseMode::ApprovalAction {
-            let (decision, meta) = match self.field_value(0).as_ref().and_then(Value::as_str) {
-                Some(APPROVAL_ACCEPT_ONCE_VALUE) => (ElicitationAction::Accept, None),
-                Some(APPROVAL_ACCEPT_SESSION_VALUE) => (
-                    ElicitationAction::Accept,
-                    Some(serde_json::json!({
-                        APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_SESSION_VALUE,
-                    })),
-                ),
-                Some(APPROVAL_ACCEPT_ALWAYS_VALUE) => (
-                    ElicitationAction::Accept,
-                    Some(serde_json::json!({
-                        APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_ALWAYS_VALUE,
-                    })),
-                ),
-                Some(APPROVAL_DECLINE_VALUE) => (ElicitationAction::Decline, None),
-                Some(APPROVAL_CANCEL_VALUE) => (ElicitationAction::Cancel, None),
-                _ => (ElicitationAction::Cancel, None),
-            };
-            self.app_event_tx.send(AppEvent::SubmitThreadOp {
-                thread_id: self.request.thread_id,
-                op: Op::ResolveElicitation {
-                    server_name: self.request.server_name.clone(),
-                    request_id: self.request.request_id.clone(),
-                    decision,
-                    content: None,
-                    meta,
-                },
-            });
+            let (decision, meta) =
+                match self.field_value(/*idx*/ 0).as_ref().and_then(Value::as_str) {
+                    Some(APPROVAL_ACCEPT_ONCE_VALUE) => (ElicitationAction::Accept, None),
+                    Some(APPROVAL_ACCEPT_SESSION_VALUE) => (
+                        ElicitationAction::Accept,
+                        Some(serde_json::json!({
+                            APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_SESSION_VALUE,
+                        })),
+                    ),
+                    Some(APPROVAL_ACCEPT_ALWAYS_VALUE) => (
+                        ElicitationAction::Accept,
+                        Some(serde_json::json!({
+                            APPROVAL_PERSIST_KEY: APPROVAL_PERSIST_ALWAYS_VALUE,
+                        })),
+                    ),
+                    Some(APPROVAL_DECLINE_VALUE) => (ElicitationAction::Decline, None),
+                    Some(APPROVAL_CANCEL_VALUE) => (ElicitationAction::Cancel, None),
+                    _ => (ElicitationAction::Cancel, None),
+                };
+            self.app_event_tx.resolve_elicitation(
+                self.request.thread_id,
+                self.request.server_name.clone(),
+                self.request.request_id.clone(),
+                decision,
+                /*content*/ None,
+                meta,
+            );
             if let Some(next) = self.queue.pop_front() {
                 self.request = next;
                 self.reset_for_request();
@@ -933,16 +1195,14 @@ impl McpServerElicitationOverlay {
             .enumerate()
             .filter_map(|(idx, field)| self.field_value(idx).map(|value| (field.id.clone(), value)))
             .collect::<serde_json::Map<_, _>>();
-        self.app_event_tx.send(AppEvent::SubmitThreadOp {
-            thread_id: self.request.thread_id,
-            op: Op::ResolveElicitation {
-                server_name: self.request.server_name.clone(),
-                request_id: self.request.request_id.clone(),
-                decision: ElicitationAction::Accept,
-                content: Some(Value::Object(content)),
-                meta: None,
-            },
-        });
+        self.app_event_tx.resolve_elicitation(
+            self.request.thread_id,
+            self.request.server_name.clone(),
+            self.request.request_id.clone(),
+            ElicitationAction::Accept,
+            Some(Value::Object(content)),
+            /*meta*/ None,
+        );
         if let Some(next) = self.queue.pop_front() {
             self.request = next;
             self.reset_for_request();
@@ -956,7 +1216,7 @@ impl McpServerElicitationOverlay {
         if self.current_index() + 1 >= self.field_count() {
             self.submit_answers();
         } else {
-            self.move_field(true);
+            self.move_field(/*next*/ true);
         }
     }
 
@@ -1251,7 +1511,7 @@ impl BottomPaneView for McpServerElicitationOverlay {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                self.move_field(false);
+                self.move_field(/*next*/ false);
                 return;
             }
             KeyEvent {
@@ -1264,7 +1524,7 @@ impl BottomPaneView for McpServerElicitationOverlay {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                self.move_field(true);
+                self.move_field(/*next*/ true);
                 return;
             }
             KeyEvent {
@@ -1272,7 +1532,7 @@ impl BottomPaneView for McpServerElicitationOverlay {
                 modifiers: KeyModifiers::NONE,
                 ..
             } if self.current_field_is_select() => {
-                self.move_field(false);
+                self.move_field(/*next*/ false);
                 return;
             }
             KeyEvent {
@@ -1280,7 +1540,7 @@ impl BottomPaneView for McpServerElicitationOverlay {
                 modifiers: KeyModifiers::NONE,
                 ..
             } if self.current_field_is_select() => {
-                self.move_field(true);
+                self.move_field(/*next*/ true);
                 return;
             }
             _ => {}
@@ -1303,10 +1563,10 @@ impl BottomPaneView for McpServerElicitationOverlay {
                     }
                 }
                 KeyCode::Backspace | KeyCode::Delete => self.clear_selection(),
-                KeyCode::Char(' ') => self.select_current_option(true),
+                KeyCode::Char(' ') => self.select_current_option(/*committed*/ true),
                 KeyCode::Enter => {
                     if self.selected_option_index().is_some() {
-                        self.select_current_option(true);
+                        self.select_current_option(/*committed*/ true);
                     }
                     self.go_next_or_submit();
                 }
@@ -1315,7 +1575,7 @@ impl BottomPaneView for McpServerElicitationOverlay {
                         if let Some(answer) = self.current_answer_mut() {
                             answer.selection.selected_idx = Some(option_idx);
                         }
-                        self.select_current_option(true);
+                        self.select_current_option(/*committed*/ true);
                         self.go_next_or_submit();
                     }
                 }
@@ -1461,7 +1721,11 @@ mod tests {
         })
     }
 
-    fn tool_approval_meta(persist_modes: &[&str]) -> Option<Value> {
+    fn tool_approval_meta(
+        persist_modes: &[&str],
+        tool_params: Option<Value>,
+        tool_params_display: Option<Vec<(&str, Value, &str)>>,
+    ) -> Option<Value> {
         let mut meta = serde_json::Map::from_iter([(
             APPROVAL_META_KIND_KEY.to_string(),
             Value::String(APPROVAL_META_KIND_MCP_TOOL_CALL.to_string()),
@@ -1473,6 +1737,26 @@ mod tests {
                     persist_modes
                         .iter()
                         .map(|mode| Value::String((*mode).to_string()))
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(tool_params) = tool_params {
+            meta.insert(APPROVAL_TOOL_PARAMS_KEY.to_string(), tool_params);
+        }
+        if let Some(tool_params_display) = tool_params_display {
+            meta.insert(
+                APPROVAL_TOOL_PARAMS_DISPLAY_KEY.to_string(),
+                Value::Array(
+                    tool_params_display
+                        .into_iter()
+                        .map(|(name, value, display_name)| {
+                            serde_json::json!({
+                                "name": name,
+                                "value": value,
+                                "display_name": display_name,
+                            })
+                        })
                         .collect(),
                 ),
             );
@@ -1516,7 +1800,7 @@ mod tests {
                     },
                     "required": ["confirmed"],
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
@@ -1528,6 +1812,7 @@ mod tests {
                 server_name: "server-1".to_string(),
                 request_id: McpRequestId::String("request-1".to_string()),
                 message: "Allow this request?".to_string(),
+                approval_display_params: Vec::new(),
                 response_mode: McpServerElicitationResponseMode::FormContent,
                 fields: vec![McpServerElicitationField {
                     id: "confirmed".to_string(),
@@ -1550,6 +1835,7 @@ mod tests {
                         default_idx: None,
                     },
                 }],
+                tool_suggestion: None,
             }
         );
     }
@@ -1569,7 +1855,7 @@ mod tests {
                         }
                     },
                 }),
-                None,
+                /*meta*/ None,
             ),
         );
 
@@ -1581,7 +1867,7 @@ mod tests {
         let thread_id = ThreadId::default();
         let request = McpServerElicitationFormRequest::from_event(
             thread_id,
-            form_request("Allow this request?", Value::Null, None),
+            form_request("Allow this request?", Value::Null, /*meta*/ None),
         )
         .expect("expected approval fallback");
 
@@ -1592,6 +1878,7 @@ mod tests {
                 server_name: "server-1".to_string(),
                 request_id: McpRequestId::String("request-1".to_string()),
                 message: "Allow this request?".to_string(),
+                approval_display_params: Vec::new(),
                 response_mode: McpServerElicitationResponseMode::ApprovalAction,
                 fields: vec![McpServerElicitationField {
                     id: APPROVAL_FIELD_ID.to_string(),
@@ -1601,7 +1888,7 @@ mod tests {
                     input: McpServerElicitationFieldInput::Select {
                         options: vec![
                             McpServerElicitationOption {
-                                label: "Approve Once".to_string(),
+                                label: "Allow".to_string(),
                                 description: Some("Run the tool and continue.".to_string()),
                                 value: Value::String(APPROVAL_ACCEPT_ONCE_VALUE.to_string()),
                             },
@@ -1621,6 +1908,7 @@ mod tests {
                         default_idx: Some(0),
                     },
                 }],
+                tool_suggestion: None,
             }
         );
     }
@@ -1633,7 +1921,11 @@ mod tests {
             form_request(
                 "Allow this request?",
                 empty_object_schema(),
-                tool_approval_meta(&[]),
+                tool_approval_meta(
+                    &[],
+                    /*tool_params*/ None,
+                    /*tool_params_display*/ None,
+                ),
             ),
         )
         .expect("expected approval fallback");
@@ -1645,6 +1937,7 @@ mod tests {
                 server_name: "server-1".to_string(),
                 request_id: McpRequestId::String("request-1".to_string()),
                 message: "Allow this request?".to_string(),
+                approval_display_params: Vec::new(),
                 response_mode: McpServerElicitationResponseMode::ApprovalAction,
                 fields: vec![McpServerElicitationField {
                     id: APPROVAL_FIELD_ID.to_string(),
@@ -1654,7 +1947,7 @@ mod tests {
                     input: McpServerElicitationFieldInput::Select {
                         options: vec![
                             McpServerElicitationOption {
-                                label: "Approve Once".to_string(),
+                                label: "Allow".to_string(),
                                 description: Some("Run the tool and continue.".to_string()),
                                 value: Value::String(APPROVAL_ACCEPT_ONCE_VALUE.to_string()),
                             },
@@ -1667,7 +1960,73 @@ mod tests {
                         default_idx: Some(0),
                     },
                 }],
+                tool_suggestion: None,
             }
+        );
+    }
+
+    #[test]
+    fn tool_suggestion_meta_is_parsed_into_request_payload() {
+        let request = McpServerElicitationFormRequest::from_event(
+            ThreadId::default(),
+            form_request(
+                "Suggest Google Calendar",
+                empty_object_schema(),
+                Some(serde_json::json!({
+                    "codex_approval_kind": "tool_suggestion",
+                    "tool_type": "connector",
+                    "suggest_type": "install",
+                    "suggest_reason": "Plan and reference events from your calendar",
+                    "tool_id": "connector_2128aebfecb84f64a069897515042a44",
+                    "tool_name": "Google Calendar",
+                    "install_url": "https://example.test/google-calendar",
+                })),
+            ),
+        )
+        .expect("expected tool suggestion form");
+
+        assert_eq!(
+            request.tool_suggestion(),
+            Some(&ToolSuggestionRequest {
+                tool_type: ToolSuggestionToolType::Connector,
+                suggest_type: ToolSuggestionType::Install,
+                suggest_reason: "Plan and reference events from your calendar".to_string(),
+                tool_id: "connector_2128aebfecb84f64a069897515042a44".to_string(),
+                tool_name: "Google Calendar".to_string(),
+                install_url: Some("https://example.test/google-calendar".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_tool_suggestion_meta_without_install_url_is_parsed_into_request_payload() {
+        let request = McpServerElicitationFormRequest::from_event(
+            ThreadId::default(),
+            form_request(
+                "Suggest Slack",
+                empty_object_schema(),
+                Some(serde_json::json!({
+                    "codex_approval_kind": "tool_suggestion",
+                    "tool_type": "plugin",
+                    "suggest_type": "install",
+                    "suggest_reason": "Install the Slack plugin to search messages",
+                    "tool_id": "slack@openai-curated",
+                    "tool_name": "Slack",
+                })),
+            ),
+        )
+        .expect("expected tool suggestion form");
+
+        assert_eq!(
+            request.tool_suggestion(),
+            Some(&ToolSuggestionRequest {
+                tool_type: ToolSuggestionToolType::Plugin,
+                suggest_type: ToolSuggestionType::Install,
+                suggest_reason: "Install the Slack plugin to search messages".to_string(),
+                tool_id: "slack@openai-curated".to_string(),
+                tool_name: "Slack".to_string(),
+                install_url: None,
+            })
         );
     }
 
@@ -1675,10 +2034,57 @@ mod tests {
     fn empty_unmarked_schema_falls_back() {
         let request = McpServerElicitationFormRequest::from_event(
             ThreadId::default(),
-            form_request("Empty form", empty_object_schema(), None),
+            form_request("Empty form", empty_object_schema(), /*meta*/ None),
         );
 
         assert_eq!(request, None);
+    }
+
+    #[test]
+    fn tool_approval_display_params_prefer_explicit_display_order() {
+        let request = McpServerElicitationFormRequest::from_event(
+            ThreadId::default(),
+            form_request(
+                "Allow Calendar to create an event",
+                empty_object_schema(),
+                tool_approval_meta(
+                    &[],
+                    Some(serde_json::json!({
+                        "zeta": 3,
+                        "alpha": 1,
+                    })),
+                    Some(vec![
+                        (
+                            "calendar_id",
+                            Value::String("primary".to_string()),
+                            "Calendar",
+                        ),
+                        (
+                            "title",
+                            Value::String("Roadmap review".to_string()),
+                            "Title",
+                        ),
+                    ]),
+                ),
+            ),
+        )
+        .expect("expected approval fallback");
+
+        assert_eq!(
+            request.approval_display_params,
+            vec![
+                McpToolApprovalDisplayParam {
+                    name: "calendar_id".to_string(),
+                    value: Value::String("primary".to_string()),
+                    display_name: "Calendar".to_string(),
+                },
+                McpToolApprovalDisplayParam {
+                    name: "title".to_string(),
+                    value: Value::String("Roadmap review".to_string()),
+                    display_name: "Title".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1700,13 +2106,16 @@ mod tests {
                     },
                     "required": ["confirmed"],
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
-        let mut overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let mut overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
-        overlay.select_current_option(true);
+        overlay.select_current_option(/*committed*/ true);
         overlay.submit_answers();
 
         let event = rx.try_recv().expect("expected resolution");
@@ -1741,19 +2150,26 @@ mod tests {
             form_request(
                 "Allow this request?",
                 empty_object_schema(),
-                tool_approval_meta(&[
-                    APPROVAL_PERSIST_SESSION_VALUE,
-                    APPROVAL_PERSIST_ALWAYS_VALUE,
-                ]),
+                tool_approval_meta(
+                    &[
+                        APPROVAL_PERSIST_SESSION_VALUE,
+                        APPROVAL_PERSIST_ALWAYS_VALUE,
+                    ],
+                    /*tool_params*/ None,
+                    /*tool_params_display*/ None,
+                ),
             ),
         )
         .expect("expected approval fallback");
-        let mut overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let mut overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         if let Some(answer) = overlay.current_answer_mut() {
             answer.selection.selected_idx = Some(1);
         }
-        overlay.select_current_option(true);
+        overlay.select_current_option(/*committed*/ true);
         overlay.submit_answers();
 
         let event = rx.try_recv().expect("expected resolution");
@@ -1788,19 +2204,26 @@ mod tests {
             form_request(
                 "Allow this request?",
                 empty_object_schema(),
-                tool_approval_meta(&[
-                    APPROVAL_PERSIST_SESSION_VALUE,
-                    APPROVAL_PERSIST_ALWAYS_VALUE,
-                ]),
+                tool_approval_meta(
+                    &[
+                        APPROVAL_PERSIST_SESSION_VALUE,
+                        APPROVAL_PERSIST_ALWAYS_VALUE,
+                    ],
+                    /*tool_params*/ None,
+                    /*tool_params_display*/ None,
+                ),
             ),
         )
         .expect("expected approval fallback");
-        let mut overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let mut overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         if let Some(answer) = overlay.current_answer_mut() {
             answer.selection.selected_idx = Some(2);
         }
-        overlay.select_current_option(true);
+        overlay.select_current_option(/*committed*/ true);
         overlay.submit_answers();
 
         let event = rx.try_recv().expect("expected resolution");
@@ -1845,11 +2268,14 @@ mod tests {
                     },
                     "required": ["confirmed"],
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
-        let mut overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let mut overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         assert_eq!(overlay.on_ctrl_c(), CancellationEvent::Handled);
 
@@ -1890,7 +2316,7 @@ mod tests {
                         }
                     },
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
@@ -1907,7 +2333,7 @@ mod tests {
                         }
                     },
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
@@ -1924,20 +2350,23 @@ mod tests {
                         }
                     },
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
-        let mut overlay = McpServerElicitationOverlay::new(first, tx, true, false, false);
+        let mut overlay = McpServerElicitationOverlay::new(
+            first, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         overlay.try_consume_mcp_server_elicitation_request(second);
         overlay.try_consume_mcp_server_elicitation_request(third);
-        overlay.select_current_option(true);
+        overlay.select_current_option(/*committed*/ true);
         overlay.submit_answers();
 
         assert_eq!(overlay.request.message, "Second");
 
-        overlay.select_current_option(true);
+        overlay.select_current_option(/*committed*/ true);
         overlay.submit_answers();
 
         assert_eq!(overlay.request.message, "Third");
@@ -1961,11 +2390,14 @@ mod tests {
                     },
                     "required": ["confirmed"],
                 }),
-                None,
+                /*meta*/ None,
             ),
         )
         .expect("expected supported form");
-        let overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         insta::assert_snapshot!(
             "mcp_server_elicitation_boolean_form",
@@ -1981,11 +2413,18 @@ mod tests {
             form_request(
                 "Allow this request?",
                 empty_object_schema(),
-                tool_approval_meta(&[]),
+                tool_approval_meta(
+                    &[],
+                    /*tool_params*/ None,
+                    /*tool_params_display*/ None,
+                ),
             ),
         )
         .expect("expected approval fallback");
-        let overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         insta::assert_snapshot!(
             "mcp_server_elicitation_approval_form_without_schema",
@@ -2001,17 +2440,77 @@ mod tests {
             form_request(
                 "Allow this request?",
                 empty_object_schema(),
-                tool_approval_meta(&[
-                    APPROVAL_PERSIST_SESSION_VALUE,
-                    APPROVAL_PERSIST_ALWAYS_VALUE,
-                ]),
+                tool_approval_meta(
+                    &[
+                        APPROVAL_PERSIST_SESSION_VALUE,
+                        APPROVAL_PERSIST_ALWAYS_VALUE,
+                    ],
+                    /*tool_params*/ None,
+                    /*tool_params_display*/ None,
+                ),
             ),
         )
         .expect("expected approval fallback");
-        let overlay = McpServerElicitationOverlay::new(request, tx, true, false, false);
+        let overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
 
         insta::assert_snapshot!(
             "mcp_server_elicitation_approval_form_with_session_persist",
+            render_snapshot(&overlay, Rect::new(0, 0, 120, 16))
+        );
+    }
+
+    #[test]
+    fn approval_form_tool_approval_with_param_summary_snapshot() {
+        let (tx, _rx) = test_sender();
+        let request = McpServerElicitationFormRequest::from_event(
+            ThreadId::default(),
+            form_request(
+                "Allow Calendar to create an event",
+                empty_object_schema(),
+                tool_approval_meta(
+                    &[],
+                    Some(serde_json::json!({
+                        "calendar_id": "primary",
+                        "title": "Roadmap review",
+                        "notes": "This is a deliberately long note that should truncate before it turns the approval body into a giant wall of text in the TUI overlay.",
+                        "ignored_after_limit": "fourth param",
+                    })),
+                    Some(vec![
+                        (
+                            "calendar_id",
+                            Value::String("primary".to_string()),
+                            "Calendar",
+                        ),
+                        (
+                            "title",
+                            Value::String("Roadmap review".to_string()),
+                            "Title",
+                        ),
+                        (
+                            "notes",
+                            Value::String("This is a deliberately long note that should truncate before it turns the approval body into a giant wall of text in the TUI overlay.".to_string()),
+                            "Notes",
+                        ),
+                        (
+                            "ignored_after_limit",
+                            Value::String("fourth param".to_string()),
+                            "Ignored",
+                        ),
+                    ]),
+                ),
+            ),
+        )
+        .expect("expected approval fallback");
+        let overlay = McpServerElicitationOverlay::new(
+            request, tx, /*has_input_focus*/ true, /*enhanced_keys_supported*/ false,
+            /*disable_paste_burst*/ false,
+        );
+
+        insta::assert_snapshot!(
+            "mcp_server_elicitation_approval_form_with_param_summary",
             render_snapshot(&overlay, Rect::new(0, 0, 120, 16))
         );
     }

@@ -11,6 +11,8 @@
 //! This module therefore keeps the user-facing error path and the structured-log path separate.
 //! Returned `io::Error` values still carry the detail needed by CLI/browser callers, while
 //! structured logs only emit explicitly reviewed fields plus redacted URL/error values.
+use std::env;
+use std::fmt;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
@@ -19,23 +21,25 @@ use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 
+use crate::auth::AuthCredentialsStoreMode;
+use crate::auth::AuthDotJson;
+use crate::auth::save_auth;
+use crate::default_client::originator;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
+use crate::token_data::TokenData;
+use crate::token_data::parse_chatgpt_jwt_claims;
 use base64::Engine;
 use chrono::Utc;
 use codex_app_server_protocol::AuthMode;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::AuthDotJson;
-use codex_core::auth::save_auth;
-use codex_core::default_client::originator;
-use codex_core::token_data::TokenData;
-use codex_core::token_data::parse_chatgpt_jwt_claims;
-use codex_core::util::OpenUrlStatus;
-use codex_core::util::open_url;
+use codex_client::build_reqwest_client_with_custom_ca;
+use codex_utils_template::Template;
 use rand::RngCore;
 use serde_json::Value as JsonValue;
 use tiny_http::Header;
@@ -49,6 +53,10 @@ use tracing::warn;
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const DEFAULT_PORT: u16 = 1455;
+static LOGIN_ERROR_PAGE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
+    Template::parse(include_str!("assets/error.html"))
+        .unwrap_or_else(|err| panic!("login error page template must parse: {err}"))
+});
 
 /// Options for launching the local login callback server.
 #[derive(Debug, Clone)]
@@ -124,6 +132,33 @@ impl ShutdownHandle {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpenUrlStatus {
+    Opened,
+    Suppressed { reason: String },
+}
+
+#[derive(Debug)]
+struct OpenUrlError {
+    message: String,
+}
+
+impl OpenUrlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for OpenUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for OpenUrlError {}
+
 /// Starts a local callback server and returns the browser auth URL.
 pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
     let pkce = generate_pkce();
@@ -171,10 +206,13 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         let server = server.clone();
         thread::spawn(move || -> io::Result<()> {
             while let Ok(request) = server.recv() {
-                tx.blocking_send(request).map_err(|e| {
-                    eprintln!("Failed to send request to channel: {e}");
-                    io::Error::other("Failed to send request to channel")
-                })?;
+                match tx.blocking_send(request) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("Failed to send request to channel: {error}");
+                        return Err(io::Error::other("Failed to send request to channel"));
+                    }
+                }
             }
             Ok(())
         })
@@ -242,6 +280,245 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         server_handle,
         shutdown_handle: ShutdownHandle { shutdown_notify },
     })
+}
+
+fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "No URL provided".to_string(),
+        });
+    }
+
+    open_url_platform(url)
+}
+
+fn is_termux() -> bool {
+    env::var_os("TERMUX_VERSION").is_some() || env::var_os("TERMUX_APP_PID").is_some()
+}
+
+fn is_wsl() -> bool {
+    env::var_os("WSL_INTEROP").is_some()
+        || env::var_os("WSL_DISTRO_NAME").is_some()
+        || env::var_os("WSLENV").is_some()
+}
+
+fn is_ssh() -> bool {
+    env::var_os("SSH_CONNECTION").is_some()
+        || env::var_os("SSH_CLIENT").is_some()
+        || env::var_os("SSH_TTY").is_some()
+}
+
+fn is_container() -> bool {
+    env::var_os("container").is_some()
+        || Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    if is_termux() {
+        return open_url_termux(url);
+    }
+    if is_wsl() {
+        return open_url_wsl(url);
+    }
+    if is_ssh() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "SSH session detected; open the URL manually.".to_string(),
+        });
+    }
+    if is_container() {
+        return Ok(OpenUrlStatus::Suppressed {
+            reason: "Container environment detected; open the URL manually.".to_string(),
+        });
+    }
+
+    open_url_linux(url)
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("open", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("open command not found")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("cmd", &["/C", "start", "", url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("cmd command not found")),
+    }
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "windows"
+)))]
+fn open_url_platform(_url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    Ok(OpenUrlStatus::Suppressed {
+        reason: "Unsupported platform; open the URL manually.".to_string(),
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_termux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    match run_command("termux-open-url", &[url])? {
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new(
+            "termux-open-url not found; install termux-api",
+        )),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_wsl(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+    if let Some(status) = record_outcome(
+        "cmd.exe",
+        run_command("cmd.exe", &["/c", "start", "", url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("wslview", run_command("wslview", &[url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+
+    Err(open_url_failed(failures))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_linux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+    let mut failures = Vec::new();
+
+    for candidate in browser_env_candidates() {
+        let program = &candidate[0];
+        if let Some(status) = record_outcome(
+            program,
+            run_command_with_url(program, &candidate[1..], url)?,
+            &mut failures,
+        ) {
+            return Ok(status);
+        }
+    }
+
+    if let Some(status) =
+        record_outcome("xdg-open", run_command("xdg-open", &[url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome("gio", run_command("gio", &["open", url])?, &mut failures)
+    {
+        return Ok(status);
+    }
+    if let Some(status) = record_outcome(
+        "sensible-browser",
+        run_command("sensible-browser", &[url])?,
+        &mut failures,
+    ) {
+        return Ok(status);
+    }
+
+    for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
+        if let Some(status) = record_outcome(browser, run_command(browser, &[url])?, &mut failures)
+        {
+            return Ok(status);
+        }
+    }
+
+    Err(open_url_failed(failures))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn browser_env_candidates() -> Vec<Vec<String>> {
+    let Ok(value) = env::var("BROWSER") else {
+        return Vec::new();
+    };
+
+    value
+        .split(':')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            match shlex::split(entry) {
+                Some(parts) if !parts.is_empty() => Some(parts),
+                _ => Some(vec![entry.to_string()]),
+            }
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn run_command_with_url(
+    program: &str,
+    args: &[String],
+    url: &str,
+) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    command.arg(url);
+    run_command_status(program, command)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_url_failed(failures: Vec<String>) -> OpenUrlError {
+    if failures.is_empty() {
+        OpenUrlError::new("No supported browser launcher found")
+    } else {
+        OpenUrlError::new(format!("Browser launch failed: {}", failures.join("; ")))
+    }
+}
+
+enum CommandOutcome {
+    Success,
+    Failure(String),
+    NotFound,
+}
+
+fn run_command(program: &str, args: &[&str]) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    run_command_status(program, command)
+}
+
+fn run_command_status(program: &str, mut command: Command) -> Result<CommandOutcome, OpenUrlError> {
+    match command.status() {
+        Ok(status) if status.success() => Ok(CommandOutcome::Success),
+        Ok(status) => Ok(CommandOutcome::Failure(format!(
+            "{program} exited with {status}"
+        ))),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(CommandOutcome::NotFound),
+        Err(err) => Err(OpenUrlError::new(format!("failed to run {program}: {err}"))),
+    }
+}
+
+fn record_outcome(
+    program: &str,
+    outcome: CommandOutcome,
+    failures: &mut Vec<String>,
+) -> Option<OpenUrlStatus> {
+    match outcome {
+        CommandOutcome::Success => Some(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => {
+            failures.push(message);
+            None
+        }
+        CommandOutcome::NotFound => {
+            failures.push(format!("{program} not found"));
+            None
+        }
+    }
 }
 
 /// Internal callback handling outcome.
@@ -325,7 +602,7 @@ async fn process_request(
                         "Missing authorization code. Sign-in could not be completed.",
                         io::ErrorKind::InvalidData,
                         Some("missing_authorization_code"),
-                        None,
+                        /*error_description*/ None,
                     );
                 }
             };
@@ -343,7 +620,7 @@ async fn process_request(
                             &message,
                             io::ErrorKind::PermissionDenied,
                             Some("workspace_restriction"),
-                            None,
+                            /*error_description*/ None,
                         );
                     }
                     // Obtain API key via token-exchange and persist
@@ -381,7 +658,7 @@ async fn process_request(
                             "Sign-in completed but redirecting back to Codex failed.",
                             io::ErrorKind::Other,
                             Some("redirect_failed"),
-                            None,
+                            /*error_description*/ None,
                         ),
                     }
                 }
@@ -392,7 +669,7 @@ async fn process_request(
                         &format!("Token exchange failed: {err}"),
                         io::ErrorKind::Other,
                         Some("token_exchange_failed"),
-                        None,
+                        /*error_description*/ None,
                     )
                 }
             }
@@ -492,10 +769,7 @@ fn build_authorize_url(
         ("id_token_add_organizations".to_string(), "true".to_string()),
         ("codex_cli_simplified_flow".to_string(), "true".to_string()),
         ("state".to_string(), state.to_string()),
-        (
-            "originator".to_string(),
-            originator().value.as_str().to_string(),
-        ),
+        ("originator".to_string(), originator().value),
     ];
     if let Some(workspace_id) = forced_chatgpt_workspace_id {
         query.push(("allowed_workspace_id".to_string(), workspace_id.to_string()));
@@ -680,7 +954,6 @@ fn sanitize_url_for_logging(url: &str) -> String {
         Err(_) => "<invalid-url>".to_string(),
     }
 }
-
 /// Exchanges an authorization code for tokens.
 ///
 /// The returned error remains suitable for user-facing CLI/browser surfaces, so backend-provided
@@ -701,7 +974,7 @@ pub(crate) async fn exchange_code_for_tokens(
         refresh_token: String,
     }
 
-    let client = reqwest::Client::new();
+    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
     info!(
         issuer = %sanitize_url_for_logging(issuer),
         redirect_uri = %redirect_uri,
@@ -718,18 +991,21 @@ pub(crate) async fn exchange_code_for_tokens(
             urlencoding::encode(&pkce.code_verifier)
         ))
         .send()
-        .await
-        .map_err(|err| {
-            let err = redact_sensitive_error_url(err);
+        .await;
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(error) => {
+            let error = redact_sensitive_error_url(error);
             error!(
-                is_timeout = err.is_timeout(),
-                is_connect = err.is_connect(),
-                is_request = err.is_request(),
-                error = %err,
+                is_timeout = error.is_timeout(),
+                is_connect = error.is_connect(),
+                is_request = error.is_request(),
+                error = %error,
                 "oauth token exchange transport failure"
             );
-            io::Error::other(err)
-        })?;
+            return Err(io::Error::other(error));
+        }
+    };
 
     let status = resp.status();
     if !status.is_success() {
@@ -1010,7 +1286,6 @@ fn render_login_error_page(
     error_code: Option<&str>,
     error_description: Option<&str>,
 ) -> Vec<u8> {
-    let template = include_str!("assets/error.html");
     let code = error_code.unwrap_or("unknown_error");
     let (title, display_message, display_description, help_text) =
         if is_missing_codex_entitlement_error(code, error_description) {
@@ -1031,12 +1306,15 @@ fn render_login_error_page(
                     .to_string(),
             )
         };
-    template
-        .replace("__ERROR_TITLE__", &html_escape(&title))
-        .replace("__ERROR_MESSAGE__", &html_escape(&display_message))
-        .replace("__ERROR_CODE__", &html_escape(code))
-        .replace("__ERROR_DESCRIPTION__", &html_escape(&display_description))
-        .replace("__ERROR_HELP__", &html_escape(&help_text))
+    LOGIN_ERROR_PAGE_TEMPLATE
+        .render([
+            ("error_title", html_escape(&title)),
+            ("error_message", html_escape(&display_message)),
+            ("error_code", html_escape(code)),
+            ("error_description", html_escape(&display_description)),
+            ("error_help", html_escape(&help_text)),
+        ])
+        .unwrap_or_else(|err| panic!("login error page template must render: {err}"))
         .into_bytes()
 }
 
@@ -1067,7 +1345,7 @@ pub(crate) async fn obtain_api_key(
     struct ExchangeResp {
         access_token: String,
     }
-    let client = reqwest::Client::new();
+    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
     let resp = client
         .post(format!("{issuer}/oauth/token"))
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -1091,15 +1369,17 @@ pub(crate) async fn obtain_api_key(
     let body: ExchangeResp = resp.json().await.map_err(io::Error::other)?;
     Ok(body.access_token)
 }
-
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
 
     use super::TokenEndpointErrorDetail;
+    use super::html_escape;
+    use super::is_missing_codex_entitlement_error;
     use super::parse_token_endpoint_error;
     use super::redact_sensitive_query_value;
     use super::redact_sensitive_url_parts;
+    use super::render_login_error_page;
     use super::sanitize_url_for_logging;
 
     #[test]
@@ -1198,5 +1478,40 @@ mod tests {
             redacted,
             "https://example.com/base?token=%3Credacted%3E&env=prod".to_string()
         );
+    }
+
+    #[test]
+    fn render_login_error_page_escapes_dynamic_fields() {
+        let body = String::from_utf8(render_login_error_page(
+            "<bad>",
+            Some("code&value"),
+            Some("\"quoted\""),
+        ))
+        .expect("login error page should be utf-8");
+
+        assert!(body.contains(&html_escape("Sign-in could not be completed")));
+        assert!(body.contains("&lt;bad&gt;"));
+        assert!(body.contains("code&amp;value"));
+        assert!(body.contains("&quot;quoted&quot;"));
+    }
+
+    #[test]
+    fn render_login_error_page_uses_entitlement_copy() {
+        let error_description = Some("missing_codex_entitlement");
+        assert!(is_missing_codex_entitlement_error(
+            "access_denied",
+            error_description
+        ));
+
+        let body = String::from_utf8(render_login_error_page(
+            "access denied",
+            Some("access_denied"),
+            error_description,
+        ))
+        .expect("login error page should be utf-8");
+
+        assert!(body.contains("You do not have access to Codex"));
+        assert!(body.contains("Contact your workspace administrator"));
+        assert!(!body.contains("missing_codex_entitlement"));
     }
 }

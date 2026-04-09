@@ -61,7 +61,7 @@ impl ChatWidget {
 
     pub(crate) fn open_manage_skills_popup(&mut self) {
         if self.skills_all.is_empty() {
-            self.add_info_message("No skills available.".to_string(), None);
+            self.add_info_message("No skills available.".to_string(), /*hint*/ None);
             return;
         }
 
@@ -133,7 +133,7 @@ impl ChatWidget {
         }
         self.add_info_message(
             format!("{enabled_count} skills enabled, {disabled_count} skills disabled"),
-            None,
+            /*hint*/ None,
         );
     }
 
@@ -191,7 +191,6 @@ fn protocol_skill_to_core(skill: &ProtocolSkillMetadata) -> SkillMetadata {
                     .collect(),
             }),
         policy: None,
-        permission_profile: None,
         path_to_skills_md: skill.path.clone(),
         scope: skill.scope,
     }

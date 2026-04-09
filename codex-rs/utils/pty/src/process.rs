@@ -1,8 +1,10 @@
 use core::fmt;
 use std::io;
-use std::sync::atomic::AtomicBool;
+#[cfg(unix)]
+use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::anyhow;
 use portable_pty::MasterPty;
@@ -41,9 +43,24 @@ impl From<TerminalSize> for PtySize {
     }
 }
 
+#[cfg(unix)]
+pub(crate) trait PtyHandleKeepAlive: Send {}
+
+#[cfg(unix)]
+impl<T: Send + ?Sized> PtyHandleKeepAlive for T {}
+
+pub(crate) enum PtyMasterHandle {
+    Resizable(Box<dyn MasterPty + Send>),
+    #[cfg(unix)]
+    Opaque {
+        raw_fd: RawFd,
+        _handle: Box<dyn PtyHandleKeepAlive>,
+    },
+}
+
 pub struct PtyHandles {
     pub _slave: Option<Box<dyn SlavePty + Send>>,
-    pub _master: Box<dyn MasterPty + Send>,
+    pub(crate) _master: PtyMasterHandle,
 }
 
 impl fmt::Debug for PtyHandles {
@@ -101,10 +118,10 @@ impl ProcessHandle {
 
     /// Returns a channel sender for writing raw bytes to the child stdin.
     pub fn writer_sender(&self) -> mpsc::Sender<Vec<u8>> {
-        if let Ok(writer_tx) = self.writer_tx.lock() {
-            if let Some(writer_tx) = writer_tx.as_ref() {
-                return writer_tx.clone();
-            }
+        if let Ok(writer_tx) = self.writer_tx.lock()
+            && let Some(writer_tx) = writer_tx.as_ref()
+        {
+            return writer_tx.clone();
         }
 
         let (writer_tx, writer_rx) = mpsc::channel(1);
@@ -131,7 +148,11 @@ impl ProcessHandle {
         let handles = handles
             .as_ref()
             .ok_or_else(|| anyhow!("process is not attached to a PTY"))?;
-        handles._master.resize(size.into())
+        match &handles._master {
+            PtyMasterHandle::Resizable(master) => master.resize(size.into()),
+            #[cfg(unix)]
+            PtyMasterHandle::Opaque { raw_fd, .. } => resize_raw_pty(*raw_fd, size),
+        }
     }
 
     /// Close the child's stdin channel.
@@ -144,10 +165,10 @@ impl ProcessHandle {
     /// Attempts to kill the child while leaving the reader/writer tasks alive
     /// so callers can still drain output until EOF.
     pub fn request_terminate(&self) {
-        if let Ok(mut killer_opt) = self.killer.lock() {
-            if let Some(mut killer) = killer_opt.take() {
-                let _ = killer.kill();
-            }
+        if let Ok(mut killer_opt) = self.killer.lock()
+            && let Some(mut killer) = killer_opt.take()
+        {
+            let _ = killer.kill();
         }
     }
 
@@ -155,25 +176,25 @@ impl ProcessHandle {
     pub fn terminate(&self) {
         self.request_terminate();
 
-        if let Ok(mut h) = self.reader_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.reader_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
         if let Ok(mut handles) = self.reader_abort_handles.lock() {
             for handle in handles.drain(..) {
                 handle.abort();
             }
         }
-        if let Ok(mut h) = self.writer_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.writer_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
-        if let Ok(mut h) = self.wait_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+        if let Ok(mut h) = self.wait_handle.lock()
+            && let Some(handle) = h.take()
+        {
+            handle.abort();
         }
     }
 }
@@ -182,6 +203,21 @@ impl Drop for ProcessHandle {
     fn drop(&mut self) {
         self.terminate();
     }
+}
+
+#[cfg(unix)]
+fn resize_raw_pty(raw_fd: RawFd, size: TerminalSize) -> anyhow::Result<()> {
+    let mut winsize = libc::winsize {
+        ws_row: size.rows,
+        ws_col: size.cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let result = unsafe { libc::ioctl(raw_fd, libc::TIOCSWINSZ, &mut winsize) };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 /// Combine split stdout/stderr receivers into a single broadcast receiver.

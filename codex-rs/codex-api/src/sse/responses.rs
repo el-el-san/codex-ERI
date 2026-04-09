@@ -45,7 +45,12 @@ pub fn stream_from_fixture(
     let reader = std::io::Cursor::new(content);
     let stream = ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(process_sse(Box::pin(stream), tx_event, idle_timeout, None));
+    tokio::spawn(process_sse(
+        Box::pin(stream),
+        tx_event,
+        idle_timeout,
+        /*telemetry*/ None,
+    ));
     Ok(ResponseStream { rx_event })
 }
 
@@ -510,7 +515,12 @@ mod tests {
         let stream =
             ReaderStream::new(reader).map_err(|err| TransportError::Network(err.to_string()));
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(16);
-        tokio::spawn(process_sse(Box::pin(stream), tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -536,7 +546,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
         let stream = ReaderStream::new(std::io::Cursor::new(body))
             .map_err(|err| TransportError::Network(err.to_string()));
-        tokio::spawn(process_sse(Box::pin(stream), tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let mut out = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -642,6 +657,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parses_tool_search_call_items() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "tool_search_call",
+                    "call_id": "search-1",
+                    "execution": "client",
+                    "arguments": {
+                        "query": "calendar create",
+                        "limit": 1
+                    }
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_eq!(events.len(), 2);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputItemDone(ResponseItem::ToolSearchCall {
+                call_id,
+                execution,
+                arguments,
+                ..
+            }) if call_id.as_deref() == Some("search-1")
+                && execution == "client"
+                && arguments == &json!({"query": "calendar create", "limit": 1})
+        );
+    }
+
+    #[tokio::test]
     async fn emits_completed_without_stream_end() {
         let completed = json!({
             "type": "response.completed",
@@ -654,7 +705,12 @@ mod tests {
         let stream: ByteStream = Box::pin(stream);
 
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
-        tokio::spawn(process_sse(stream, tx, idle_timeout(), None));
+        tokio::spawn(process_sse(
+            stream,
+            tx,
+            idle_timeout(),
+            /*telemetry*/ None,
+        ));
 
         let events = tokio::time::timeout(Duration::from_millis(1000), async {
             let mut events = Vec::new();
@@ -853,7 +909,12 @@ mod tests {
             bytes: Box::pin(bytes),
         };
 
-        let mut stream = spawn_response_stream(stream_response, idle_timeout(), None, None);
+        let mut stream = spawn_response_stream(
+            stream_response,
+            idle_timeout(),
+            /*telemetry*/ None,
+            /*turn_state*/ None,
+        );
         let event = stream
             .rx_event
             .recv()

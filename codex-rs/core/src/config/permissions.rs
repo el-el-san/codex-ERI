@@ -5,8 +5,11 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_network_proxy::NetworkDomainPermission as ProxyNetworkDomainPermission;
 use codex_network_proxy::NetworkMode;
 use codex_network_proxy::NetworkProxyConfig;
+use codex_network_proxy::NetworkUnixSocketPermission as ProxyNetworkUnixSocketPermission;
+use codex_network_proxy::normalize_host;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -57,6 +60,98 @@ pub enum FilesystemPermissionToml {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+pub struct NetworkDomainPermissionsToml {
+    #[serde(flatten)]
+    pub entries: BTreeMap<String, NetworkDomainPermissionToml>,
+}
+
+impl NetworkDomainPermissionsToml {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allowed_domains(&self) -> Option<Vec<String>> {
+        let allowed_domains: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, permission)| matches!(permission, NetworkDomainPermissionToml::Allow))
+            .map(|(pattern, _)| pattern.clone())
+            .collect();
+        (!allowed_domains.is_empty()).then_some(allowed_domains)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn denied_domains(&self) -> Option<Vec<String>> {
+        let denied_domains: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, permission)| matches!(permission, NetworkDomainPermissionToml::Deny))
+            .map(|(pattern, _)| pattern.clone())
+            .collect();
+        (!denied_domains.is_empty()).then_some(denied_domains)
+    }
+}
+
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkDomainPermissionToml {
+    Allow,
+    Deny,
+}
+
+impl std::fmt::Display for NetworkDomainPermissionToml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let permission = match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        };
+        f.write_str(permission)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+pub struct NetworkUnixSocketPermissionsToml {
+    #[serde(flatten)]
+    pub entries: BTreeMap<String, NetworkUnixSocketPermissionToml>,
+}
+
+impl NetworkUnixSocketPermissionsToml {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn allow_unix_sockets(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, permission)| matches!(permission, NetworkUnixSocketPermissionToml::Allow))
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+}
+
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkUnixSocketPermissionToml {
+    Allow,
+    None,
+}
+
+impl std::fmt::Display for NetworkUnixSocketPermissionToml {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let permission = match self {
+            Self::Allow => "allow",
+            Self::None => "none",
+        };
+        f.write_str(permission)
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct NetworkToml {
     pub enabled: Option<bool>,
@@ -69,9 +164,8 @@ pub struct NetworkToml {
     pub dangerously_allow_all_unix_sockets: Option<bool>,
     #[schemars(with = "Option<NetworkModeSchema>")]
     pub mode: Option<NetworkMode>,
-    pub allowed_domains: Option<Vec<String>>,
-    pub denied_domains: Option<Vec<String>>,
-    pub allow_unix_sockets: Option<Vec<String>>,
+    pub domains: Option<NetworkDomainPermissionsToml>,
+    pub unix_sockets: Option<NetworkUnixSocketPermissionsToml>,
     pub allow_local_binding: Option<bool>,
 }
 
@@ -114,14 +208,22 @@ impl NetworkToml {
         if let Some(mode) = self.mode {
             config.network.mode = mode;
         }
-        if let Some(allowed_domains) = self.allowed_domains.as_ref() {
-            config.network.allowed_domains = allowed_domains.clone();
+        if let Some(domains) = self.domains.as_ref() {
+            overlay_network_domain_permissions(config, domains);
         }
-        if let Some(denied_domains) = self.denied_domains.as_ref() {
-            config.network.denied_domains = denied_domains.clone();
-        }
-        if let Some(allow_unix_sockets) = self.allow_unix_sockets.as_ref() {
-            config.network.allow_unix_sockets = allow_unix_sockets.clone();
+        if let Some(unix_sockets) = self.unix_sockets.as_ref() {
+            let mut proxy_unix_sockets = config.network.unix_sockets.take().unwrap_or_default();
+            for (path, permission) in &unix_sockets.entries {
+                let permission = match permission {
+                    NetworkUnixSocketPermissionToml::Allow => {
+                        ProxyNetworkUnixSocketPermission::Allow
+                    }
+                    NetworkUnixSocketPermissionToml::None => ProxyNetworkUnixSocketPermission::None,
+                };
+                proxy_unix_sockets.entries.insert(path.clone(), permission);
+            }
+            config.network.unix_sockets =
+                (!proxy_unix_sockets.entries.is_empty()).then_some(proxy_unix_sockets);
         }
         if let Some(allow_local_binding) = self.allow_local_binding {
             config.network.allow_local_binding = allow_local_binding;
@@ -132,6 +234,21 @@ impl NetworkToml {
         let mut config = NetworkProxyConfig::default();
         self.apply_to_network_proxy_config(&mut config);
         config
+    }
+}
+
+pub(crate) fn overlay_network_domain_permissions(
+    config: &mut NetworkProxyConfig,
+    domains: &NetworkDomainPermissionsToml,
+) {
+    for (pattern, permission) in &domains.entries {
+        let permission = match permission {
+            NetworkDomainPermissionToml::Allow => ProxyNetworkDomainPermission::Allow,
+            NetworkDomainPermissionToml::Deny => ProxyNetworkDomainPermission::Deny,
+        };
+        config
+            .network
+            .upsert_domain_permission(pattern.clone(), permission, normalize_host);
     }
 }
 
@@ -188,6 +305,37 @@ pub(crate) fn compile_permission_profile(
         FileSystemSandboxPolicy::restricted(entries),
         network_sandbox_policy,
     ))
+}
+
+/// Returns a list of paths that must be readable by shell tools in order
+/// for Codex to function. These should always be added to the
+/// `FileSystemSandboxPolicy` for a thread.
+pub(crate) fn get_readable_roots_required_for_codex_runtime(
+    codex_home: &Path,
+    zsh_path: Option<&PathBuf>,
+    main_execve_wrapper_exe: Option<&PathBuf>,
+) -> Vec<AbsolutePathBuf> {
+    let arg0_root = AbsolutePathBuf::from_absolute_path(codex_home.join("tmp").join("arg0")).ok();
+    let zsh_path = zsh_path.and_then(|path| AbsolutePathBuf::from_absolute_path(path).ok());
+    let execve_wrapper_root = main_execve_wrapper_exe.and_then(|path| {
+        let path = AbsolutePathBuf::from_absolute_path(path).ok()?;
+        if let Some(arg0_root) = arg0_root.as_ref()
+            && path.as_path().starts_with(arg0_root.as_path())
+        {
+            path.parent()
+        } else {
+            Some(path)
+        }
+    });
+
+    let mut readable_roots = Vec::new();
+    if let Some(zsh_path) = zsh_path {
+        readable_roots.push(zsh_path);
+    }
+    if let Some(execve_wrapper_root) = execve_wrapper_root {
+        readable_roots.push(execve_wrapper_root);
+    }
+    readable_roots
 }
 
 fn compile_network_sandbox_policy(network: Option<&NetworkToml>) -> NetworkSandboxPolicy {
@@ -281,9 +429,11 @@ fn parse_special_path(path: &str) -> Option<FileSystemSpecialPath> {
     match path {
         ":root" => Some(FileSystemSpecialPath::Root),
         ":minimal" => Some(FileSystemSpecialPath::Minimal),
-        ":project_roots" => Some(FileSystemSpecialPath::project_roots(None)),
+        ":project_roots" => Some(FileSystemSpecialPath::project_roots(/*subpath*/ None)),
         ":tmpdir" => Some(FileSystemSpecialPath::Tmpdir),
-        _ if path.starts_with(':') => Some(FileSystemSpecialPath::unknown(path, None)),
+        _ if path.starts_with(':') => {
+            Some(FileSystemSpecialPath::unknown(path, /*subpath*/ None))
+        }
         _ => None,
     }
 }
@@ -410,14 +560,5 @@ fn maybe_push_unknown_special_path_warning(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn normalize_absolute_path_for_platform_simplifies_windows_verbatim_paths() {
-        let parsed =
-            normalize_absolute_path_for_platform(r"\\?\D:\c\x\worktrees\2508\swift-base", true);
-        assert_eq!(parsed, PathBuf::from(r"D:\c\x\worktrees\2508\swift-base"));
-    }
-}
+#[path = "permissions_tests.rs"]
+mod tests;

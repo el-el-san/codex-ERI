@@ -20,9 +20,11 @@ codex-cloud-tasks-client = { path = "../cloud-tasks-client", features = [
     "mock",
     "online",
 ] }
+codex-client = { workspace = true }
 codex-core = { path = "../core" }
+codex-git-utils = { workspace = true }
 codex-login = { path = "../login" }
-codex-tui = { path = "../tui" }
+codex-tui = { workspace = true }
 codex-utils-cli = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 ratatui = { workspace = true }

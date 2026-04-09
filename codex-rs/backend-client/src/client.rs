@@ -4,6 +4,7 @@ use crate::types::PaginatedListTaskListItem;
 use crate::types::RateLimitStatusPayload;
 use crate::types::TurnAttemptsSiblingTurnsResponse;
 use anyhow::Result;
+use codex_client::build_reqwest_client_with_custom_ca;
 use codex_core::auth::CodexAuth;
 use codex_core::default_client::get_codex_user_agent;
 use codex_protocol::account::PlanType as AccountPlanType;
@@ -120,7 +121,7 @@ impl Client {
         {
             base_url = format!("{base_url}/backend-api");
         }
-        let http = reqwest::Client::builder().build()?;
+        let http = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
         let path_style = PathStyle::from_base_url(&base_url);
         Ok(Self {
             base_url,
@@ -398,7 +399,7 @@ impl Client {
         let plan_type = Some(Self::map_plan_type(payload.plan_type));
         let mut snapshots = vec![Self::make_rate_limit_snapshot(
             Some("codex".to_string()),
-            None,
+            /*limit_name*/ None,
             payload.rate_limit.flatten().map(|details| *details),
             payload.credits.flatten().map(|details| *details),
             plan_type,
@@ -409,7 +410,7 @@ impl Client {
                     Some(details.metered_feature),
                     Some(details.limit_name),
                     details.rate_limit.flatten().map(|rate_limit| *rate_limit),
-                    None,
+                    /*credits*/ None,
                     plan_type,
                 )
             }));
@@ -473,7 +474,13 @@ impl Client {
             crate::types::PlanType::Plus => AccountPlanType::Plus,
             crate::types::PlanType::Pro => AccountPlanType::Pro,
             crate::types::PlanType::Team => AccountPlanType::Team,
+            crate::types::PlanType::SelfServeBusinessUsageBased => {
+                AccountPlanType::SelfServeBusinessUsageBased
+            }
             crate::types::PlanType::Business => AccountPlanType::Business,
+            crate::types::PlanType::EnterpriseCbpUsageBased => {
+                AccountPlanType::EnterpriseCbpUsageBased
+            }
             crate::types::PlanType::Enterprise => AccountPlanType::Enterprise,
             crate::types::PlanType::Edu | crate::types::PlanType::Education => AccountPlanType::Edu,
             crate::types::PlanType::Guest
@@ -497,6 +504,18 @@ impl Client {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn map_plan_type_supports_usage_based_business_variants() {
+        assert_eq!(
+            Client::map_plan_type(crate::types::PlanType::SelfServeBusinessUsageBased),
+            AccountPlanType::SelfServeBusinessUsageBased
+        );
+        assert_eq!(
+            Client::map_plan_type(crate::types::PlanType::EnterpriseCbpUsageBased),
+            AccountPlanType::EnterpriseCbpUsageBased
+        );
+    }
 
     #[test]
     fn usage_payload_maps_primary_and_additional_rate_limits() {

@@ -5,6 +5,8 @@ use codex_core::config_loader::ConfigLayerEntry;
 use codex_core::config_loader::ConfigLayerStack;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::config_loader::NetworkConstraints;
+use codex_core::config_loader::NetworkDomainPermissionToml;
+use codex_core::config_loader::NetworkUnixSocketPermissionToml;
 use codex_core::config_loader::RequirementSource;
 use codex_core::config_loader::ResidencyRequirement;
 use codex_core::config_loader::SandboxModeRequirement;
@@ -60,7 +62,10 @@ fn render_debug_config_lines(stack: &ConfigLayerStack) -> Vec<Line<'static>> {
             .bold()
             .into(),
     );
-    let layers = stack.get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true);
+    let layers = stack.get_layers(
+        ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ true,
+    );
     if layers.is_empty() {
         lines.push("  <none>".dim().into());
     } else {
@@ -186,7 +191,7 @@ fn render_non_file_layer_details(layer: &ConfigLayerEntry) -> Vec<Line<'static>>
 
 fn render_session_flag_details(config: &TomlValue) -> Vec<Line<'static>> {
     let mut pairs = Vec::new();
-    flatten_toml_key_values(config, None, &mut pairs);
+    flatten_toml_key_values(config, /*prefix*/ None, &mut pairs);
 
     if pairs.is_empty() {
         return vec!["     - <none>".dim().into()];
@@ -330,10 +335,9 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
         allow_upstream_proxy,
         dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets,
-        allowed_domains,
+        domains,
         managed_allowed_domains_only,
-        denied_domains,
-        allow_unix_sockets,
+        unix_sockets,
         allow_local_binding,
     } = network;
 
@@ -359,21 +363,24 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
             "dangerously_allow_all_unix_sockets={dangerously_allow_all_unix_sockets}"
         ));
     }
-    if let Some(allowed_domains) = allowed_domains {
-        parts.push(format!("allowed_domains=[{}]", allowed_domains.join(", ")));
+    if let Some(domains) = domains {
+        parts.push(format!(
+            "domains={}",
+            format_network_permission_entries(&domains.entries, format_network_domain_permission)
+        ));
     }
     if let Some(managed_allowed_domains_only) = managed_allowed_domains_only {
         parts.push(format!(
             "managed_allowed_domains_only={managed_allowed_domains_only}"
         ));
     }
-    if let Some(denied_domains) = denied_domains {
-        parts.push(format!("denied_domains=[{}]", denied_domains.join(", ")));
-    }
-    if let Some(allow_unix_sockets) = allow_unix_sockets {
+    if let Some(unix_sockets) = unix_sockets {
         parts.push(format!(
-            "allow_unix_sockets=[{}]",
-            allow_unix_sockets.join(", ")
+            "unix_sockets={}",
+            format_network_permission_entries(
+                &unix_sockets.entries,
+                format_network_unix_socket_permission,
+            )
         ));
     }
     if let Some(allow_local_binding) = allow_local_binding {
@@ -381,6 +388,33 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
     }
 
     join_or_empty(parts)
+}
+
+fn format_network_permission_entries<T: Copy>(
+    entries: &std::collections::BTreeMap<String, T>,
+    format_value: impl Fn(T) -> &'static str,
+) -> String {
+    let parts = entries
+        .iter()
+        .map(|(key, value)| format!("{key}={}", format_value(*value)))
+        .collect::<Vec<_>>();
+    format!("{{{}}}", parts.join(", "))
+}
+
+fn format_network_domain_permission(permission: NetworkDomainPermissionToml) -> &'static str {
+    match permission {
+        NetworkDomainPermissionToml::Allow => "allow",
+        NetworkDomainPermissionToml::Deny => "deny",
+    }
+}
+
+fn format_network_unix_socket_permission(
+    permission: NetworkUnixSocketPermissionToml,
+) -> &'static str {
+    match permission {
+        NetworkUnixSocketPermissionToml::Allow => "allow",
+        NetworkUnixSocketPermissionToml::None => "none",
+    }
 }
 
 #[cfg(test)]
@@ -397,6 +431,10 @@ mod tests {
     use codex_core::config_loader::McpServerIdentity;
     use codex_core::config_loader::McpServerRequirement;
     use codex_core::config_loader::NetworkConstraints;
+    use codex_core::config_loader::NetworkDomainPermissionToml;
+    use codex_core::config_loader::NetworkDomainPermissionsToml;
+    use codex_core::config_loader::NetworkUnixSocketPermissionToml;
+    use codex_core::config_loader::NetworkUnixSocketPermissionsToml;
     use codex_core::config_loader::RequirementSource;
     use codex_core::config_loader::ResidencyRequirement;
     use codex_core::config_loader::SandboxModeRequirement;
@@ -513,7 +551,12 @@ mod tests {
             network: Some(Sourced::new(
                 NetworkConstraints {
                     enabled: Some(true),
-                    allowed_domains: Some(vec!["example.com".to_string()]),
+                    domains: Some(NetworkDomainPermissionsToml {
+                        entries: BTreeMap::from([(
+                            "example.com".to_string(),
+                            NetworkDomainPermissionToml::Allow,
+                        )]),
+                    }),
                     ..Default::default()
                 },
                 RequirementSource::CloudRequirements,
@@ -525,6 +568,7 @@ mod tests {
             allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
             allowed_sandbox_modes: Some(vec![SandboxModeRequirement::ReadOnly]),
             allowed_web_search_modes: Some(vec![WebSearchModeRequirement::Cached]),
+            guardian_developer_instructions: None,
             feature_requirements: None,
             mcp_servers: Some(BTreeMap::from([(
                 "docs".to_string(),
@@ -534,6 +578,7 @@ mod tests {
                     },
                 },
             )])),
+            apps: None,
             rules: None,
             enforce_residency: Some(ResidencyRequirement::Us),
             network: None,
@@ -575,10 +620,45 @@ mod tests {
         assert!(rendered.contains("mcp_servers: docs (source: MDM managed_config.toml (legacy))"));
         assert!(rendered.contains("enforce_residency: us (source: cloud requirements)"));
         assert!(rendered.contains(
-            "experimental_network: enabled=true, allowed_domains=[example.com] (source: cloud requirements)"
+            "experimental_network: enabled=true, domains={example.com=allow} (source: cloud requirements)"
         ));
         assert!(!rendered.contains("  - rules:"));
     }
+
+    #[test]
+    fn debug_config_output_formats_unix_socket_permissions() {
+        let requirements = ConfigRequirements {
+            network: Some(Sourced::new(
+                NetworkConstraints {
+                    unix_sockets: Some(NetworkUnixSocketPermissionsToml {
+                        entries: BTreeMap::from([
+                            (
+                                "/tmp/codex.sock".to_string(),
+                                NetworkUnixSocketPermissionToml::Allow,
+                            ),
+                            (
+                                "/tmp/blocked.sock".to_string(),
+                                NetworkUnixSocketPermissionToml::None,
+                            ),
+                        ]),
+                    }),
+                    ..Default::default()
+                },
+                RequirementSource::CloudRequirements,
+            )),
+            ..ConfigRequirements::default()
+        };
+
+        let stack =
+            ConfigLayerStack::new(Vec::new(), requirements, ConfigRequirementsToml::default())
+                .expect("config layer stack");
+
+        let rendered = render_to_text(&render_debug_config_lines(&stack));
+        assert!(rendered.contains(
+            "experimental_network: unix_sockets={/tmp/blocked.sock=none, /tmp/codex.sock=allow} (source: cloud requirements)"
+        ));
+    }
+
     #[test]
     fn debug_config_output_lists_session_flag_key_value_pairs() {
         let session_flags = toml::from_str::<TomlValue>(
@@ -651,8 +731,10 @@ approval_policy = "never"
             allowed_approval_policies: None,
             allowed_sandbox_modes: None,
             allowed_web_search_modes: Some(Vec::new()),
+            guardian_developer_instructions: None,
             feature_requirements: None,
             mcp_servers: None,
+            apps: None,
             rules: None,
             enforce_residency: None,
             network: None,
@@ -670,7 +752,11 @@ approval_policy = "never"
     #[test]
     fn session_all_proxy_url_uses_socks_when_enabled() {
         assert_eq!(
-            session_all_proxy_url("127.0.0.1:3128", "127.0.0.1:8081", true),
+            session_all_proxy_url(
+                "127.0.0.1:3128",
+                "127.0.0.1:8081",
+                /*socks_enabled*/ true
+            ),
             "socks5h://127.0.0.1:8081".to_string()
         );
     }
@@ -678,7 +764,11 @@ approval_policy = "never"
     #[test]
     fn session_all_proxy_url_uses_http_when_socks_disabled() {
         assert_eq!(
-            session_all_proxy_url("127.0.0.1:3128", "127.0.0.1:8081", false),
+            session_all_proxy_url(
+                "127.0.0.1:3128",
+                "127.0.0.1:8081",
+                /*socks_enabled*/ false
+            ),
             "http://127.0.0.1:3128".to_string()
         );
     }

@@ -7,12 +7,12 @@ use crate::protocol::common::AuthMode;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
-use codex_protocol::approvals::ExecApprovalRequestSkillMetadata as CoreExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
 use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
 use codex_protocol::approvals::NetworkPolicyAmendment as CoreNetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction as CoreNetworkPolicyRuleAction;
+use codex_protocol::config_types::ApprovalsReviewer as CoreApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask as CoreCollaborationModeMask;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -29,10 +29,9 @@ use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::mcp::Resource as McpResource;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
 use codex_protocol::mcp::Tool as McpTool;
+use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
+use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
-use codex_protocol::models::MacOsAutomationPermission as CoreMacOsAutomationPermission;
-use codex_protocol::models::MacOsPreferencesPermission as CoreMacOsPreferencesPermission;
-use codex_protocol::models::MacOsSeatbeltProfileExtensions as CoreMacOsSeatbeltProfileExtensions;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -48,7 +47,10 @@ use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
+use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
+use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
+use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::HookEventName as CoreHookEventName;
 use codex_protocol::protocol::HookExecutionMode as CoreHookExecutionMode;
 use codex_protocol::protocol::HookHandlerType as CoreHookHandlerType;
@@ -59,12 +61,13 @@ use codex_protocol::protocol::HookRunSummary as CoreHookRunSummary;
 use codex_protocol::protocol::HookScope as CoreHookScope;
 use codex_protocol::protocol::ModelRerouteReason as CoreModelRerouteReason;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
+use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
 use codex_protocol::protocol::ReadOnlyAccess as CoreReadOnlyAccess;
 use codex_protocol::protocol::RealtimeAudioFrame as CoreRealtimeAudioFrame;
-use codex_protocol::protocol::RejectConfig as CoreRejectConfig;
+use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SkillDependencies as CoreSkillDependencies;
@@ -77,6 +80,7 @@ use codex_protocol::protocol::SubAgentSource as CoreSubAgentSource;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
 use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
+use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::user_input::ByteRange as CoreByteRange;
 use codex_protocol::user_input::TextElement as CoreTextElement;
 use codex_protocol::user_input::UserInput as CoreUserInput;
@@ -85,6 +89,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use serde_with::serde_as;
 use thiserror::Error;
 use ts_rs::TS;
 
@@ -117,6 +122,14 @@ macro_rules! v2_enum_from_core {
             }
         }
     };
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum NonSteerableTurnKind {
+    Review,
+    Compact,
 }
 
 /// This translation layer make sure that we expose codex error code in camel case.
@@ -158,6 +171,13 @@ pub enum CodexErrorInfo {
         #[ts(rename = "httpStatusCode")]
         http_status_code: Option<u16>,
     },
+    /// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+    /// cannot accept same-turn steering, for example `/review` or manual `/compact`.
+    ActiveTurnNotSteerable {
+        #[serde(rename = "turnKind")]
+        #[ts(rename = "turnKind")]
+        turn_kind: NonSteerableTurnKind,
+    },
     Other,
 }
 
@@ -184,12 +204,28 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
                 CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code }
             }
+            CoreCodexErrorInfo::ActiveTurnNotSteerable { turn_kind } => {
+                CodexErrorInfo::ActiveTurnNotSteerable {
+                    turn_kind: turn_kind.into(),
+                }
+            }
             CoreCodexErrorInfo::Other => CodexErrorInfo::Other,
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+impl From<CoreNonSteerableTurnKind> for NonSteerableTurnKind {
+    fn from(value: CoreNonSteerableTurnKind) -> Self {
+        match value {
+            CoreNonSteerableTurnKind::Review => Self::Review,
+            CoreNonSteerableTurnKind::Compact => Self::Compact,
+        }
+    }
+}
+
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, ExperimentalApi,
+)]
 #[serde(rename_all = "kebab-case")]
 #[ts(rename_all = "kebab-case", export_to = "v2/")]
 pub enum AskForApproval {
@@ -198,9 +234,12 @@ pub enum AskForApproval {
     UnlessTrusted,
     OnFailure,
     OnRequest,
-    Reject {
+    #[experimental("askForApproval.granular")]
+    Granular {
         sandbox_approval: bool,
         rules: bool,
+        #[serde(default)]
+        skill_approval: bool,
         #[serde(default)]
         request_permissions: bool,
         mcp_elicitations: bool,
@@ -214,14 +253,16 @@ impl AskForApproval {
             AskForApproval::UnlessTrusted => CoreAskForApproval::UnlessTrusted,
             AskForApproval::OnFailure => CoreAskForApproval::OnFailure,
             AskForApproval::OnRequest => CoreAskForApproval::OnRequest,
-            AskForApproval::Reject {
+            AskForApproval::Granular {
                 sandbox_approval,
                 rules,
+                skill_approval,
                 request_permissions,
                 mcp_elicitations,
-            } => CoreAskForApproval::Reject(CoreRejectConfig {
+            } => CoreAskForApproval::Granular(CoreGranularApprovalConfig {
                 sandbox_approval,
                 rules,
+                skill_approval,
                 request_permissions,
                 mcp_elicitations,
             }),
@@ -236,13 +277,45 @@ impl From<CoreAskForApproval> for AskForApproval {
             CoreAskForApproval::UnlessTrusted => AskForApproval::UnlessTrusted,
             CoreAskForApproval::OnFailure => AskForApproval::OnFailure,
             CoreAskForApproval::OnRequest => AskForApproval::OnRequest,
-            CoreAskForApproval::Reject(reject_config) => AskForApproval::Reject {
-                sandbox_approval: reject_config.sandbox_approval,
-                rules: reject_config.rules,
-                request_permissions: reject_config.request_permissions,
-                mcp_elicitations: reject_config.mcp_elicitations,
+            CoreAskForApproval::Granular(granular_config) => AskForApproval::Granular {
+                sandbox_approval: granular_config.sandbox_approval,
+                rules: granular_config.rules,
+                skill_approval: granular_config.skill_approval,
+                request_permissions: granular_config.request_permissions,
+                mcp_elicitations: granular_config.mcp_elicitations,
             },
             CoreAskForApproval::Never => AskForApproval::Never,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case", export_to = "v2/")]
+/// Configures who approval requests are routed to for review. Examples
+/// include sandbox escapes, blocked network access, MCP approval prompts, and
+/// ARC escalations. Defaults to `user`. `guardian_subagent` uses a carefully
+/// prompted subagent to gather relevant context and apply a risk-based
+/// decision framework before approving or denying the request.
+pub enum ApprovalsReviewer {
+    User,
+    GuardianSubagent,
+}
+
+impl ApprovalsReviewer {
+    pub fn to_core(self) -> CoreApprovalsReviewer {
+        match self {
+            ApprovalsReviewer::User => CoreApprovalsReviewer::User,
+            ApprovalsReviewer::GuardianSubagent => CoreApprovalsReviewer::GuardianSubagent,
+        }
+    }
+}
+
+impl From<CoreApprovalsReviewer> for ApprovalsReviewer {
+    fn from(value: CoreApprovalsReviewer) -> Self {
+        match value {
+            CoreApprovalsReviewer::User => ApprovalsReviewer::User,
+            CoreApprovalsReviewer::GuardianSubagent => ApprovalsReviewer::GuardianSubagent,
         }
     }
 }
@@ -299,7 +372,7 @@ v2_enum_from_core!(
 
 v2_enum_from_core!(
     pub enum HookEventName from CoreHookEventName {
-        SessionStart, Stop
+        PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop
     }
 );
 
@@ -493,22 +566,63 @@ pub struct ToolsV2 {
     pub view_image: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct DynamicToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: JsonValue,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_loading: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DynamicToolSpecDe {
+    name: String,
+    description: String,
+    input_schema: JsonValue,
+    defer_loading: Option<bool>,
+    expose_to_context: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for DynamicToolSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let DynamicToolSpecDe {
+            name,
+            description,
+            input_schema,
+            defer_loading,
+            expose_to_context,
+        } = DynamicToolSpecDe::deserialize(deserializer)?;
+
+        Ok(Self {
+            name,
+            description,
+            input_schema,
+            defer_loading: defer_loading
+                .unwrap_or_else(|| expose_to_context.map(|visible| !visible).unwrap_or(false)),
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
 pub struct ProfileV2 {
     pub model: Option<String>,
     pub model_provider: Option<String>,
+    #[experimental(nested)]
     pub approval_policy: Option<AskForApproval>,
+    /// [UNSTABLE] Optional profile-level override for where approval requests
+    /// are routed for review. If omitted, the enclosing config default is
+    /// used.
+    #[experimental("config/read.approvalsReviewer")]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub service_tier: Option<ServiceTier>,
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
@@ -606,7 +720,12 @@ pub struct Config {
     pub model_context_window: Option<i64>,
     pub model_auto_compact_token_limit: Option<i64>,
     pub model_provider: Option<String>,
+    #[experimental(nested)]
     pub approval_policy: Option<AskForApproval>,
+    /// [UNSTABLE] Optional default for where approval requests are routed for
+    /// review.
+    #[experimental("config/read.approvalsReviewer")]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub sandbox_mode: Option<SandboxMode>,
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
     pub forced_chatgpt_workspace_id: Option<String>,
@@ -614,6 +733,7 @@ pub struct Config {
     pub web_search: Option<WebSearchMode>,
     pub tools: Option<ToolsV2>,
     pub profile: Option<String>,
+    #[experimental(nested)]
     #[serde(default)]
     pub profiles: HashMap<String, ProfileV2>,
     pub instructions: Option<String>,
@@ -711,10 +831,11 @@ pub struct ConfigReadParams {
     pub cwd: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigReadResponse {
+    #[experimental(nested)]
     pub config: Config,
     pub origins: HashMap<String, ConfigLayerMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -725,6 +846,7 @@ pub struct ConfigReadResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirements {
+    #[experimental(nested)]
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
@@ -744,10 +866,36 @@ pub struct NetworkRequirements {
     pub allow_upstream_proxy: Option<bool>,
     pub dangerously_allow_non_loopback_proxy: Option<bool>,
     pub dangerously_allow_all_unix_sockets: Option<bool>,
+    /// Canonical network permission map for `experimental_network`.
+    pub domains: Option<BTreeMap<String, NetworkDomainPermission>>,
+    /// When true, only managed allowlist entries are respected while managed
+    /// network enforcement is active.
+    pub managed_allowed_domains_only: Option<bool>,
+    /// Legacy compatibility view derived from `domains`.
     pub allowed_domains: Option<Vec<String>>,
+    /// Legacy compatibility view derived from `domains`.
     pub denied_domains: Option<Vec<String>>,
+    /// Canonical unix socket permission map for `experimental_network`.
+    pub unix_sockets: Option<BTreeMap<String, NetworkUnixSocketPermission>>,
+    /// Legacy compatibility view derived from `unix_sockets`.
     pub allow_unix_sockets: Option<Vec<String>>,
     pub allow_local_binding: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+pub enum NetworkDomainPermission {
+    Allow,
+    Deny,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+pub enum NetworkUnixSocketPermission {
+    Allow,
+    None,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -757,11 +905,12 @@ pub enum ResidencyRequirement {
     Us,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirementsReadResponse {
     /// Null if no requirements are configured (e.g. no requirements.toml/MDM entries).
+    #[experimental(nested)]
     pub requirements: Option<ConfigRequirements>,
 }
 
@@ -961,38 +1110,6 @@ impl From<AdditionalFileSystemPermissions> for CoreFileSystemPermissions {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct AdditionalMacOsPermissions {
-    pub preferences: CoreMacOsPreferencesPermission,
-    pub automations: CoreMacOsAutomationPermission,
-    pub accessibility: bool,
-    pub calendar: bool,
-}
-
-impl From<CoreMacOsSeatbeltProfileExtensions> for AdditionalMacOsPermissions {
-    fn from(value: CoreMacOsSeatbeltProfileExtensions) -> Self {
-        Self {
-            preferences: value.macos_preferences,
-            automations: value.macos_automation,
-            accessibility: value.macos_accessibility,
-            calendar: value.macos_calendar,
-        }
-    }
-}
-
-impl From<AdditionalMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
-    fn from(value: AdditionalMacOsPermissions) -> Self {
-        Self {
-            macos_preferences: value.preferences,
-            macos_automation: value.automations,
-            macos_accessibility: value.accessibility,
-            macos_calendar: value.calendar,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 pub struct AdditionalNetworkPermissions {
     pub enabled: Option<bool>,
 }
@@ -1015,11 +1132,37 @@ impl From<AdditionalNetworkPermissions> for CoreNetworkPermissions {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct RequestPermissionProfile {
+    pub network: Option<AdditionalNetworkPermissions>,
+    pub file_system: Option<AdditionalFileSystemPermissions>,
+}
+
+impl From<CoreRequestPermissionProfile> for RequestPermissionProfile {
+    fn from(value: CoreRequestPermissionProfile) -> Self {
+        Self {
+            network: value.network.map(AdditionalNetworkPermissions::from),
+            file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
+        }
+    }
+}
+
+impl From<RequestPermissionProfile> for CoreRequestPermissionProfile {
+    fn from(value: RequestPermissionProfile) -> Self {
+        Self {
+            network: value.network.map(CoreNetworkPermissions::from),
+            file_system: value.file_system.map(CoreFileSystemPermissions::from),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct AdditionalPermissionProfile {
     pub network: Option<AdditionalNetworkPermissions>,
     pub file_system: Option<AdditionalFileSystemPermissions>,
-    pub macos: Option<AdditionalMacOsPermissions>,
 }
 
 impl From<CorePermissionProfile> for AdditionalPermissionProfile {
@@ -1027,7 +1170,6 @@ impl From<CorePermissionProfile> for AdditionalPermissionProfile {
         Self {
             network: value.network.map(AdditionalNetworkPermissions::from),
             file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
-            macos: value.macos.map(AdditionalMacOsPermissions::from),
         }
     }
 }
@@ -1037,40 +1179,6 @@ impl From<AdditionalPermissionProfile> for CorePermissionProfile {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos: value.macos.map(CoreMacOsSeatbeltProfileExtensions::from),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct GrantedMacOsPermissions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub preferences: Option<CoreMacOsPreferencesPermission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub automations: Option<CoreMacOsAutomationPermission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub accessibility: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub calendar: Option<bool>,
-}
-
-impl From<GrantedMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
-    fn from(value: GrantedMacOsPermissions) -> Self {
-        Self {
-            macos_preferences: value
-                .preferences
-                .unwrap_or(CoreMacOsPreferencesPermission::None),
-            macos_automation: value
-                .automations
-                .unwrap_or(CoreMacOsAutomationPermission::None),
-            macos_accessibility: value.accessibility.unwrap_or(false),
-            macos_calendar: value.calendar.unwrap_or(false),
         }
     }
 }
@@ -1085,29 +1193,13 @@ pub struct GrantedPermissionProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub file_system: Option<AdditionalFileSystemPermissions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub macos: Option<GrantedMacOsPermissions>,
 }
 
 impl From<GrantedPermissionProfile> for CorePermissionProfile {
     fn from(value: GrantedPermissionProfile) -> Self {
-        let macos = value.macos.and_then(|macos| {
-            if macos.preferences.is_none()
-                && macos.automations.is_none()
-                && macos.accessibility.is_none()
-                && macos.calendar.is_none()
-            {
-                None
-            } else {
-                Some(CoreMacOsSeatbeltProfileExtensions::from(macos))
-            }
-        });
-
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos,
         }
     }
 }
@@ -1383,6 +1475,7 @@ pub enum SessionSource {
     VsCode,
     Exec,
     AppServer,
+    Custom(String),
     SubAgent(CoreSubAgentSource),
     #[serde(other)]
     Unknown,
@@ -1395,6 +1488,7 @@ impl From<CoreSessionSource> for SessionSource {
             CoreSessionSource::VSCode => SessionSource::VsCode,
             CoreSessionSource::Exec => SessionSource::Exec,
             CoreSessionSource::Mcp => SessionSource::AppServer,
+            CoreSessionSource::Custom(source) => SessionSource::Custom(source),
             CoreSessionSource::SubAgent(sub) => SessionSource::SubAgent(sub),
             CoreSessionSource::Unknown => SessionSource::Unknown,
         }
@@ -1408,6 +1502,7 @@ impl From<SessionSource> for CoreSessionSource {
             SessionSource::VsCode => CoreSessionSource::VSCode,
             SessionSource::Exec => CoreSessionSource::Exec,
             SessionSource::AppServer => CoreSessionSource::Mcp,
+            SessionSource::Custom(source) => CoreSessionSource::Custom(source),
             SessionSource::SubAgent(sub) => CoreSessionSource::SubAgent(sub),
             SessionSource::Unknown => CoreSessionSource::Unknown,
         }
@@ -1494,6 +1589,9 @@ pub enum LoginAccountParams {
     #[serde(rename = "chatgpt")]
     #[ts(rename = "chatgpt")]
     Chatgpt,
+    #[serde(rename = "chatgptDeviceCode")]
+    #[ts(rename = "chatgptDeviceCode")]
+    ChatgptDeviceCode,
     /// [UNSTABLE] FOR OPENAI INTERNAL USE ONLY - DO NOT USE.
     /// The access token must contain the same scopes that Codex-managed ChatGPT auth tokens have.
     #[experimental("account/login/start.chatgptAuthTokens")]
@@ -1530,6 +1628,17 @@ pub enum LoginAccountResponse {
         login_id: String,
         /// URL the client should open in a browser to initiate the OAuth flow.
         auth_url: String,
+    },
+    #[serde(rename = "chatgptDeviceCode", rename_all = "camelCase")]
+    #[ts(rename = "chatgptDeviceCode", rename_all = "camelCase")]
+    ChatgptDeviceCode {
+        // Use plain String for identifiers to avoid TS/JSON Schema quirks around uuid-specific types.
+        // Convert to/from UUIDs at the application layer as needed.
+        login_id: String,
+        /// URL the client should open in a browser to complete device code authorization.
+        verification_url: String,
+        /// One-time code the user must enter after signing in.
+        user_code: String,
     },
     #[serde(rename = "chatgptAuthTokens", rename_all = "camelCase")]
     #[ts(rename = "chatgptAuthTokens", rename_all = "camelCase")]
@@ -1807,6 +1916,25 @@ pub struct ExperimentalFeatureListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetParams {
+    /// Process-wide runtime feature enablement keyed by canonical feature name.
+    ///
+    /// Only named features are updated. Omitted features are left unchanged.
+    /// Send an empty map for a no-op.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetResponse {
+    /// Feature enablement entries updated by this request.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1940,12 +2068,13 @@ pub struct AppInfo {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// EXPERIMENTAL - app metadata summary for plugin-install responses.
+/// EXPERIMENTAL - app metadata summary for plugin responses.
 pub struct AppSummary {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub install_url: Option<String>,
+    pub needs_auth: bool,
 }
 
 impl From<AppInfo> for AppSummary {
@@ -1955,6 +2084,7 @@ impl From<AppInfo> for AppSummary {
             name: value.name,
             description: value.description,
             install_url: value.install_url,
+            needs_auth: false,
         }
     }
 }
@@ -2027,6 +2157,203 @@ pub struct FeedbackUploadParams {
 #[ts(export_to = "v2/")]
 pub struct FeedbackUploadResponse {
     pub thread_id: String,
+}
+
+/// Read a file from the host filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsReadFileParams {
+    /// Absolute path to read.
+    pub path: AbsolutePathBuf,
+}
+
+/// Base64-encoded file contents returned by `fs/readFile`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsReadFileResponse {
+    /// File contents encoded as base64.
+    pub data_base64: String,
+}
+
+/// Write a file on the host filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWriteFileParams {
+    /// Absolute path to write.
+    pub path: AbsolutePathBuf,
+    /// File contents encoded as base64.
+    pub data_base64: String,
+}
+
+/// Successful response for `fs/writeFile`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWriteFileResponse {}
+
+/// Create a directory on the host filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsCreateDirectoryParams {
+    /// Absolute directory path to create.
+    pub path: AbsolutePathBuf,
+    /// Whether parent directories should also be created. Defaults to `true`.
+    #[ts(optional = nullable)]
+    pub recursive: Option<bool>,
+}
+
+/// Successful response for `fs/createDirectory`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsCreateDirectoryResponse {}
+
+/// Request metadata for an absolute path.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsGetMetadataParams {
+    /// Absolute path to inspect.
+    pub path: AbsolutePathBuf,
+}
+
+/// Metadata returned by `fs/getMetadata`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsGetMetadataResponse {
+    /// Whether the path currently resolves to a directory.
+    pub is_directory: bool,
+    /// Whether the path currently resolves to a regular file.
+    pub is_file: bool,
+    /// File creation time in Unix milliseconds when available, otherwise `0`.
+    #[ts(type = "number")]
+    pub created_at_ms: i64,
+    /// File modification time in Unix milliseconds when available, otherwise `0`.
+    #[ts(type = "number")]
+    pub modified_at_ms: i64,
+}
+
+/// List direct child names for a directory.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsReadDirectoryParams {
+    /// Absolute directory path to read.
+    pub path: AbsolutePathBuf,
+}
+
+/// A directory entry returned by `fs/readDirectory`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsReadDirectoryEntry {
+    /// Direct child entry name only, not an absolute or relative path.
+    pub file_name: String,
+    /// Whether this entry resolves to a directory.
+    pub is_directory: bool,
+    /// Whether this entry resolves to a regular file.
+    pub is_file: bool,
+}
+
+/// Directory entries returned by `fs/readDirectory`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsReadDirectoryResponse {
+    /// Direct child entries in the requested directory.
+    pub entries: Vec<FsReadDirectoryEntry>,
+}
+
+/// Remove a file or directory tree from the host filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsRemoveParams {
+    /// Absolute path to remove.
+    pub path: AbsolutePathBuf,
+    /// Whether directory removal should recurse. Defaults to `true`.
+    #[ts(optional = nullable)]
+    pub recursive: Option<bool>,
+    /// Whether missing paths should be ignored. Defaults to `true`.
+    #[ts(optional = nullable)]
+    pub force: Option<bool>,
+}
+
+/// Successful response for `fs/remove`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsRemoveResponse {}
+
+/// Copy a file or directory tree on the host filesystem.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsCopyParams {
+    /// Absolute source path.
+    pub source_path: AbsolutePathBuf,
+    /// Absolute destination path.
+    pub destination_path: AbsolutePathBuf,
+    /// Required for directory copies; ignored for file copies.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recursive: bool,
+}
+
+/// Successful response for `fs/copy`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsCopyResponse {}
+
+/// Start filesystem watch notifications for an absolute path.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchParams {
+    /// Absolute file or directory path to watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Created watch handle returned by `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchResponse {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
+    /// Canonicalized path associated with the watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Stop filesystem watch notifications for a prior `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchParams {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+}
+
+/// Successful response for `fs/unwatch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchResponse {}
+
+/// Filesystem watch notification emitted for `fs/watch` subscribers.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsChangedNotification {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+    /// File or directory paths associated with this event.
+    pub changed_paths: Vec<AbsolutePathBuf>,
 }
 
 /// PTY size in character cells for `command/exec` PTY sessions.
@@ -2229,8 +2556,13 @@ pub struct ThreadStartParams {
     pub service_tier: Option<Option<ServiceTier>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
+    #[experimental(nested)]
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override where approval requests are routed for review on this thread
+    /// and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2282,7 +2614,7 @@ pub struct MockExperimentalMethodResponse {
     pub echoed: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
@@ -2291,7 +2623,10 @@ pub struct ThreadStartResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    #[experimental(nested)]
     pub approval_policy: AskForApproval,
+    /// Reviewer currently used for approval requests on this thread.
+    pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -2341,8 +2676,13 @@ pub struct ThreadResumeParams {
     pub service_tier: Option<Option<ServiceTier>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
+    #[experimental(nested)]
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override where approval requests are routed for review on this thread
+    /// and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2360,7 +2700,7 @@ pub struct ThreadResumeParams {
     pub persist_extended_history: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadResumeResponse {
@@ -2369,7 +2709,10 @@ pub struct ThreadResumeResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    #[experimental(nested)]
     pub approval_policy: AskForApproval,
+    /// Reviewer currently used for approval requests on this thread.
+    pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -2410,8 +2753,13 @@ pub struct ThreadForkParams {
     pub service_tier: Option<Option<ServiceTier>>,
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
+    #[experimental(nested)]
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override where approval requests are routed for review on this thread
+    /// and subsequent turns.
+    #[ts(optional = nullable)]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     #[ts(optional = nullable)]
     pub sandbox: Option<SandboxMode>,
     #[ts(optional = nullable)]
@@ -2420,6 +2768,8 @@ pub struct ThreadForkParams {
     pub base_instructions: Option<String>,
     #[ts(optional = nullable)]
     pub developer_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ephemeral: bool,
     /// If true, persist additional rollout EventMsg variants required to
     /// reconstruct a richer thread history on subsequent resume/fork/read.
     #[experimental("thread/fork.persistFullHistory")]
@@ -2427,7 +2777,7 @@ pub struct ThreadForkParams {
     pub persist_extended_history: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadForkResponse {
@@ -2436,7 +2786,10 @@ pub struct ThreadForkResponse {
     pub model_provider: String,
     pub service_tier: Option<ServiceTier>,
     pub cwd: PathBuf,
+    #[experimental(nested)]
     pub approval_policy: AskForApproval,
+    /// Reviewer currently used for approval requests on this thread.
+    pub approvals_reviewer: ApprovalsReviewer,
     pub sandbox: SandboxPolicy,
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -2609,6 +2962,23 @@ pub struct ThreadCompactStartParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShellCommandParams {
+    pub thread_id: String,
+    /// Shell command string evaluated by the thread's configured shell.
+    /// Unlike `command/exec`, this intentionally preserves shell syntax
+    /// such as pipes, redirects, and quoting. This runs unsandboxed with full
+    /// access rather than inheriting the thread sandbox policy.
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadShellCommandResponse {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -2820,6 +3190,10 @@ pub struct PluginListParams {
     /// only home-scoped marketplaces and the official curated marketplace are considered.
     #[ts(optional = nullable)]
     pub cwds: Option<Vec<AbsolutePathBuf>>,
+    /// When true, reconcile the official curated marketplace against the remote plugin state
+    /// before listing marketplaces.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2827,73 +3201,34 @@ pub struct PluginListParams {
 #[ts(export_to = "v2/")]
 pub struct PluginListResponse {
     pub marketplaces: Vec<PluginMarketplaceEntry>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteReadParams {
     #[serde(default)]
-    pub hazelnut_scope: HazelnutScope,
+    pub marketplace_load_errors: Vec<MarketplaceLoadErrorInfo>,
+    pub remote_sync_error: Option<String>,
     #[serde(default)]
-    pub product_surface: ProductSurface,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, Default)]
-#[serde(rename_all = "kebab-case")]
-#[ts(rename_all = "kebab-case")]
-#[ts(export_to = "v2/")]
-pub enum HazelnutScope {
-    #[default]
-    Example,
-    WorkspaceShared,
-    AllShared,
-    Personal,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS, Default)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum ProductSurface {
-    Chatgpt,
-    #[default]
-    Codex,
-    Api,
-    Atlas,
+    pub featured_plugin_ids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct RemoteSkillSummary {
-    pub id: String,
-    pub name: String,
-    pub description: String,
+pub struct MarketplaceLoadErrorInfo {
+    pub marketplace_path: AbsolutePathBuf,
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct SkillsRemoteReadResponse {
-    pub data: Vec<RemoteSkillSummary>,
+pub struct PluginReadParams {
+    pub marketplace_path: AbsolutePathBuf,
+    pub plugin_name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct SkillsRemoteWriteParams {
-    pub hazelnut_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct SkillsRemoteWriteResponse {
-    pub id: String,
-    pub path: PathBuf,
+pub struct PluginReadResponse {
+    pub plugin: PluginDetail,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -2998,7 +3333,40 @@ pub struct SkillsListEntry {
 pub struct PluginMarketplaceEntry {
     pub name: String,
     pub path: AbsolutePathBuf,
+    pub interface: Option<MarketplaceInterface>,
     pub plugins: Vec<PluginSummary>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceInterface {
+    pub display_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[ts(export_to = "v2/")]
+pub enum PluginInstallPolicy {
+    #[serde(rename = "NOT_AVAILABLE")]
+    #[ts(rename = "NOT_AVAILABLE")]
+    NotAvailable,
+    #[serde(rename = "AVAILABLE")]
+    #[ts(rename = "AVAILABLE")]
+    Available,
+    #[serde(rename = "INSTALLED_BY_DEFAULT")]
+    #[ts(rename = "INSTALLED_BY_DEFAULT")]
+    InstalledByDefault,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[ts(export_to = "v2/")]
+pub enum PluginAuthPolicy {
+    #[serde(rename = "ON_INSTALL")]
+    #[ts(rename = "ON_INSTALL")]
+    OnInstall,
+    #[serde(rename = "ON_USE")]
+    #[ts(rename = "ON_USE")]
+    OnUse,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3010,7 +3378,34 @@ pub struct PluginSummary {
     pub source: PluginSource,
     pub installed: bool,
     pub enabled: bool,
+    pub install_policy: PluginInstallPolicy,
+    pub auth_policy: PluginAuthPolicy,
     pub interface: Option<PluginInterface>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct PluginDetail {
+    pub marketplace_name: String,
+    pub marketplace_path: AbsolutePathBuf,
+    pub summary: PluginSummary,
+    pub description: Option<String>,
+    pub skills: Vec<SkillSummary>,
+    pub apps: Vec<AppSummary>,
+    pub mcp_servers: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub short_description: Option<String>,
+    pub interface: Option<SkillInterface>,
+    pub path: PathBuf,
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3026,7 +3421,9 @@ pub struct PluginInterface {
     pub website_url: Option<String>,
     pub privacy_policy_url: Option<String>,
     pub terms_of_service_url: Option<String>,
-    pub default_prompt: Option<String>,
+    /// Starter prompts for the plugin. Capped at 3 entries with a maximum of
+    /// 128 characters per entry.
+    pub default_prompt: Option<Vec<String>>,
     pub brand_color: Option<String>,
     pub composer_icon: Option<AbsolutePathBuf>,
     pub logo: Option<AbsolutePathBuf>,
@@ -3047,7 +3444,12 @@ pub enum PluginSource {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SkillsConfigWriteParams {
-    pub path: PathBuf,
+    /// Path-based selector.
+    #[ts(optional = nullable)]
+    pub path: Option<AbsolutePathBuf>,
+    /// Name-based selector.
+    #[ts(optional = nullable)]
+    pub name: Option<String>,
     pub enabled: bool,
 }
 
@@ -3064,12 +3466,16 @@ pub struct SkillsConfigWriteResponse {
 pub struct PluginInstallParams {
     pub marketplace_path: AbsolutePathBuf,
     pub plugin_name: String,
+    /// When true, apply the remote plugin change before the local install flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct PluginInstallResponse {
+    pub auth_policy: PluginAuthPolicy,
     pub apps_needing_auth: Vec<AppSummary>,
 }
 
@@ -3078,6 +3484,9 @@ pub struct PluginInstallResponse {
 #[ts(export_to = "v2/")]
 pub struct PluginUninstallParams {
     pub plugin_id: String,
+    /// When true, apply the remote plugin change before the local uninstall flow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub force_remote_sync: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3096,14 +3505,6 @@ impl From<CoreSkillMetadata> for SkillMetadata {
             path: value.path,
             scope: value.scope.into(),
             enabled: true,
-        }
-    }
-}
-
-impl From<CoreExecApprovalRequestSkillMetadata> for CommandExecutionRequestApprovalSkillMetadata {
-    fn from(value: CoreExecApprovalRequestSkillMetadata) -> Self {
-        Self {
-            path_to_skills_md: value.path_to_skills_md,
         }
     }
 }
@@ -3288,6 +3689,44 @@ pub struct Turn {
     pub error: Option<TurnError>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MemoryCitation {
+    pub entries: Vec<MemoryCitationEntry>,
+    pub thread_ids: Vec<String>,
+}
+
+impl From<CoreMemoryCitation> for MemoryCitation {
+    fn from(value: CoreMemoryCitation) -> Self {
+        Self {
+            entries: value.entries.into_iter().map(Into::into).collect(),
+            thread_ids: value.rollout_ids,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MemoryCitationEntry {
+    pub path: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub note: String,
+}
+
+impl From<CoreMemoryCitationEntry> for MemoryCitationEntry {
+    fn from(value: CoreMemoryCitationEntry) -> Self {
+        Self {
+            path: value.path,
+            line_start: value.line_start,
+            line_end: value.line_end,
+            note: value.note,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, Error)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -3320,6 +3759,7 @@ pub struct ThreadRealtimeAudioChunk {
     pub sample_rate: u32,
     pub num_channels: u16,
     pub samples_per_channel: Option<u32>,
+    pub item_id: Option<String>,
 }
 
 impl From<CoreRealtimeAudioFrame> for ThreadRealtimeAudioChunk {
@@ -3329,12 +3769,14 @@ impl From<CoreRealtimeAudioFrame> for ThreadRealtimeAudioChunk {
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         } = value;
         Self {
             data,
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         }
     }
 }
@@ -3346,12 +3788,14 @@ impl From<ThreadRealtimeAudioChunk> for CoreRealtimeAudioFrame {
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         } = value;
         Self {
             data,
             sample_rate,
             num_channels,
             samples_per_channel,
+            item_id,
         }
     }
 }
@@ -3424,6 +3868,7 @@ pub struct ThreadRealtimeStopResponse {}
 pub struct ThreadRealtimeStartedNotification {
     pub thread_id: String,
     pub session_id: Option<String>,
+    pub version: RealtimeConversationVersion,
 }
 
 /// EXPERIMENTAL - raw non-audio thread realtime item emitted by the backend.
@@ -3433,6 +3878,17 @@ pub struct ThreadRealtimeStartedNotification {
 pub struct ThreadRealtimeItemAddedNotification {
     pub thread_id: String,
     pub item: JsonValue,
+}
+
+/// EXPERIMENTAL - flat transcript delta emitted whenever realtime
+/// transcript text changes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRealtimeTranscriptUpdatedNotification {
+    pub thread_id: String,
+    pub role: String,
+    pub text: String,
 }
 
 /// EXPERIMENTAL - streamed output audio emitted by thread realtime.
@@ -3485,8 +3941,13 @@ pub struct TurnStartParams {
     #[ts(optional = nullable)]
     pub cwd: Option<PathBuf>,
     /// Override the approval policy for this turn and subsequent turns.
+    #[experimental(nested)]
     #[ts(optional = nullable)]
     pub approval_policy: Option<AskForApproval>,
+    /// Override where approval requests are routed for review on this turn and
+    /// subsequent turns.
+    #[ts(optional = nullable)]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
     /// Override the sandbox policy for this turn and subsequent turns.
     #[ts(optional = nullable)]
     pub sandbox_policy: Option<SandboxPolicy>,
@@ -3772,11 +4233,19 @@ pub enum ThreadItem {
     UserMessage { id: String, content: Vec<UserInput> },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
+    HookPrompt {
+        id: String,
+        fragments: Vec<HookPromptFragment>,
+    },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
     AgentMessage {
         id: String,
         text: String,
         #[serde(default)]
         phase: Option<MessagePhase>,
+        #[serde(default)]
+        memory_citation: Option<MemoryCitation>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -3802,6 +4271,8 @@ pub enum ThreadItem {
         cwd: PathBuf,
         /// Identifier for the underlying PTY process (when available).
         process_id: Option<String>,
+        #[serde(default)]
+        source: CommandExecutionSource,
         status: CommandExecutionStatus,
         /// A best-effort parsing of the command to understand the action(s) it will perform.
         /// This returns a list of CommandAction objects because a single shell command may
@@ -3865,6 +4336,10 @@ pub enum ThreadItem {
         receiver_thread_ids: Vec<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
+        /// Model requested for the spawned agent, when applicable.
+        model: Option<String>,
+        /// Reasoning effort requested for the spawned agent, when applicable.
+        reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -3885,6 +4360,9 @@ pub enum ThreadItem {
         status: String,
         revised_prompt: Option<String>,
         result: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        saved_path: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -3897,10 +4375,19 @@ pub enum ThreadItem {
     ContextCompaction { id: String },
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct HookPromptFragment {
+    pub text: String,
+    pub hook_run_id: String,
+}
+
 impl ThreadItem {
     pub fn id(&self) -> &str {
         match self {
             ThreadItem::UserMessage { id, .. }
+            | ThreadItem::HookPrompt { id, .. }
             | ThreadItem::AgentMessage { id, .. }
             | ThreadItem::Plan { id, .. }
             | ThreadItem::Reasoning { id, .. }
@@ -3917,6 +4404,53 @@ impl ThreadItem {
             | ThreadItem::ContextCompaction { id, .. } => id,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Lifecycle state for a guardian approval review.
+pub enum GuardianApprovalReviewStatus {
+    InProgress,
+    Approved,
+    Denied,
+    Aborted,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Risk level assigned by guardian approval review.
+pub enum GuardianRiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<CoreGuardianRiskLevel> for GuardianRiskLevel {
+    fn from(value: CoreGuardianRiskLevel) -> Self {
+        match value {
+            CoreGuardianRiskLevel::Low => Self::Low,
+            CoreGuardianRiskLevel::Medium => Self::Medium,
+            CoreGuardianRiskLevel::High => Self::High,
+        }
+    }
+}
+
+/// [UNSTABLE] Temporary guardian approval review payload used by
+/// `item/autoApprovalReview/*` notifications. This shape is expected to change
+/// soon.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct GuardianApprovalReview {
+    pub status: GuardianApprovalReviewStatus,
+    #[serde(alias = "risk_score")]
+    #[ts(type = "number | null")]
+    pub risk_score: Option<u8>,
+    #[serde(alias = "risk_level")]
+    pub risk_level: Option<GuardianRiskLevel>,
+    pub rationale: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3963,6 +4497,14 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: user.id,
                 content: user.content.into_iter().map(UserInput::from).collect(),
             },
+            CoreTurnItem::HookPrompt(hook_prompt) => ThreadItem::HookPrompt {
+                id: hook_prompt.id,
+                fragments: hook_prompt
+                    .fragments
+                    .into_iter()
+                    .map(HookPromptFragment::from)
+                    .collect(),
+            },
             CoreTurnItem::AgentMessage(agent) => {
                 let text = agent
                     .content
@@ -3975,6 +4517,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     id: agent.id,
                     text,
                     phase: agent.phase,
+                    memory_citation: agent.memory_citation.map(Into::into),
                 }
             }
             CoreTurnItem::Plan(plan) => ThreadItem::Plan {
@@ -3996,10 +4539,20 @@ impl From<CoreTurnItem> for ThreadItem {
                 status: image.status,
                 revised_prompt: image.revised_prompt,
                 result: image.result,
+                saved_path: image.saved_path,
             },
             CoreTurnItem::ContextCompaction(compaction) => {
                 ThreadItem::ContextCompaction { id: compaction.id }
             }
+        }
+    }
+}
+
+impl From<codex_protocol::items::HookPromptFragment> for HookPromptFragment {
+    fn from(value: codex_protocol::items::HookPromptFragment) -> Self {
+        Self {
+            text: value.text,
+            hook_run_id: value.hook_run_id,
         }
     }
 }
@@ -4027,6 +4580,17 @@ impl From<&CoreExecCommandStatus> for CommandExecutionStatus {
             CoreExecCommandStatus::Failed => CommandExecutionStatus::Failed,
             CoreExecCommandStatus::Declined => CommandExecutionStatus::Declined,
         }
+    }
+}
+
+v2_enum_from_core! {
+    #[derive(Default)]
+    pub enum CommandExecutionSource from CoreExecCommandSource {
+        #[default]
+        Agent,
+        UserShell,
+        UnifiedExecStartup,
+        UnifiedExecInteraction,
     }
 }
 
@@ -4119,6 +4683,7 @@ pub enum CollabAgentToolCallStatus {
 pub enum CollabAgentStatus {
     PendingInit,
     Running,
+    Interrupted,
     Completed,
     Errored,
     Shutdown,
@@ -4142,6 +4707,10 @@ impl From<CoreAgentStatus> for CollabAgentState {
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
+                message: None,
+            },
+            CoreAgentStatus::Interrupted => Self {
+                status: CollabAgentStatus::Interrupted,
                 message: None,
             },
             CoreAgentStatus::Completed(message) => Self {
@@ -4353,6 +4922,40 @@ pub struct ItemStartedNotification {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+/// [UNSTABLE] Temporary notification payload for guardian automatic approval
+/// review. This shape is expected to change soon.
+///
+/// TODO(ccunningham): Attach guardian review state to the reviewed tool item's
+/// lifecycle instead of sending separate standalone review notifications so the
+/// app-server API can persist and replay review state via `thread/read`.
+pub struct ItemGuardianApprovalReviewStartedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub target_item_id: String,
+    pub review: GuardianApprovalReview,
+    pub action: Option<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+/// [UNSTABLE] Temporary notification payload for guardian automatic approval
+/// review. This shape is expected to change soon.
+///
+/// TODO(ccunningham): Attach guardian review state to the reviewed tool item's
+/// lifecycle instead of sending separate standalone review notifications so the
+/// app-server API can persist and replay review state via `thread/read`.
+pub struct ItemGuardianApprovalReviewCompletedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub target_item_id: String,
+    pub review: GuardianApprovalReview,
+    pub action: Option<JsonValue>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ItemCompletedNotification {
     pub item: ThreadItem,
     pub thread_id: String,
@@ -4437,6 +5040,7 @@ pub struct TerminalInteractionNotification {
     pub stdin: String,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -4503,6 +5107,25 @@ pub struct McpServerOauthLoginCompletedNotification {
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum McpServerStartupState {
+    Starting,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpServerStatusUpdatedNotification {
+    pub name: String,
+    pub status: McpServerStartupState,
     pub error: Option<String>,
 }
 
@@ -4599,11 +5222,6 @@ pub struct CommandExecutionRequestApprovalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub additional_permissions: Option<AdditionalPermissionProfile>,
-    /// Optional skill metadata when the approval was triggered by a skill script.
-    #[experimental("item/commandExecution/requestApproval.skillMetadata")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub skill_metadata: Option<CommandExecutionRequestApprovalSkillMetadata>,
     /// Optional proposed execpolicy amendment to allow similar commands without prompting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -4625,15 +5243,7 @@ impl CommandExecutionRequestApprovalParams {
         // We need a generic outbound compatibility design for stripping or
         // otherwise handling experimental server->client payloads.
         self.additional_permissions = None;
-        self.skill_metadata = None;
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CommandExecutionRequestApprovalSkillMetadata {
-    pub path_to_skills_md: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -5150,7 +5760,7 @@ pub struct PermissionsRequestApprovalParams {
     pub turn_id: String,
     pub item_id: String,
     pub reason: Option<String>,
-    pub permissions: AdditionalPermissionProfile,
+    pub permissions: RequestPermissionProfile,
 }
 
 v2_enum_from_core!(
@@ -5411,13 +6021,33 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
-    fn test_absolute_path() -> AbsolutePathBuf {
-        let path = if cfg!(windows) {
-            r"C:\readable"
+    fn absolute_path_string(path: &str) -> String {
+        let trimmed = path.trim_start_matches('/');
+        if cfg!(windows) {
+            format!(r"C:\{}", trimmed.replace('/', "\\"))
         } else {
-            "/readable"
-        };
-        AbsolutePathBuf::from_absolute_path(path).expect("path must be absolute")
+            format!("/{trimmed}")
+        }
+    }
+
+    fn absolute_path(path: &str) -> AbsolutePathBuf {
+        AbsolutePathBuf::from_absolute_path(absolute_path_string(path))
+            .expect("path must be absolute")
+    }
+
+    fn test_absolute_path() -> AbsolutePathBuf {
+        absolute_path("readable")
+    }
+
+    #[test]
+    fn collab_agent_state_maps_interrupted_status() {
+        assert_eq!(
+            CollabAgentState::from(CoreAgentStatus::Interrupted),
+            CollabAgentState {
+                status: CollabAgentStatus::Interrupted,
+                message: None,
+            }
+        );
     }
 
     #[test]
@@ -5436,10 +6066,8 @@ mod tests {
                 "fileSystem": {
                     "read": ["relative/path"],
                     "write": null
-                },
-                "macos": null
+                }
             },
-            "skillMetadata": null,
             "proposedExecpolicyAmendment": null,
             "proposedNetworkPolicyAmendments": null,
             "availableDecisions": null
@@ -5453,196 +6081,163 @@ mod tests {
     }
 
     #[test]
-    fn command_execution_request_approval_accepts_macos_automation_bundle_ids_object() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+    fn permissions_request_approval_uses_request_permission_profile() {
+        let read_only_path = if cfg!(windows) {
+            r"C:\tmp\read-only"
+        } else {
+            "/tmp/read-only"
+        };
+        let read_write_path = if cfg!(windows) {
+            r"C:\tmp\read-write"
+        } else {
+            "/tmp/read-write"
+        };
+        let params = serde_json::from_value::<PermissionsRequestApprovalParams>(json!({
             "threadId": "thr_123",
             "turnId": "turn_123",
             "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": {
+            "reason": "Select a workspace root",
+            "permissions": {
+                "network": {
+                    "enabled": true,
+                },
+                "fileSystem": {
+                    "read": [read_only_path],
+                    "write": [read_write_path],
+                },
+            },
+        }))
+        .expect("permissions request should deserialize");
+
+        assert_eq!(
+            params.permissions,
+            RequestPermissionProfile {
+                network: Some(AdditionalNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(AdditionalFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
+
+        assert_eq!(
+            CoreRequestPermissionProfile::from(params.permissions),
+            CoreRequestPermissionProfile {
+                network: Some(CoreNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(CoreFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn permissions_request_approval_rejects_macos_permissions() {
+        let err = serde_json::from_value::<PermissionsRequestApprovalParams>(json!({
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "itemId": "call_123",
+            "reason": "Select a workspace root",
+            "permissions": {
                 "network": null,
                 "fileSystem": null,
                 "macos": {
                     "preferences": "read_only",
-                    "automations": {
-                        "bundle_ids": ["com.apple.Notes"]
-                    },
+                    "automations": "none",
+                    "launchServices": false,
                     "accessibility": false,
-                    "calendar": false
-                }
-            },
-            "skillMetadata": null,
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("bundle_ids object should deserialize");
-
-        assert_eq!(
-            params
-                .additional_permissions
-                .and_then(|permissions| permissions.macos)
-                .map(|macos| macos.automations),
-            Some(CoreMacOsAutomationPermission::BundleIds(vec![
-                "com.apple.Notes".to_string(),
-            ]))
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_skill_metadata() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": null,
-            "skillMetadata": {
-                "pathToSkillsMd": "/tmp/SKILLS.md"
-            },
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("skill metadata should deserialize");
-
-        assert_eq!(
-            params.skill_metadata,
-            Some(CommandExecutionRequestApprovalSkillMetadata {
-                path_to_skills_md: PathBuf::from("/tmp/SKILLS.md"),
-            })
-        );
-    }
-
-    #[test]
-    fn permissions_request_approval_response_accepts_partial_macos_grants() {
-        let cases = vec![
-            (json!({}), Some(GrantedMacOsPermissions::default()), None),
-            (
-                json!({
-                    "preferences": "read_only",
-                }),
-                Some(GrantedMacOsPermissions {
-                    preferences: Some(CoreMacOsPreferencesPermission::ReadOnly),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::ReadOnly,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                }),
-            ),
-            (
-                json!({
-                    "automations": {
-                        "bundle_ids": ["com.apple.Notes"],
-                    },
-                }),
-                Some(GrantedMacOsPermissions {
-                    automations: Some(CoreMacOsAutomationPermission::BundleIds(vec![
-                        "com.apple.Notes".to_string(),
-                    ])),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::BundleIds(vec![
-                        "com.apple.Notes".to_string(),
-                    ]),
-                    macos_accessibility: false,
-                    macos_calendar: false,
-                }),
-            ),
-            (
-                json!({
-                    "accessibility": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    accessibility: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_accessibility: true,
-                    macos_calendar: false,
-                }),
-            ),
-            (
-                json!({
-                    "calendar": true,
-                }),
-                Some(GrantedMacOsPermissions {
-                    calendar: Some(true),
-                    ..Default::default()
-                }),
-                Some(CoreMacOsSeatbeltProfileExtensions {
-                    macos_preferences: CoreMacOsPreferencesPermission::None,
-                    macos_automation: CoreMacOsAutomationPermission::None,
-                    macos_accessibility: false,
-                    macos_calendar: true,
-                }),
-            ),
-        ];
-
-        for (macos_json, expected_granted_macos, expected_core_macos) in cases {
-            let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
-                "permissions": {
-                    "macos": macos_json,
+                    "calendar": false,
+                    "reminders": false,
+                    "contacts": "none",
                 },
-            }))
-            .expect("partial macos permissions response should deserialize");
+            },
+        }))
+        .expect_err("permissions request should reject macos permissions");
 
-            assert_eq!(
-                response.permissions,
-                GrantedPermissionProfile {
-                    macos: expected_granted_macos,
-                    ..Default::default()
-                }
-            );
-
-            assert_eq!(
-                CorePermissionProfile::from(response.permissions),
-                CorePermissionProfile {
-                    macos: expected_core_macos,
-                    ..Default::default()
-                }
-            );
-        }
+        assert!(
+            err.to_string().contains("unknown field `macos`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
-    fn permissions_request_approval_response_omits_ungranted_macos_keys_when_serialized() {
-        let response = PermissionsRequestApprovalResponse {
-            permissions: GrantedPermissionProfile {
-                macos: Some(GrantedMacOsPermissions {
-                    accessibility: Some(true),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            scope: PermissionGrantScope::Turn,
+    fn permissions_request_approval_response_uses_granted_permission_profile_without_macos() {
+        let read_only_path = if cfg!(windows) {
+            r"C:\tmp\read-only"
+        } else {
+            "/tmp/read-only"
         };
+        let read_write_path = if cfg!(windows) {
+            r"C:\tmp\read-write"
+        } else {
+            "/tmp/read-write"
+        };
+        let response = serde_json::from_value::<PermissionsRequestApprovalResponse>(json!({
+            "permissions": {
+                "network": {
+                    "enabled": true,
+                },
+                "fileSystem": {
+                    "read": [read_only_path],
+                    "write": [read_write_path],
+                },
+            },
+        }))
+        .expect("permissions response should deserialize");
 
         assert_eq!(
-            serde_json::to_value(response).expect("response should serialize"),
-            json!({
-                "permissions": {
-                    "macos": {
-                        "accessibility": true,
-                    },
-                },
-                "scope": "turn",
-            })
+            response.permissions,
+            GrantedPermissionProfile {
+                network: Some(AdditionalNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(AdditionalFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
+        );
+
+        assert_eq!(
+            CorePermissionProfile::from(response.permissions),
+            CorePermissionProfile {
+                network: Some(CoreNetworkPermissions {
+                    enabled: Some(true),
+                }),
+                file_system: Some(CoreFileSystemPermissions {
+                    read: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_only_path))
+                            .expect("path must be absolute"),
+                    ]),
+                    write: Some(vec![
+                        AbsolutePathBuf::try_from(PathBuf::from(read_write_path))
+                            .expect("path must be absolute"),
+                    ]),
+                }),
+            }
         );
     }
 
@@ -5654,6 +6249,195 @@ mod tests {
         .expect("response should deserialize");
 
         assert_eq!(response.scope, PermissionGrantScope::Turn);
+    }
+
+    #[test]
+    fn fs_get_metadata_response_round_trips_minimal_fields() {
+        let response = FsGetMetadataResponse {
+            is_directory: false,
+            is_file: true,
+            created_at_ms: 123,
+            modified_at_ms: 456,
+        };
+
+        let value = serde_json::to_value(&response).expect("serialize fs/getMetadata response");
+        assert_eq!(
+            value,
+            json!({
+                "isDirectory": false,
+                "isFile": true,
+                "createdAtMs": 123,
+                "modifiedAtMs": 456,
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsGetMetadataResponse>(value)
+            .expect("deserialize fs/getMetadata response");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn fs_read_file_response_round_trips_base64_data() {
+        let response = FsReadFileResponse {
+            data_base64: "aGVsbG8=".to_string(),
+        };
+
+        let value = serde_json::to_value(&response).expect("serialize fs/readFile response");
+        assert_eq!(
+            value,
+            json!({
+                "dataBase64": "aGVsbG8=",
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsReadFileResponse>(value)
+            .expect("deserialize fs/readFile response");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn fs_read_file_params_round_trip() {
+        let params = FsReadFileParams {
+            path: absolute_path("tmp/example.txt"),
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize fs/readFile params");
+        assert_eq!(
+            value,
+            json!({
+                "path": absolute_path_string("tmp/example.txt"),
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsReadFileParams>(value)
+            .expect("deserialize fs/readFile params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn fs_create_directory_params_round_trip_with_default_recursive() {
+        let params = FsCreateDirectoryParams {
+            path: absolute_path("tmp/example"),
+            recursive: None,
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize fs/createDirectory params");
+        assert_eq!(
+            value,
+            json!({
+                "path": absolute_path_string("tmp/example"),
+                "recursive": null,
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsCreateDirectoryParams>(value)
+            .expect("deserialize fs/createDirectory params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn fs_write_file_params_round_trip_with_base64_data() {
+        let params = FsWriteFileParams {
+            path: absolute_path("tmp/example.bin"),
+            data_base64: "AAE=".to_string(),
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize fs/writeFile params");
+        assert_eq!(
+            value,
+            json!({
+                "path": absolute_path_string("tmp/example.bin"),
+                "dataBase64": "AAE=",
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsWriteFileParams>(value)
+            .expect("deserialize fs/writeFile params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn fs_copy_params_round_trip_with_recursive_directory_copy() {
+        let params = FsCopyParams {
+            source_path: absolute_path("tmp/source"),
+            destination_path: absolute_path("tmp/destination"),
+            recursive: true,
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize fs/copy params");
+        assert_eq!(
+            value,
+            json!({
+                "sourcePath": absolute_path_string("tmp/source"),
+                "destinationPath": absolute_path_string("tmp/destination"),
+                "recursive": true,
+            })
+        );
+
+        let decoded =
+            serde_json::from_value::<FsCopyParams>(value).expect("deserialize fs/copy params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn thread_shell_command_params_round_trip() {
+        let params = ThreadShellCommandParams {
+            thread_id: "thr_123".to_string(),
+            command: "printf 'hello world\\n'".to_string(),
+        };
+
+        let value = serde_json::to_value(&params).expect("serialize thread/shellCommand params");
+        assert_eq!(
+            value,
+            json!({
+                "threadId": "thr_123",
+                "command": "printf 'hello world\\n'",
+            })
+        );
+
+        let decoded = serde_json::from_value::<ThreadShellCommandParams>(value)
+            .expect("deserialize thread/shellCommand params");
+        assert_eq!(decoded, params);
+    }
+
+    #[test]
+    fn thread_shell_command_response_round_trip() {
+        let response = ThreadShellCommandResponse {};
+
+        let value =
+            serde_json::to_value(&response).expect("serialize thread/shellCommand response");
+        assert_eq!(value, json!({}));
+
+        let decoded = serde_json::from_value::<ThreadShellCommandResponse>(value)
+            .expect("deserialize thread/shellCommand response");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn fs_changed_notification_round_trips() {
+        let notification = FsChangedNotification {
+            watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
+            changed_paths: vec![
+                absolute_path("tmp/repo/.git/HEAD"),
+                absolute_path("tmp/repo/.git/FETCH_HEAD"),
+            ],
+        };
+
+        let value = serde_json::to_value(&notification).expect("serialize fs/changed notification");
+        assert_eq!(
+            value,
+            json!({
+                "watchId": "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1",
+                "changedPaths": [
+                    absolute_path_string("tmp/repo/.git/HEAD"),
+                    absolute_path_string("tmp/repo/.git/FETCH_HEAD"),
+                ],
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsChangedNotification>(value)
+            .expect("deserialize fs/changed notification");
+        assert_eq!(decoded, notification);
     }
 
     #[test]
@@ -5951,6 +6735,32 @@ mod tests {
     }
 
     #[test]
+    fn command_execution_output_delta_round_trips() {
+        let notification = CommandExecutionOutputDeltaNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-1".to_string(),
+            delta: "\u{fffd}a\n".to_string(),
+        };
+
+        let value = serde_json::to_value(&notification)
+            .expect("serialize item/commandExecution/outputDelta notification");
+        assert_eq!(
+            value,
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "item-1",
+                "delta": "\u{fffd}a\n",
+            })
+        );
+
+        let decoded = serde_json::from_value::<CommandExecutionOutputDeltaNotification>(value)
+            .expect("deserialize round-trip");
+        assert_eq!(decoded, notification);
+    }
+
+    #[test]
     fn sandbox_policy_round_trips_external_sandbox_network_access() {
         let v2_policy = SandboxPolicy::ExternalSandbox {
             network_access: NetworkAccess::Enabled,
@@ -5996,10 +6806,11 @@ mod tests {
     }
 
     #[test]
-    fn ask_for_approval_reject_round_trips_request_permissions_flag() {
-        let v2_policy = AskForApproval::Reject {
+    fn ask_for_approval_granular_round_trips_request_permissions_flag() {
+        let v2_policy = AskForApproval::Granular {
             sandbox_approval: true,
             rules: false,
+            skill_approval: false,
             request_permissions: true,
             mcp_elicitations: false,
         };
@@ -6007,9 +6818,10 @@ mod tests {
         let core_policy = v2_policy.to_core();
         assert_eq!(
             core_policy,
-            CoreAskForApproval::Reject(CoreRejectConfig {
+            CoreAskForApproval::Granular(CoreGranularApprovalConfig {
                 sandbox_approval: true,
                 rules: false,
+                skill_approval: false,
                 request_permissions: true,
                 mcp_elicitations: false,
             })
@@ -6020,25 +6832,358 @@ mod tests {
     }
 
     #[test]
-    fn ask_for_approval_reject_defaults_missing_request_permissions_to_false() {
+    fn ask_for_approval_granular_defaults_missing_optional_flags_to_false() {
         let decoded = serde_json::from_value::<AskForApproval>(serde_json::json!({
-            "reject": {
+            "granular": {
                 "sandbox_approval": true,
                 "rules": false,
                 "mcp_elicitations": true,
             }
         }))
-        .expect("legacy reject approval policy should deserialize");
+        .expect("granular approval policy should deserialize");
 
         assert_eq!(
             decoded,
-            AskForApproval::Reject {
+            AskForApproval::Granular {
                 sandbox_approval: true,
                 rules: false,
+                skill_approval: false,
                 request_permissions: false,
                 mcp_elicitations: true,
             }
         );
+    }
+
+    #[test]
+    fn ask_for_approval_granular_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &AskForApproval::Granular {
+                sandbox_approval: true,
+                rules: false,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true,
+            },
+        );
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+        assert_eq!(
+            crate::experimental_api::ExperimentalApi::experimental_reason(
+                &AskForApproval::OnRequest,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_v2_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&ProfileV2 {
+            model: None,
+            model_provider: None,
+            approval_policy: Some(AskForApproval::Granular {
+                sandbox_approval: true,
+                rules: false,
+                skill_approval: false,
+                request_permissions: true,
+                mcp_elicitations: false,
+            }),
+            approvals_reviewer: None,
+            service_tier: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            web_search: None,
+            tools: None,
+            chatgpt_base_url: None,
+            additional: HashMap::new(),
+        });
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn config_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
+            model: None,
+            review_model: None,
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
+            model_provider: None,
+            approval_policy: Some(AskForApproval::Granular {
+                sandbox_approval: false,
+                rules: true,
+                skill_approval: false,
+                request_permissions: false,
+                mcp_elicitations: true,
+            }),
+            approvals_reviewer: None,
+            sandbox_mode: None,
+            sandbox_workspace_write: None,
+            forced_chatgpt_workspace_id: None,
+            forced_login_method: None,
+            web_search: None,
+            tools: None,
+            profile: None,
+            profiles: HashMap::new(),
+            instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            service_tier: None,
+            analytics: None,
+            apps: None,
+            additional: HashMap::new(),
+        });
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn config_approvals_reviewer_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
+            model: None,
+            review_model: None,
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
+            model_provider: None,
+            approval_policy: None,
+            approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+            sandbox_mode: None,
+            sandbox_workspace_write: None,
+            forced_chatgpt_workspace_id: None,
+            forced_login_method: None,
+            web_search: None,
+            tools: None,
+            profile: None,
+            profiles: HashMap::new(),
+            instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            service_tier: None,
+            analytics: None,
+            apps: None,
+            additional: HashMap::new(),
+        });
+
+        assert_eq!(reason, Some("config/read.approvalsReviewer"));
+    }
+
+    #[test]
+    fn config_nested_profile_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
+            model: None,
+            review_model: None,
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
+            model_provider: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox_mode: None,
+            sandbox_workspace_write: None,
+            forced_chatgpt_workspace_id: None,
+            forced_login_method: None,
+            web_search: None,
+            tools: None,
+            profile: None,
+            profiles: HashMap::from([(
+                "default".to_string(),
+                ProfileV2 {
+                    model: None,
+                    model_provider: None,
+                    approval_policy: Some(AskForApproval::Granular {
+                        sandbox_approval: true,
+                        rules: false,
+                        skill_approval: false,
+                        request_permissions: false,
+                        mcp_elicitations: true,
+                    }),
+                    approvals_reviewer: None,
+                    service_tier: None,
+                    model_reasoning_effort: None,
+                    model_reasoning_summary: None,
+                    model_verbosity: None,
+                    web_search: None,
+                    tools: None,
+                    chatgpt_base_url: None,
+                    additional: HashMap::new(),
+                },
+            )]),
+            instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            service_tier: None,
+            analytics: None,
+            apps: None,
+            additional: HashMap::new(),
+        });
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn config_nested_profile_approvals_reviewer_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&Config {
+            model: None,
+            review_model: None,
+            model_context_window: None,
+            model_auto_compact_token_limit: None,
+            model_provider: None,
+            approval_policy: None,
+            approvals_reviewer: None,
+            sandbox_mode: None,
+            sandbox_workspace_write: None,
+            forced_chatgpt_workspace_id: None,
+            forced_login_method: None,
+            web_search: None,
+            tools: None,
+            profile: None,
+            profiles: HashMap::from([(
+                "default".to_string(),
+                ProfileV2 {
+                    model: None,
+                    model_provider: None,
+                    approval_policy: None,
+                    approvals_reviewer: Some(ApprovalsReviewer::GuardianSubagent),
+                    service_tier: None,
+                    model_reasoning_effort: None,
+                    model_reasoning_summary: None,
+                    model_verbosity: None,
+                    web_search: None,
+                    tools: None,
+                    chatgpt_base_url: None,
+                    additional: HashMap::new(),
+                },
+            )]),
+            instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_verbosity: None,
+            service_tier: None,
+            analytics: None,
+            apps: None,
+            additional: HashMap::new(),
+        });
+
+        assert_eq!(reason, Some("config/read.approvalsReviewer"));
+    }
+
+    #[test]
+    fn config_requirements_granular_allowed_approval_policy_is_marked_experimental() {
+        let reason =
+            crate::experimental_api::ExperimentalApi::experimental_reason(&ConfigRequirements {
+                allowed_approval_policies: Some(vec![AskForApproval::Granular {
+                    sandbox_approval: true,
+                    rules: true,
+                    skill_approval: false,
+                    request_permissions: false,
+                    mcp_elicitations: false,
+                }]),
+                allowed_sandbox_modes: None,
+                allowed_web_search_modes: None,
+                feature_requirements: None,
+                enforce_residency: None,
+                network: None,
+            });
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn client_request_thread_start_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadStart {
+                request_id: crate::RequestId::Integer(1),
+                params: ThreadStartParams {
+                    approval_policy: Some(AskForApproval::Granular {
+                        sandbox_approval: true,
+                        rules: false,
+                        skill_approval: false,
+                        request_permissions: true,
+                        mcp_elicitations: false,
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn client_request_thread_resume_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadResume {
+                request_id: crate::RequestId::Integer(2),
+                params: ThreadResumeParams {
+                    thread_id: "thr_123".to_string(),
+                    approval_policy: Some(AskForApproval::Granular {
+                        sandbox_approval: false,
+                        rules: true,
+                        skill_approval: false,
+                        request_permissions: false,
+                        mcp_elicitations: true,
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn client_request_thread_fork_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::ThreadFork {
+                request_id: crate::RequestId::Integer(3),
+                params: ThreadForkParams {
+                    thread_id: "thr_456".to_string(),
+                    approval_policy: Some(AskForApproval::Granular {
+                        sandbox_approval: true,
+                        rules: false,
+                        skill_approval: false,
+                        request_permissions: false,
+                        mcp_elicitations: true,
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("askForApproval.granular"));
+    }
+
+    #[test]
+    fn client_request_turn_start_granular_approval_policy_is_marked_experimental() {
+        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(
+            &crate::ClientRequest::TurnStart {
+                request_id: crate::RequestId::Integer(4),
+                params: TurnStartParams {
+                    thread_id: "thr_123".to_string(),
+                    input: Vec::new(),
+                    approval_policy: Some(AskForApproval::Granular {
+                        sandbox_approval: false,
+                        rules: true,
+                        skill_approval: false,
+                        request_permissions: false,
+                        mcp_elicitations: true,
+                    }),
+                    ..Default::default()
+                },
+            },
+        );
+
+        assert_eq!(reason, Some("askForApproval.granular"));
     }
 
     #[test]
@@ -6343,6 +7488,134 @@ mod tests {
     }
 
     #[test]
+    fn automatic_approval_review_deserializes_legacy_snake_case_risk_fields() {
+        let review: GuardianApprovalReview = serde_json::from_value(json!({
+            "status": "denied",
+            "risk_score": 91,
+            "risk_level": "high",
+            "rationale": "too risky"
+        }))
+        .expect("legacy snake_case automatic review should deserialize");
+        assert_eq!(
+            review,
+            GuardianApprovalReview {
+                status: GuardianApprovalReviewStatus::Denied,
+                risk_score: Some(91),
+                risk_level: Some(GuardianRiskLevel::High),
+                rationale: Some("too risky".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn automatic_approval_review_deserializes_aborted_status() {
+        let review: GuardianApprovalReview = serde_json::from_value(json!({
+            "status": "aborted",
+            "riskScore": null,
+            "riskLevel": null,
+            "rationale": null
+        }))
+        .expect("aborted automatic review should deserialize");
+        assert_eq!(
+            review,
+            GuardianApprovalReview {
+                status: GuardianApprovalReviewStatus::Aborted,
+                risk_score: None,
+                risk_level: None,
+                rationale: None,
+            }
+        );
+    }
+
+    #[test]
+    fn network_requirements_deserializes_legacy_fields() {
+        let requirements: NetworkRequirements = serde_json::from_value(json!({
+            "allowedDomains": ["api.openai.com"],
+            "deniedDomains": ["blocked.example.com"],
+            "allowUnixSockets": ["/tmp/proxy.sock"]
+        }))
+        .expect("legacy network requirements should deserialize");
+
+        assert_eq!(
+            requirements,
+            NetworkRequirements {
+                enabled: None,
+                http_port: None,
+                socks_port: None,
+                allow_upstream_proxy: None,
+                dangerously_allow_non_loopback_proxy: None,
+                dangerously_allow_all_unix_sockets: None,
+                domains: None,
+                managed_allowed_domains_only: None,
+                allowed_domains: Some(vec!["api.openai.com".to_string()]),
+                denied_domains: Some(vec!["blocked.example.com".to_string()]),
+                unix_sockets: None,
+                allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
+                allow_local_binding: None,
+            }
+        );
+    }
+
+    #[test]
+    fn network_requirements_serializes_canonical_and_legacy_fields() {
+        let requirements = NetworkRequirements {
+            enabled: Some(true),
+            http_port: Some(8080),
+            socks_port: Some(1080),
+            allow_upstream_proxy: Some(false),
+            dangerously_allow_non_loopback_proxy: Some(false),
+            dangerously_allow_all_unix_sockets: Some(true),
+            domains: Some(BTreeMap::from([
+                ("api.openai.com".to_string(), NetworkDomainPermission::Allow),
+                (
+                    "blocked.example.com".to_string(),
+                    NetworkDomainPermission::Deny,
+                ),
+            ])),
+            managed_allowed_domains_only: Some(true),
+            allowed_domains: Some(vec!["api.openai.com".to_string()]),
+            denied_domains: Some(vec!["blocked.example.com".to_string()]),
+            unix_sockets: Some(BTreeMap::from([
+                (
+                    "/tmp/proxy.sock".to_string(),
+                    NetworkUnixSocketPermission::Allow,
+                ),
+                (
+                    "/tmp/ignored.sock".to_string(),
+                    NetworkUnixSocketPermission::None,
+                ),
+            ])),
+            allow_unix_sockets: Some(vec!["/tmp/proxy.sock".to_string()]),
+            allow_local_binding: Some(true),
+        };
+
+        assert_eq!(
+            serde_json::to_value(requirements).expect("network requirements should serialize"),
+            json!({
+                "enabled": true,
+                "httpPort": 8080,
+                "socksPort": 1080,
+                "allowUpstreamProxy": false,
+                "dangerouslyAllowNonLoopbackProxy": false,
+                "dangerouslyAllowAllUnixSockets": true,
+                "domains": {
+                    "api.openai.com": "allow",
+                    "blocked.example.com": "deny"
+                },
+                "managedAllowedDomainsOnly": true,
+                "allowedDomains": ["api.openai.com"],
+                "deniedDomains": ["blocked.example.com"],
+                "unixSockets": {
+                    "/tmp/ignored.sock": "none",
+                    "/tmp/proxy.sock": "allow"
+                },
+                "allowUnixSockets": ["/tmp/proxy.sock"],
+                "allowLocalBinding": true
+            })
+        );
+    }
+
+    #[test]
     fn core_turn_item_into_thread_item_converts_supported_variants() {
         let user_item = TurnItem::UserMessage(UserMessageItem {
             id: "user-1".to_string(),
@@ -6406,6 +7679,7 @@ mod tests {
                 },
             ],
             phase: None,
+            memory_citation: None,
         });
 
         assert_eq!(
@@ -6414,6 +7688,7 @@ mod tests {
                 id: "agent-1".to_string(),
                 text: "Hello world".to_string(),
                 phase: None,
+                memory_citation: None,
             }
         );
 
@@ -6423,6 +7698,15 @@ mod tests {
                 text: "final".to_string(),
             }],
             phase: Some(MessagePhase::FinalAnswer),
+            memory_citation: Some(CoreMemoryCitation {
+                entries: vec![CoreMemoryCitationEntry {
+                    path: "MEMORY.md".to_string(),
+                    line_start: 1,
+                    line_end: 2,
+                    note: "summary".to_string(),
+                }],
+                rollout_ids: vec!["rollout-1".to_string()],
+            }),
         });
 
         assert_eq!(
@@ -6431,6 +7715,15 @@ mod tests {
                 id: "agent-2".to_string(),
                 text: "final".to_string(),
                 phase: Some(MessagePhase::FinalAnswer),
+                memory_citation: Some(MemoryCitation {
+                    entries: vec![MemoryCitationEntry {
+                        path: "MEMORY.md".to_string(),
+                        line_start: 1,
+                        line_end: 2,
+                        note: "summary".to_string(),
+                    }],
+                    thread_ids: vec!["rollout-1".to_string()],
+                }),
             }
         );
 
@@ -6512,6 +7805,95 @@ mod tests {
     }
 
     #[test]
+    fn plugin_list_params_serialization_uses_force_remote_sync() {
+        assert_eq!(
+            serde_json::to_value(PluginListParams {
+                cwds: None,
+                force_remote_sync: false,
+            })
+            .unwrap(),
+            json!({
+                "cwds": null,
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginListParams {
+                cwds: None,
+                force_remote_sync: true,
+            })
+            .unwrap(),
+            json!({
+                "cwds": null,
+                "forceRemoteSync": true,
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_install_params_serialization_uses_force_remote_sync() {
+        let marketplace_path = if cfg!(windows) {
+            r"C:\plugins\marketplace.json"
+        } else {
+            "/plugins/marketplace.json"
+        };
+        let marketplace_path = AbsolutePathBuf::try_from(PathBuf::from(marketplace_path)).unwrap();
+        let marketplace_path_json = marketplace_path.as_path().display().to_string();
+        assert_eq!(
+            serde_json::to_value(PluginInstallParams {
+                marketplace_path: marketplace_path.clone(),
+                plugin_name: "gmail".to_string(),
+                force_remote_sync: false,
+            })
+            .unwrap(),
+            json!({
+                "marketplacePath": marketplace_path_json,
+                "pluginName": "gmail",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginInstallParams {
+                marketplace_path,
+                plugin_name: "gmail".to_string(),
+                force_remote_sync: true,
+            })
+            .unwrap(),
+            json!({
+                "marketplacePath": marketplace_path_json,
+                "pluginName": "gmail",
+                "forceRemoteSync": true,
+            }),
+        );
+    }
+
+    #[test]
+    fn plugin_uninstall_params_serialization_uses_force_remote_sync() {
+        assert_eq!(
+            serde_json::to_value(PluginUninstallParams {
+                plugin_id: "gmail@openai-curated".to_string(),
+                force_remote_sync: false,
+            })
+            .unwrap(),
+            json!({
+                "pluginId": "gmail@openai-curated",
+            }),
+        );
+
+        assert_eq!(
+            serde_json::to_value(PluginUninstallParams {
+                plugin_id: "gmail@openai-curated".to_string(),
+                force_remote_sync: true,
+            })
+            .unwrap(),
+            json!({
+                "pluginId": "gmail@openai-curated",
+                "forceRemoteSync": true,
+            }),
+        );
+    }
+
+    #[test]
     fn codex_error_info_serializes_http_status_code_in_camel_case() {
         let value = CodexErrorInfo::ResponseTooManyFailedAttempts {
             http_status_code: Some(401),
@@ -6522,6 +7904,22 @@ mod tests {
             json!({
                 "responseTooManyFailedAttempts": {
                     "httpStatusCode": 401
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn codex_error_info_serializes_active_turn_not_steerable_turn_kind_in_camel_case() {
+        let value = CodexErrorInfo::ActiveTurnNotSteerable {
+            turn_kind: NonSteerableTurnKind::Review,
+        };
+
+        assert_eq!(
+            serde_json::to_value(value).unwrap(),
+            json!({
+                "activeTurnNotSteerable": {
+                    "turnKind": "review"
                 }
             })
         );
@@ -6585,6 +7983,55 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_tool_spec_deserializes_defer_loading() {
+        let value = json!({
+            "name": "lookup_ticket",
+            "description": "Fetch a ticket",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                }
+            },
+            "deferLoading": true,
+        });
+
+        let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
+
+        assert_eq!(
+            actual,
+            DynamicToolSpec {
+                name: "lookup_ticket".to_string(),
+                description: "Fetch a ticket".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" }
+                    }
+                }),
+                defer_loading: true,
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_tool_spec_legacy_expose_to_context_inverts_to_defer_loading() {
+        let value = json!({
+            "name": "lookup_ticket",
+            "description": "Fetch a ticket",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "exposeToContext": false,
+        });
+
+        let actual: DynamicToolSpec = serde_json::from_value(value).expect("deserialize");
+
+        assert!(actual.defer_loading);
+    }
+
+    #[test]
     fn thread_start_params_preserve_explicit_null_service_tier() {
         let params: ThreadStartParams = serde_json::from_value(json!({ "serviceTier": null }))
             .expect("params should deserialize");
@@ -6622,6 +8069,7 @@ mod tests {
             input: vec![],
             cwd: None,
             approval_policy: None,
+            approvals_reviewer: None,
             sandbox_policy: None,
             model: None,
             service_tier: None,

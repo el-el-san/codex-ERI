@@ -13,6 +13,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeAudioFrame;
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
+use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
@@ -29,15 +30,17 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use serial_test::serial;
-use std::ffi::OsString;
 use std::fs;
+use std::process::Command;
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 const STARTUP_CONTEXT_HEADER: &str = "Startup context from Codex.";
 const MEMORY_PROMPT_PHRASE: &str =
     "You have access to a memory folder with guidance from prior runs.";
+const REALTIME_CONVERSATION_TEST_SUBPROCESS_ENV_VAR: &str =
+    "CODEX_REALTIME_CONVERSATION_TEST_SUBPROCESS";
 fn websocket_request_text(
     request: &core_test_support::responses::WebSocketRequest,
 ) -> Option<String> {
@@ -80,6 +83,33 @@ where
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+fn run_realtime_conversation_test_in_subprocess(
+    test_name: &str,
+    openai_api_key: Option<&str>,
+) -> Result<()> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("--exact")
+        .arg(test_name)
+        .env(REALTIME_CONVERSATION_TEST_SUBPROCESS_ENV_VAR, "1");
+    match openai_api_key {
+        Some(openai_api_key) => {
+            command.env(OPENAI_API_KEY_ENV_VAR, openai_api_key);
+        }
+        None => {
+            command.env_remove(OPENAI_API_KEY_ENV_VAR);
+        }
+    }
+    let output = command.output()?;
+    assert!(
+        output.status.success(),
+        "subprocess test `{test_name}` failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
 }
 async fn seed_recent_thread(
     test: &TestCodex,
@@ -142,7 +172,11 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
 
     let mut builder = test_codex();
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    assert!(
+        server
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .await
+    );
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -159,6 +193,7 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
     .await
     .unwrap_or_else(|err: ErrorEvent| panic!("conversation start failed: {err:?}"));
     assert!(started.session_id.is_some());
+    assert_eq!(started.version, RealtimeConversationVersion::V1);
 
     let session_updated = wait_for_event_match(&test.codex, |msg| match msg {
         EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
@@ -176,6 +211,7 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
                 sample_rate: 24000,
                 num_channels: 1,
                 samples_per_channel: Some(480),
+                item_id: None,
             },
         }))
         .await?;
@@ -257,11 +293,16 @@ async fn conversation_start_audio_text_close_round_trip() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial(openai_api_key_env)]
 async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> Result<()> {
+    if std::env::var_os(REALTIME_CONVERSATION_TEST_SUBPROCESS_ENV_VAR).is_none() {
+        return run_realtime_conversation_test_in_subprocess(
+            "suite::realtime_conversation::conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth",
+            Some("env-realtime-key"),
+        );
+    }
+
     skip_if_no_network!(Ok(()));
 
-    let _env_guard = EnvGuard::set(OPENAI_API_KEY_ENV_VAR, "env-realtime-key");
     let server = start_websocket_server(vec![
         vec![],
         vec![vec![json!({
@@ -273,7 +314,11 @@ async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> 
 
     let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    assert!(
+        server
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .await
+    );
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -328,7 +373,11 @@ async fn conversation_transport_close_emits_closed_event() -> Result<()> {
 
     let mut builder = test_codex();
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    assert!(
+        server
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .await
+    );
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -366,34 +415,6 @@ async fn conversation_transport_close_emits_closed_event() -> Result<()> {
     Ok(())
 }
 
-struct EnvGuard {
-    key: &'static str,
-    original: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let original = std::env::var_os(key);
-        // SAFETY: this guard restores the original value before the test exits.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, original }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: this guard restores the original value for the modified env var.
-        unsafe {
-            match &self.original {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conversation_audio_before_start_emits_error() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -409,6 +430,7 @@ async fn conversation_audio_before_start_emits_error() -> Result<()> {
                 sample_rate: 24000,
                 num_channels: 1,
                 samples_per_channel: Some(480),
+                item_id: None,
             },
         }))
         .await?;
@@ -420,6 +442,91 @@ async fn conversation_audio_before_start_emits_error() -> Result<()> {
     .await;
     assert_eq!(err.codex_error_info, Some(CodexErrorInfo::BadRequest));
     assert_eq!(err.message, "conversation is not running");
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_start_preflight_failure_emits_realtime_error_only() -> Result<()> {
+    if std::env::var_os(REALTIME_CONVERSATION_TEST_SUBPROCESS_ENV_VAR).is_none() {
+        return run_realtime_conversation_test_in_subprocess(
+            "suite::realtime_conversation::conversation_start_preflight_failure_emits_realtime_error_only",
+            /*openai_api_key*/ None,
+        );
+    }
+
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![]).await;
+    let mut builder = test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let test = builder.build_with_websocket_server(&server).await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "backend prompt".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let err = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::Error(message),
+        }) => Some(message.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(err, "realtime conversation requires API key auth");
+
+    let closed = timeout(Duration::from_millis(200), async {
+        wait_for_event_match(&test.codex, |msg| match msg {
+            EventMsg::RealtimeConversationClosed(closed) => Some(closed.clone()),
+            _ => None,
+        })
+        .await
+    })
+    .await;
+    assert!(closed.is_err(), "preflight failure should not emit closed");
+
+    server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_start_connect_failure_emits_realtime_error_only() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_websocket_server(vec![]).await;
+    let mut builder = test_codex().with_config(|config| {
+        config.experimental_realtime_ws_base_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let test = builder.build_with_websocket_server(&server).await?;
+
+    test.codex
+        .submit(Op::RealtimeConversationStart(ConversationStartParams {
+            prompt: "backend prompt".to_string(),
+            session_id: None,
+        }))
+        .await?;
+
+    let err = wait_for_event_match(&test.codex, |msg| match msg {
+        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+            payload: RealtimeEvent::Error(message),
+        }) => Some(message.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(!err.is_empty());
+
+    let closed = timeout(Duration::from_millis(200), async {
+        wait_for_event_match(&test.codex, |msg| match msg {
+            EventMsg::RealtimeConversationClosed(closed) => Some(closed.clone()),
+            _ => None,
+        })
+        .await
+    })
+    .await;
+    assert!(closed.is_err(), "connect failure should not emit closed");
 
     server.shutdown().await;
     Ok(())
@@ -477,7 +584,11 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
     .await;
     let mut builder = test_codex();
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    assert!(
+        server
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .await
+    );
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -518,6 +629,7 @@ async fn conversation_second_start_replaces_runtime() -> Result<()> {
                 sample_rate: 24000,
                 num_channels: 1,
                 samples_per_channel: Some(480),
+                item_id: None,
             },
         }))
         .await?;
@@ -576,7 +688,7 @@ async fn conversation_uses_experimental_realtime_ws_base_url_override() -> Resul
     let test = builder.build_with_websocket_server(&startup_server).await?;
     assert!(
         startup_server
-            .wait_for_handshakes(1, Duration::from_secs(2))
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
             .await
     );
 
@@ -628,7 +740,11 @@ async fn conversation_uses_experimental_realtime_ws_backend_prompt_override() ->
         config.experimental_realtime_ws_backend_prompt = Some("prompt from config".to_string());
     });
     let test = builder.build_with_websocket_server(&server).await?;
-    assert!(server.wait_for_handshakes(1, Duration::from_secs(2)).await);
+    assert!(
+        server
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .await
+    );
 
     test.codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
@@ -688,7 +804,7 @@ async fn conversation_uses_experimental_realtime_ws_startup_context_override() -
     fs::write(test.workspace_path("README.md"), "workspace marker")?;
     assert!(
         startup_server
-            .wait_for_handshakes(1, Duration::from_secs(2))
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
             .await
     );
 
@@ -748,7 +864,7 @@ async fn conversation_disables_realtime_startup_context_with_empty_override() ->
     fs::write(test.workspace_path("README.md"), "workspace marker")?;
     assert!(
         startup_server
-            .wait_for_handshakes(1, Duration::from_secs(2))
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
             .await
     );
 
@@ -1048,7 +1164,7 @@ async fn conversation_mirrors_assistant_message_text_to_realtime_handoff() -> Re
     );
     assert_eq!(
         realtime_connections[0][1].body_json()["output_text"].as_str(),
-        Some("assistant says hi")
+        Some("\"Agent Final Message\":\n\nassistant says hi")
     );
 
     realtime_server.shutdown().await;
@@ -1142,7 +1258,9 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
     })
     .await;
 
-    let first_append = realtime_server.wait_for_request(0, 1).await;
+    let first_append = realtime_server
+        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 1)
+        .await;
     assert_eq!(
         first_append.body_json()["type"].as_str(),
         Some("conversation.handoff.append")
@@ -1153,7 +1271,7 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
     );
     assert_eq!(
         first_append.body_json()["output_text"].as_str(),
-        Some("assistant message 1")
+        Some("\"Agent Final Message\":\n\nassistant message 1")
     );
 
     let _ = wait_for_event_match(&test.codex, |msg| match msg {
@@ -1166,7 +1284,9 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
 
     let _ = gate_second_message_tx.send(());
 
-    let second_append = realtime_server.wait_for_request(0, 2).await;
+    let second_append = realtime_server
+        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 2)
+        .await;
     assert_eq!(
         second_append.body_json()["type"].as_str(),
         Some("conversation.handoff.append")
@@ -1177,7 +1297,7 @@ async fn conversation_handoff_persists_across_item_done_until_turn_complete() ->
     );
     assert_eq!(
         second_append.body_json()["output_text"].as_str(),
-        Some("assistant message 2")
+        Some("\"Agent Final Message\":\n\nassistant message 2")
     );
 
     let completion = completions
@@ -1469,6 +1589,7 @@ async fn inbound_handoff_request_clears_active_transcript_after_each_handoff() -
                 sample_rate: 24000,
                 num_channels: 1,
                 samples_per_channel: Some(480),
+                item_id: None,
             },
         }))
         .await?;
@@ -1680,7 +1801,9 @@ async fn delegated_turn_user_role_echo_does_not_redelegate_and_still_forwards_au
         "delegate now"
     );
 
-    let mirrored_request = realtime_server.wait_for_request(0, 1).await;
+    let mirrored_request = realtime_server
+        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 1)
+        .await;
     let mirrored_request_body = mirrored_request.body_json();
     eprintln!(
         "[realtime test +{}ms] saw mirrored request type={:?} handoff_id={:?} text={:?}",
@@ -1699,7 +1822,7 @@ async fn delegated_turn_user_role_echo_does_not_redelegate_and_still_forwards_au
     );
     assert_eq!(
         mirrored_request_body["output_text"].as_str(),
-        Some("assistant says hi")
+        Some("\"Agent Final Message\":\n\nassistant says hi")
     );
 
     let audio_out = wait_for_event_match(&test.codex, |msg| match msg {
@@ -1954,6 +2077,7 @@ async fn inbound_handoff_request_steers_active_turn() -> Result<()> {
                 sample_rate: 24000,
                 num_channels: 1,
                 samples_per_channel: Some(480),
+                item_id: None,
             },
         }))
         .await?;

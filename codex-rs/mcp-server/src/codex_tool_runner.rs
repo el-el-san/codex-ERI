@@ -228,7 +228,6 @@ async fn run_codex_tool_session_inner(
                             parsed_cmd,
                             network_approval_context: _,
                             additional_permissions: _,
-                            skill_metadata: _,
                             available_decisions: _,
                         } = ev;
                         handle_exec_approval_request(
@@ -261,6 +260,9 @@ async fn run_codex_tool_session_inner(
                         break;
                     }
                     EventMsg::Warning(_) => {
+                        continue;
+                    }
+                    EventMsg::GuardianAssessment(_) => {
                         continue;
                     }
                     EventMsg::ElicitationRequest(_) => {
@@ -296,7 +298,9 @@ async fn run_codex_tool_session_inner(
                             Some(msg) => msg,
                             None => "".to_string(),
                         };
-                        let result = create_call_tool_result_with_thread_id(thread_id, text, None);
+                        let result = create_call_tool_result_with_thread_id(
+                            thread_id, text, /*is_error*/ None,
+                        );
                         outgoing.send_response(request_id.clone(), result).await;
                         // unregister the id so we don't keep it in the map
                         running_requests_id_to_codex_uuid
@@ -332,10 +336,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
                     | EventMsg::McpListToolsResponse(_)
-                    | EventMsg::ListCustomPromptsResponse(_)
                     | EventMsg::ListSkillsResponse(_)
-                    | EventMsg::ListRemoteSkillsResponse(_)
-                    | EventMsg::RemoteSkillDownloaded(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::TerminalInteraction(_)
                     | EventMsg::ExecCommandOutputDelta(_)
@@ -419,7 +420,11 @@ mod tests {
     #[test]
     fn call_tool_result_includes_thread_id_in_structured_content() {
         let thread_id = ThreadId::new();
-        let result = create_call_tool_result_with_thread_id(thread_id, "done".to_string(), None);
+        let result = create_call_tool_result_with_thread_id(
+            thread_id,
+            "done".to_string(),
+            /*is_error*/ None,
+        );
         assert_eq!(
             result.structured_content,
             Some(json!({
