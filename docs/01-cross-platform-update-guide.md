@@ -41,6 +41,22 @@
 - 変更ファイル:
   - `tui/src/clipboard_paste.rs`
 
+### 1.5 Androidでは code mode を無効化
+- `code-mode` クレートは `rusty_v8` に依存するが、現行 `v8 v146.4.0` では Android 向け静的配布物が存在せず CI のクロスビルドが失敗する
+- 変更内容:
+  - `core` / `tools` の `codex-code-mode` 依存を `cfg(not(target_os = "android"))` に限定
+  - Android では `exec` / `wait` を登録しないよう `ToolsConfig` で `Feature::CodeMode` を無効化
+  - `core` / `tools` に Android 用スタブモジュールを置き、非 Android 実装との API 互換だけ維持
+- 変更ファイル:
+  - `core/Cargo.toml`
+  - `tools/Cargo.toml`
+  - `core/src/tools/mod.rs`
+  - `core/src/tools/spec.rs`
+  - `core/src/tools/router.rs`
+  - `core/src/tools/code_mode_disabled.rs`
+  - `tools/src/lib.rs`
+  - `tools/src/code_mode_disabled.rs`
+
 ## 2. 変更の意図と効果
 
 - TLS 依存の安定化（`native-tls-vendored`）
@@ -105,6 +121,15 @@
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
   - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
   - `PasteImageError` と Android版 `paste_image_as_png` に `#[cfg_attr(target_os = "android", allow(dead_code))]` を付与
+
+### 3.8 Androidクロスビルドで `rusty_v8` 404 が出る場合
+- 症状: `https://github.com/denoland/rusty_v8/releases/.../librusty_v8_release_aarch64-linux-android.a.gz` が `404 Not Found`
+- 原因: 上流 `code-mode` が引く `v8` に Android 向け配布物がない
+- 対応:
+  - `core/Cargo.toml` と `tools/Cargo.toml` の `codex-code-mode` 依存を `cfg(not(target_os = "android"))` に移す
+  - `core/src/tools/spec.rs` で Android では `include_code_mode = false` にする
+  - `core/src/tools/mod.rs` / `tools/src/lib.rs` で Android 用スタブモジュールへ切り替える
+  - `core/src/tools/router.rs` で `codex_code_mode::is_code_mode_nested_tool()` への直接依存を避ける
 
 ## 4. 実用的な差分確認コマンド
 

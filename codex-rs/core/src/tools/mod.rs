@@ -1,3 +1,7 @@
+#[cfg(not(target_os = "android"))]
+pub mod code_mode;
+#[cfg(target_os = "android")]
+#[path = "code_mode_disabled.rs"]
 pub mod code_mode;
 pub mod context;
 pub mod events;

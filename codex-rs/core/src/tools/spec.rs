@@ -208,7 +208,7 @@ impl ToolsConfig {
             windows_sandbox_level,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
-        let include_code_mode = features.enabled(Feature::CodeMode);
+        let include_code_mode = features.enabled(Feature::CodeMode) && !cfg!(target_os = "android");
         let include_code_mode_only = include_code_mode && features.enabled(Feature::CodeModeOnly);
         let include_js_repl = features.enabled(Feature::JsRepl);
         let include_js_repl_tools_only =

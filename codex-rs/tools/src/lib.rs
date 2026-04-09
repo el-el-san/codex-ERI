@@ -3,6 +3,10 @@
 
 mod agent_job_tool;
 mod agent_tool;
+#[cfg(not(target_os = "android"))]
+mod code_mode;
+#[cfg(target_os = "android")]
+#[path = "code_mode_disabled.rs"]
 mod code_mode;
 mod dynamic_tool;
 mod js_repl_tool;
