@@ -14,15 +14,12 @@
   - `login/Cargo.toml`
   - （他に `reqwest` を使うクレートが増えた場合は同様に付与）
 
-### 1.2 ブラウザ起動（OS/環境別分岐）
-- `core/src/util.rs` に `open_url` 関数を追加（Termux/WSL/SSH/Container/各OS を考慮）
-- `login/src/server.rs` は `webbrowser` 依存を削除し、`codex_core::util::open_url` を使用
-- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も `webbrowser` を使わず、同等の分岐ロジックでブラウザ起動を試みる
-  - ※ `rmcp-client` は依存関係の都合で `codex-core` に依存できないため、`rmcp-client/src/utils.rs` 側にローカル実装を置く
+- `login/src/server.rs` に `open_url` 相当のローカル実装を追加（Termux/WSL/SSH/Container/各OS を考慮）
+- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も `webbrowser` を使わず、`rmcp-client/src/utils.rs` の同等ロジックでブラウザ起動を試みる
+  - 注: 現行上流では `login` と `core` の依存関係上、`login` から `codex-core` に直接依存できないため、`login` 側もローカル実装として保持する
 - 変更ファイル:
-  - `core/src/util.rs`（新規関数 `open_url` と環境検知関数を追加）
-  - `login/Cargo.toml`（`webbrowser` 削除）
-  - `login/src/server.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
+  - `login/Cargo.toml`（`webbrowser` 削除、`shlex` 追加）
+  - `login/src/server.rs`（ブラウザ起動処理と環境検知をローカル実装へ差し替え）
   - `rmcp-client/src/utils.rs`（`open_url` と環境検知関数を追加）
   - `rmcp-client/src/perform_oauth_login.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
   - `rmcp-client/Cargo.toml`（`webbrowser` 削除）
@@ -71,14 +68,13 @@
 - 注意: `blocking` 機能を使う箇所（`login` 等）は `features = ["json", "blocking", "native-tls-vendored"]` のように併記
 
 ### 3.2 ブラウザ起動の共通ロジックを適用
-- `core/src/util.rs` の `open_url` の存在を確認し、呼び出し側（例: `login/src/server.rs`）で使用する
-- もし上流で `webbrowser` クレートに戻っていたら、以下の分岐ロジックへ差し替え:
+- もし上流で `webbrowser` クレートに戻っていたら、`login/src/server.rs` と `rmcp-client/src/utils.rs` / `perform_oauth_login.rs` を以下の分岐ロジックへ差し替え:
   - Termux: `termux-open-url`
   - WSL: `cmd.exe /c start` → 失敗時 `wslview`
   - SSH/Container: 自動起動を回避し、URL を出力
   - macOS/Linux/Windows: それぞれ `open` / `xdg-open` / `cmd /c start`
 - `login/src/server.rs` のリダイレクト開始箇所（認可 URL を開く処理）で上記関数を使用すること
-- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も同様に適用すること（`rmcp-client` は `codex-core` に依存できないため、`rmcp-client/src/utils.rs` に同等の実装を置く）
+- MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も同様に適用すること
 
 ### 3.3 MCP環境変数保持の確認
 - `rmcp-client/src/utils.rs` の `DEFAULT_ENV_VARS` にTermux環境変数が含まれているか確認
@@ -89,8 +85,8 @@
   - 動的リンク: `LD_LIBRARY_PATH`, `LD_PRELOAD`
 
 ### 3.4 ふるまいの違い（失敗時の扱い）を揃える
-- `login` のブラウザ起動は `OpenUrlStatus::Suppressed` をハンドリングし、警告＋URL表示でフローを継続する
-- `core::util::open_url` は実行不能なケースのみ `Err` を返し、環境上の制約は `OpenUrlStatus::Suppressed` で伝達されるため、呼び出し側はメッセージ表示などを行う
+- `login` / `rmcp-client` のブラウザ起動は `OpenUrlStatus::Suppressed` をハンドリングし、警告＋URL表示でフローを継続する
+- `open_url` 実装は実行不能なケースのみ `Err` を返し、環境上の制約は `OpenUrlStatus::Suppressed` で伝達する
 
 ### 3.5 最小限の動作確認
 - Linux（X11/Wayland）: `xdg-open` が動作すること
@@ -139,7 +135,7 @@ reqwest = { version = "0.12", features = ["json", "blocking", "native-tls-vendor
 arboard = "3"
 ```
 
-### 5.2 ブラウザ起動の実装（core/src/util.rs の open_url 関数）
+### 5.2 ブラウザ起動の実装（login/src/server.rs / rmcp-client/src/utils.rs の open_url 関数）
 ```rust
 pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     if url.is_empty() {
@@ -168,7 +164,7 @@ pub fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 }
 ```
 
-注: `login/src/server.rs` は `OpenUrlStatus::Suppressed` を受け取り、URL を表示してフローを継続する
+注: `login/src/server.rs` と `rmcp-client/src/perform_oauth_login.rs` は `OpenUrlStatus::Suppressed` を受け取り、URL を表示してフローを継続する
 
 ### 5.3 MCP環境変数の保持
 ```rust
@@ -324,6 +320,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `arg0` の Android `try_lock()` 回避
   - `tui` の Android 向け警告抑止
   - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
+
+### 2026-04-09 更新内容
+- 上流 `rust-v0.118.0` を取り込み、`codex-rs` を同期
+- `login` / `rmcp-client` のブラウザ起動ロジックを Termux / WSL / SSH / Container 対応へ再適用
+- `arg0` の Android `try_lock()` 回避、`tui` の Android 警告抑止、`profile.release.lto = "thin"` を再適用
 
 ### 2026-03-16 更新内容
 - 上流 `rust-v0.114.0` を取り込み、`codex-rs` を同期
