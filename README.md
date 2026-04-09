@@ -14,6 +14,7 @@
   - SSH/コンテナ: 自動起動を抑止し、手動で開く案内を表示
   - Linux デスクトップ / macOS / Windows: 各 OS の標準コマンドとフォールバック（`BROWSER` / `xdg-open` / `gio open` / `sensible-browser` / Firefox/Chrome 系）
 - MCP サーバー起動時に Termux/Android の環境変数を保持（`rmcp-client` の `DEFAULT_ENV_VARS` を拡張）。
+- Android クロスビルドでは `rusty_v8` 配布物欠如を避けるため、`exec` / code mode を無効化。
 - 詳細手順や再適用チェックリストは `docs/01-cross-platform-update-guide.md` を参照。上流確認手順は `docs/00-update-chk.md` にあります。
 
 ## リポジトリ構成
