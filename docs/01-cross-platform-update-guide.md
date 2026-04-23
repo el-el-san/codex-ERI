@@ -236,6 +236,17 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 ## 7. 最近の更新履歴
 
+### 2026-04-23 更新内容
+- 上流 `rust-v0.121.0` を取り込み、`codex-rs` を同期
+- 再適用した差分:
+  - `core/login/ollama` の `reqwest` に `native-tls-vendored`
+  - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに統一
+  - `rmcp-client` の Termux/Android 環境変数保持
+  - Android では `code-mode` 依存と `exec` / `wait` 公開を無効化
+  - `arg0` の Android `try_lock()` 回避
+  - `tui` の Android 向け警告抑止
+  - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
+
 ### 2025-09-06 更新内容
 - （ガイド初版）クロスプラットフォーム対応の方針を整理
 

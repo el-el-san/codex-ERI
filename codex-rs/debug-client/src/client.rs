@@ -1,3 +1,4 @@
+#![allow(clippy::expect_used)]
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Write;
@@ -298,8 +299,8 @@ impl AppServerClient {
             }
 
             let line = buffer.trim_end_matches(['\n', '\r']);
-            if !line.is_empty() && !self.filtered_output {
-                let _ = output.server_line(line);
+            if !line.is_empty() {
+                let _ = output.server_json_line(line, self.filtered_output);
             }
 
             let message = match serde_json::from_str::<JSONRPCMessage>(line) {

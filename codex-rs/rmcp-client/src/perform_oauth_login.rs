@@ -16,7 +16,6 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use urlencoding::decode;
 
-use crate::OAuthCredentialsStoreMode;
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
@@ -25,6 +24,7 @@ use crate::utils::OpenUrlStatus;
 use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
 use crate::utils::open_url;
+use codex_config::types::OAuthCredentialsStoreMode;
 
 struct OauthHeaders {
     http_headers: Option<HashMap<String, String>>,

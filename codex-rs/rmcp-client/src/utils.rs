@@ -120,7 +120,7 @@ impl fmt::Display for OpenUrlError {
 
 impl std::error::Error for OpenUrlError {}
 
-pub(crate) fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+pub(crate) fn open_url(url: &str) -> Result<OpenUrlStatus> {
     let url = url.trim();
     if url.is_empty() {
         return Ok(OpenUrlStatus::Suppressed {
@@ -128,7 +128,7 @@ pub(crate) fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
         });
     }
 
-    open_url_platform(url)
+    open_url_platform(url).map_err(anyhow::Error::from)
 }
 
 fn is_termux() -> bool {

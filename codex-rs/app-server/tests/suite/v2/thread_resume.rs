@@ -8,6 +8,7 @@ use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_shell_command_sse_response;
 use app_test_support::rollout_path;
+use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Utc;
@@ -38,8 +39,8 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ContentItem;
@@ -69,6 +70,11 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
+
+use super::analytics::assert_basic_thread_initialized_event;
+use super::analytics::enable_analytics_capture;
+use super::analytics::thread_initialized_event;
+use super::analytics::wait_for_analytics_payload;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const CODEX_5_2_INSTRUCTIONS_TEMPLATE_DEFAULT: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
@@ -151,6 +157,51 @@ async fn thread_resume_rejects_unmaterialized_thread() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_resume_tracks_thread_initialized_analytics() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_with_chatgpt_base_url(
+        codex_home.path(),
+        &server.uri(),
+        &server.uri(),
+        /*general_analytics_enabled*/ true,
+    )?;
+    enable_analytics_capture(&server, codex_home.path()).await?;
+
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Vec::new(),
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = McpProcess::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id,
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+
+    let payload = wait_for_analytics_payload(&server, DEFAULT_READ_TIMEOUT).await?;
+    let event = thread_initialized_event(&payload)?;
+    assert_basic_thread_initialized_event(event, &thread.id, "gpt-5.2-codex", "resumed");
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_resume_returns_rollout_history() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -194,7 +245,7 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
     assert_eq!(thread.preview, preview);
     assert_eq!(thread.model_provider, "mock_provider");
     assert!(thread.path.as_ref().expect("thread path").is_absolute());
-    assert_eq!(thread.cwd, PathBuf::from("/"));
+    assert_eq!(thread.cwd, test_absolute_path("/"));
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
@@ -442,6 +493,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
             "type": "event_msg",
             "payload": serde_json::to_value(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_id: turn_id.to_string(),
+                started_at: None,
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             }))?,
@@ -1449,6 +1501,7 @@ async fn thread_resume_surfaces_cloud_requirements_load_errors() -> Result<()> {
         codex_home.path(),
         &model_server.uri(),
         &chatgpt_base_url,
+        /*general_analytics_enabled*/ false,
     )?;
     write_chatgpt_auth(
         codex_home.path(),
@@ -1561,7 +1614,7 @@ async fn thread_resume_prefers_path_over_thread_id() -> Result<()> {
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: "not-a-valid-thread-id".to_string(),
-            path: Some(thread_path),
+            path: Some(thread_path.to_path_buf()),
             ..Default::default()
         })
         .await?;
@@ -1690,7 +1743,7 @@ async fn start_materialized_thread_and_restart(
     Ok(RestartedThreadFixture {
         mcp: second_mcp,
         thread_id,
-        rollout_file_path,
+        rollout_file_path: rollout_file_path.to_path_buf(),
     })
 }
 
@@ -1827,6 +1880,7 @@ model_provider = "mock_provider"
 
 [features]
 personality = true
+general_analytics = true
 
 [model_providers.mock_provider]
 name = "Mock provider for test"
@@ -1843,7 +1897,13 @@ fn create_config_toml_with_chatgpt_base_url(
     codex_home: &std::path::Path,
     server_uri: &str,
     chatgpt_base_url: &str,
+    general_analytics_enabled: bool,
 ) -> std::io::Result<()> {
+    let general_analytics_toml = if general_analytics_enabled {
+        "\ngeneral_analytics = true".to_string()
+    } else {
+        "\ngeneral_analytics = false".to_string()
+    };
     let config_toml = codex_home.join("config.toml");
     std::fs::write(
         config_toml,
@@ -1858,6 +1918,7 @@ model_provider = "mock_provider"
 
 [features]
 personality = true
+{general_analytics_toml}
 
 [model_providers.mock_provider]
 name = "Mock provider for test"

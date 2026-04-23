@@ -3,8 +3,8 @@
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use codex_core::config::types::McpServerConfig;
-use codex_core::config::types::McpServerTransportConfig;
+use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -178,11 +178,24 @@ async fn run_code_mode_turn_with_rmcp(
     prompt: &str,
     code: &str,
 ) -> Result<(TestCodex, ResponseMock)> {
+    run_code_mode_turn_with_rmcp_mode(server, prompt, code, /*code_mode_only*/ false).await
+}
+
+async fn run_code_mode_turn_with_rmcp_mode(
+    server: &MockServer,
+    prompt: &str,
+    code: &str,
+    code_mode_only: bool,
+) -> Result<(TestCodex, ResponseMock)> {
     let rmcp_test_server_bin = stdio_server_bin()?;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
-            let _ = config.features.enable(Feature::CodeMode);
+            let _ = if code_mode_only {
+                config.features.enable(Feature::CodeModeOnly)
+            } else {
+                config.features.enable(Feature::CodeMode)
+            };
 
             let mut servers = config.mcp_servers.get().clone();
             servers.insert(
@@ -200,6 +213,7 @@ async fn run_code_mode_turn_with_rmcp(
                     },
                     enabled: true,
                     required: false,
+                    supports_parallel_tool_calls: false,
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1627,6 +1641,34 @@ text({ json: true });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_resume_after_set_timeout() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec to wait for a timeout",
+        r#"
+await new Promise((resolve) => setTimeout(resolve, 10));
+text("timer done");
+"#,
+        /*include_apply_patch*/ false,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec setTimeout call failed unexpectedly: {output}"
+    );
+    assert_eq!(output, "timer done");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_notify_injects_additional_exec_tool_output_into_active_context() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1803,7 +1845,6 @@ async fn code_mode_can_use_view_image_result_with_image_helper() -> Result<()> {
         .with_model("gpt-5.3-codex")
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
-            let _ = config.features.enable(Feature::ImageDetailOriginal);
         });
     let test = builder.build(&server).await?;
 
@@ -1962,6 +2003,36 @@ contentLength=0"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_only_can_call_mcp_tool() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+const result = await tools.mcp__rmcp__echo({ message: "ping" });
+text(`echo=${result.structuredContent?.echo ?? "missing"}`);
+"#;
+
+    let (_test, second_mock) = run_code_mode_turn_with_rmcp_mode(
+        &server,
+        "use exec to run the rmcp echo tool in code mode only",
+        code,
+        /*code_mode_only*/ true,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "code_mode_only rmcp tool call failed unexpectedly: {output}"
+    );
+    assert_eq!(output, "echo=ECHOING: ping");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_exposes_mcp_tools_on_global_tools_object() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -2099,6 +2170,7 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "BigInt64Array",
         "BigUint64Array",
         "Boolean",
+        "clearTimeout",
         "DataView",
         "Date",
         "DisposableStack",
@@ -2161,6 +2233,7 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "notify",
         "parseFloat",
         "parseInt",
+        "setTimeout",
         "store",
         "text",
         "tools",
@@ -2212,7 +2285,7 @@ text(JSON.stringify(tool));
         parsed,
         serde_json::json!({
             "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<{ detail: string | null; image_url: string; }>; };\n```",
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Local filesystem path to an image file\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `original` when original resolution is preserved, otherwise `null`.\n  detail: string | null;\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
         })
     );
 
@@ -2250,7 +2323,14 @@ text(JSON.stringify(tool));
         parsed,
         serde_json::json!({
             "name": "mcp__rmcp__echo",
-            "description": "Echo back the provided message and include environment data.\n\nexec tool declaration:\n```ts\ndeclare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>; };\n```",
+            "description": concat!(
+                "Echo back the provided message and include environment data.\n\n",
+                "exec tool declaration:\n",
+                "```ts\n",
+                "declare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): ",
+                "Promise<CallToolResult<{ echo: string; env: string | null; }>>; };\n",
+                "```",
+            ),
         })
     );
 
@@ -2575,6 +2655,54 @@ text(JSON.stringify(load("nb")));
         loaded,
         serde_json::json!({ "title": "Notebook", "items": [1, true, null] })
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_compare_elapsed_time_around_set_timeout() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "measure elapsed time around setTimeout",
+        r#"
+const start_ms = Date.now();
+await new Promise((resolve) => setTimeout(resolve, 100));
+const end_ms = Date.now();
+text(JSON.stringify({
+  start_ms,
+  end_ms,
+  elapsed_ms: end_ms - start_ms,
+  waited_long_enough: end_ms - start_ms >= 100,
+}));
+"#,
+        /*include_apply_patch*/ false,
+    )
+    .await?;
+
+    let second_request = second_mock.single_request();
+    let (second_output, second_success) =
+        custom_tool_output_body_and_success(&second_request, "call-1");
+    assert_ne!(
+        second_success,
+        Some(false),
+        "exec compare time call failed unexpectedly: {second_output}"
+    );
+    let compared: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&second_request, "call-1")
+            .expect("exec compare time call should emit JSON"),
+    )?;
+    let elapsed_ms = compared
+        .get("elapsed_ms")
+        .and_then(Value::as_i64)
+        .expect("elapsed_ms should be an integer");
+    assert!(
+        elapsed_ms >= 100,
+        "expected elapsed_ms >= 100, got {elapsed_ms}"
+    );
+    assert_eq!(compared.get("waited_long_enough"), Some(&Value::Bool(true)));
 
     Ok(())
 }
