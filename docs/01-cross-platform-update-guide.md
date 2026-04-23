@@ -112,10 +112,13 @@
 - Termux（Android）: `termux-open-url` で URL が開くこと、MCP機能が正常動作すること
 - SSH/Container: 自動オープンは抑止され、URL が出力されること
 
-### 3.6 Androidでのファイルロック非対応（arg0）
+### 3.6 Androidでのファイルロック非対応（arg0 / installation_id）
 - `arg0/src/lib.rs` で `File::try_lock()` がAndroidのファイルシステムで非対応のためエラーになる
 - `prepend_path_entry_for_codex_aliases` 内と `try_lock_dir` 内の `try_lock()` 呼び出しを `#[cfg(not(target_os = "android"))]` で除外
 - Android版では `try_lock_dir` はロック確認なしで常に `Some(lock_file)` を返す
+- `core/src/installation_id.rs` で `file.lock()` (Rust std の `File::lock`) がAndroidで `lock() not supported` エラーになる
+  - `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
+  - これにより `thread/start failed during TUI bootstrap` エラーが解消される
 
 ### 3.7 Androidビルドでの警告抑止（clipboard_paste）
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
@@ -244,6 +247,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `rmcp-client` の Termux/Android 環境変数保持
   - Android では `code-mode` 依存と `exec` / `wait` 公開を無効化
   - `arg0` の Android `try_lock()` 回避
+  - `core/src/installation_id.rs` の Android `file.lock()` 回避（新規: Rust 1.87+ の `File::lock` 対応）
   - `tui` の Android 向け警告抑止
   - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
 
@@ -277,6 +281,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 症状: `WARNING: proceeding, even though we could not update PATH: try_lock() not supported`
 - 原因: Androidのファイルシステムが `flock()` をサポートしていない
 - 対処: `arg0/src/lib.rs` の `try_lock()` 呼び出しを `#[cfg(not(target_os = "android"))]` で除外
+
+### 8.7 Androidで "thread/start failed during TUI bootstrap: lock() not supported" が出る
+- 症状: `codex` 起動時に `Error: thread/start failed during TUI bootstrap` で即終了
+- 原因: `core/src/installation_id.rs` の `file.lock()` (Rust 1.87+ の `std::fs::File::lock`) がAndroidで非対応
+- 対処: `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
 
 ### 8.5 Androidビルドで unused/dead_code 警告が出る
 - 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る

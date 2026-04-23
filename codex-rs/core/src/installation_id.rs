@@ -29,6 +29,7 @@ pub(crate) async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Res
         }
 
         let mut file = options.open(&path)?;
+        #[cfg(not(target_os = "android"))]
         file.lock()?;
 
         #[cfg(unix)]
