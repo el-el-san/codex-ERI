@@ -32,7 +32,9 @@ codex-apply-patch = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-connectors = { workspace = true }
 codex-config = { workspace = true }
+codex-core-plugins = { workspace = true }
 codex-core-skills = { workspace = true }
+crypto_box = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-features = { workspace = true }
 codex-feedback = { workspace = true }
@@ -45,10 +47,10 @@ codex-shell-command = { workspace = true }
 codex-execpolicy = { workspace = true }
 codex-git-utils = { workspace = true }
 codex-hooks = { workspace = true }
-codex-instructions = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
+codex-model-provider = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
 codex-rollout = { workspace = true }
@@ -97,10 +99,10 @@ rmcp = { workspace = true, default-features = false, features = [
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha1 = { workspace = true }
+sha2 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
 tempfile = { workspace = true }
-test-log = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = [
     "io-std",
@@ -120,11 +122,11 @@ which = { workspace = true }
 whoami = { workspace = true }
 zip = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.9"
-
 [target.'cfg(not(target_os = "android"))'.dependencies]
 codex-code-mode = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
 
 # Build OpenSSL from source for musl builds.
 [target.x86_64-unknown-linux-musl.dependencies]
@@ -165,6 +167,7 @@ opentelemetry_sdk = { workspace = true, features = [
 ] }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+test-log = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = ["no-env-filter"] }

@@ -11,8 +11,6 @@
 //! This module therefore keeps the user-facing error path and the structured-log path separate.
 //! Returned `io::Error` values still carry the detail needed by CLI/browser callers, while
 //! structured logs only emit explicitly reviewed fields plus redacted URL/error values.
-use std::env;
-use std::fmt;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
@@ -151,136 +149,13 @@ impl OpenUrlError {
     }
 }
 
-impl fmt::Display for OpenUrlError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for OpenUrlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)
     }
 }
 
 impl std::error::Error for OpenUrlError {}
-
-/// Starts a local callback server and returns the browser auth URL.
-pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
-    let pkce = generate_pkce();
-    let state = opts.force_state.clone().unwrap_or_else(generate_state);
-
-    let server = bind_server(opts.port)?;
-    let actual_port = match server.server_addr().to_ip() {
-        Some(addr) => addr.port(),
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "Unable to determine the server port",
-            ));
-        }
-    };
-    let server = Arc::new(server);
-
-    let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
-    let auth_url = build_authorize_url(
-        &opts.issuer,
-        &opts.client_id,
-        &redirect_uri,
-        &pkce,
-        &state,
-        opts.forced_chatgpt_workspace_id.as_deref(),
-    );
-
-    if opts.open_browser {
-        match open_url(&auth_url) {
-            Ok(OpenUrlStatus::Opened) => {}
-            Ok(OpenUrlStatus::Suppressed { reason }) => {
-                eprintln!("Browser launch suppressed: {reason}");
-                eprintln!("Open this URL in your browser:\n{auth_url}\n");
-            }
-            Err(err) => {
-                eprintln!("Browser launch failed: {err}");
-                eprintln!("Open this URL in your browser:\n{auth_url}\n");
-            }
-        }
-    }
-
-    // Map blocking reads from server.recv() to an async channel.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Request>(16);
-    let _server_handle = {
-        let server = server.clone();
-        thread::spawn(move || -> io::Result<()> {
-            while let Ok(request) = server.recv() {
-                match tx.blocking_send(request) {
-                    Ok(()) => {}
-                    Err(error) => {
-                        eprintln!("Failed to send request to channel: {error}");
-                        return Err(io::Error::other("Failed to send request to channel"));
-                    }
-                }
-            }
-            Ok(())
-        })
-    };
-
-    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-    let server_handle = {
-        let shutdown_notify = shutdown_notify.clone();
-        let server = server;
-        tokio::spawn(async move {
-            let result = loop {
-                tokio::select! {
-                    _ = shutdown_notify.notified() => {
-                        break Err(io::Error::other("Login was not completed"));
-                    }
-                    maybe_req = rx.recv() => {
-                        let Some(req) = maybe_req else {
-                            break Err(io::Error::other("Login was not completed"));
-                        };
-
-                        let url_raw = req.url().to_string();
-                        let response =
-                            process_request(&url_raw, &opts, &redirect_uri, &pkce, actual_port, &state).await;
-
-                        let exit_result = match response {
-                            HandledRequest::Response(response) => {
-                                let _ = tokio::task::spawn_blocking(move || req.respond(response)).await;
-                                None
-                            }
-                            HandledRequest::ResponseAndExit {
-                                headers,
-                                body,
-                                result,
-                            } => {
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    send_response_with_disconnect(req, headers, body)
-                                })
-                                .await;
-                                Some(result)
-                            }
-                            HandledRequest::RedirectWithHeader(header) => {
-                                let redirect = Response::empty(302).with_header(header);
-                                let _ = tokio::task::spawn_blocking(move || req.respond(redirect)).await;
-                                None
-                            }
-                        };
-
-                        if let Some(result) = exit_result {
-                            break result;
-                        }
-                    }
-                }
-            };
-
-            // Ensure that the server is unblocked so the thread dedicated to
-            // running `server.recv()` in a loop exits cleanly.
-            server.unblock();
-            result
-        })
-    };
-
-    Ok(LoginServer {
-        auth_url,
-        actual_port,
-        server_handle,
-        shutdown_handle: ShutdownHandle { shutdown_notify },
-    })
-}
 
 fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     let url = url.trim();
@@ -294,23 +169,23 @@ fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 }
 
 fn is_termux() -> bool {
-    env::var_os("TERMUX_VERSION").is_some() || env::var_os("TERMUX_APP_PID").is_some()
+    std::env::var_os("TERMUX_VERSION").is_some() || std::env::var_os("TERMUX_APP_PID").is_some()
 }
 
 fn is_wsl() -> bool {
-    env::var_os("WSL_INTEROP").is_some()
-        || env::var_os("WSL_DISTRO_NAME").is_some()
-        || env::var_os("WSLENV").is_some()
+    std::env::var_os("WSL_INTEROP").is_some()
+        || std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::env::var_os("WSLENV").is_some()
 }
 
 fn is_ssh() -> bool {
-    env::var_os("SSH_CONNECTION").is_some()
-        || env::var_os("SSH_CLIENT").is_some()
-        || env::var_os("SSH_TTY").is_some()
+    std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_CLIENT").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
 }
 
 fn is_container() -> bool {
-    env::var_os("container").is_some()
+    std::env::var_os("container").is_some()
         || Path::new("/.dockerenv").exists()
         || Path::new("/run/.containerenv").exists()
 }
@@ -440,7 +315,7 @@ fn open_url_linux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn browser_env_candidates() -> Vec<Vec<String>> {
-    let Ok(value) = env::var("BROWSER") else {
+    let Ok(value) = std::env::var("BROWSER") else {
         return Vec::new();
     };
 
@@ -519,6 +394,129 @@ fn record_outcome(
             None
         }
     }
+}
+
+/// Starts a local callback server and returns the browser auth URL.
+pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
+    let pkce = generate_pkce();
+    let state = opts.force_state.clone().unwrap_or_else(generate_state);
+
+    let server = bind_server(opts.port)?;
+    let actual_port = match server.server_addr().to_ip() {
+        Some(addr) => addr.port(),
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "Unable to determine the server port",
+            ));
+        }
+    };
+    let server = Arc::new(server);
+
+    let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
+    let auth_url = build_authorize_url(
+        &opts.issuer,
+        &opts.client_id,
+        &redirect_uri,
+        &pkce,
+        &state,
+        opts.forced_chatgpt_workspace_id.as_deref(),
+    );
+
+    if opts.open_browser {
+        match open_url(&auth_url) {
+            Ok(OpenUrlStatus::Opened) => {}
+            Ok(OpenUrlStatus::Suppressed { reason }) => {
+                eprintln!("Browser launch suppressed: {reason}");
+                eprintln!("Open this URL in your browser:\n{auth_url}\n");
+            }
+            Err(err) => {
+                eprintln!("Browser launch failed: {err}");
+                eprintln!("Open this URL in your browser:\n{auth_url}\n");
+            }
+        }
+    }
+
+    // Map blocking reads from server.recv() to an async channel.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Request>(16);
+    let _server_handle = {
+        let server = server.clone();
+        thread::spawn(move || -> io::Result<()> {
+            while let Ok(request) = server.recv() {
+                match tx.blocking_send(request) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("Failed to send request to channel: {error}");
+                        return Err(io::Error::other("Failed to send request to channel"));
+                    }
+                }
+            }
+            Ok(())
+        })
+    };
+
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let server_handle = {
+        let shutdown_notify = shutdown_notify.clone();
+        let server = server;
+        tokio::spawn(async move {
+            let result = loop {
+                tokio::select! {
+                    _ = shutdown_notify.notified() => {
+                        break Err(io::Error::other("Login was not completed"));
+                    }
+                    maybe_req = rx.recv() => {
+                        let Some(req) = maybe_req else {
+                            break Err(io::Error::other("Login was not completed"));
+                        };
+
+                        let url_raw = req.url().to_string();
+                        let response =
+                            process_request(&url_raw, &opts, &redirect_uri, &pkce, actual_port, &state).await;
+
+                        let exit_result = match response {
+                            HandledRequest::Response(response) => {
+                                let _ = tokio::task::spawn_blocking(move || req.respond(response)).await;
+                                None
+                            }
+                            HandledRequest::ResponseAndExit {
+                                headers,
+                                body,
+                                result,
+                            } => {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    send_response_with_disconnect(req, headers, body)
+                                })
+                                .await;
+                                Some(result)
+                            }
+                            HandledRequest::RedirectWithHeader(header) => {
+                                let redirect = Response::empty(302).with_header(header);
+                                let _ = tokio::task::spawn_blocking(move || req.respond(redirect)).await;
+                                None
+                            }
+                        };
+
+                        if let Some(result) = exit_result {
+                            break result;
+                        }
+                    }
+                }
+            };
+
+            // Ensure that the server is unblocked so the thread dedicated to
+            // running `server.recv()` in a loop exits cleanly.
+            server.unblock();
+            result
+        })
+    };
+
+    Ok(LoginServer {
+        auth_url,
+        actual_port,
+        server_handle,
+        shutdown_handle: ShutdownHandle { shutdown_notify },
+    })
 }
 
 /// Internal callback handling outcome.

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use serde_json::Value as JsonValue;
 
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -32,8 +34,8 @@ impl CodeModeService {
 
     pub(crate) async fn start_turn_worker(
         &self,
-        _session: &std::sync::Arc<crate::codex::Session>,
-        _turn: &std::sync::Arc<crate::codex::TurnContext>,
+        _session: &std::sync::Arc<Session>,
+        _turn: &std::sync::Arc<TurnContext>,
         _router: std::sync::Arc<ToolRouter>,
         _tracker: SharedTurnDiffTracker,
     ) -> Option<()> {

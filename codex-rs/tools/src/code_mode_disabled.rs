@@ -43,6 +43,16 @@ pub fn collect_code_mode_exec_prompt_tool_definitions<'a>(
     Vec::new()
 }
 
+pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) if namespace.ends_with('_') || tool_name.name.starts_with('_') => {
+            format!("{namespace}{}", tool_name.name)
+        }
+        Some(namespace) => format!("{namespace}_{}", tool_name.name),
+        None => tool_name.name.clone(),
+    }
+}
+
 pub fn create_wait_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
@@ -88,6 +98,7 @@ pub fn create_code_mode_tool(
     _enabled_tools: &[CodeModeToolDefinition],
     _namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
     _code_mode_only_enabled: bool,
+    _deferred_tools_available: bool,
 ) -> ToolSpec {
     const CODE_MODE_FREEFORM_GRAMMAR: &str = r#"
 start: pragma_source | plain_source

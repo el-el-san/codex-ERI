@@ -237,7 +237,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ## 7. 最近の更新履歴
 
 ### 2026-04-23 更新内容
-- 上流 `rust-v0.121.0` を取り込み、`codex-rs` を同期
+- 上流 `rust-v0.123.0` を取り込み、`codex-rs` を同期
 - 再適用した差分:
   - `core/login/ollama` の `reqwest` に `native-tls-vendored`
   - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに統一
