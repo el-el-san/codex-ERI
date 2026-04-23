@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 
 use crate::function_tool::FunctionCallError;
@@ -44,7 +43,6 @@ impl CodeModeService {
 
 pub(crate) struct CodeModeExecuteHandler;
 
-#[async_trait]
 impl ToolHandler for CodeModeExecuteHandler {
     type Output = FunctionToolOutput;
 
@@ -52,16 +50,20 @@ impl ToolHandler for CodeModeExecuteHandler {
         ToolKind::Function
     }
 
-    async fn handle(&self, _invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        Err(FunctionCallError::RespondToModel(
-            CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
-        ))
+    fn handle(
+        &self,
+        _invocation: ToolInvocation,
+    ) -> impl std::future::Future<Output = Result<Self::Output, FunctionCallError>> + Send {
+        async {
+            Err(FunctionCallError::RespondToModel(
+                CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            ))
+        }
     }
 }
 
 pub(crate) struct CodeModeWaitHandler;
 
-#[async_trait]
 impl ToolHandler for CodeModeWaitHandler {
     type Output = FunctionToolOutput;
 
@@ -69,9 +71,14 @@ impl ToolHandler for CodeModeWaitHandler {
         ToolKind::Function
     }
 
-    async fn handle(&self, _invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
-        Err(FunctionCallError::RespondToModel(
-            CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
-        ))
+    fn handle(
+        &self,
+        _invocation: ToolInvocation,
+    ) -> impl std::future::Future<Output = Result<Self::Output, FunctionCallError>> + Send {
+        async {
+            Err(FunctionCallError::RespondToModel(
+                CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            ))
+        }
     }
 }
