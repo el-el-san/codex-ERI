@@ -14,12 +14,14 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-codex-code-mode = { workspace = true }
 codex-protocol = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+codex-code-mode = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
