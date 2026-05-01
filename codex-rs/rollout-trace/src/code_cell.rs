@@ -9,14 +9,18 @@ use std::sync::Arc;
 
 #[cfg(not(target_os = "android"))]
 use codex_code_mode::RuntimeResponse;
+#[cfg(not(target_os = "android"))]
 use serde::Serialize;
 use tracing::warn;
 
 use crate::model::AgentThreadId;
+#[cfg(not(target_os = "android"))]
 use crate::model::CodeCellRuntimeStatus;
 use crate::model::CodexTurnId;
 use crate::model::ModelVisibleCallId;
+#[cfg(not(target_os = "android"))]
 use crate::payload::RawPayloadKind;
+#[cfg(not(target_os = "android"))]
 use crate::payload::RawPayloadRef;
 use crate::raw_event::RawTraceEventContext;
 use crate::raw_event::RawTraceEventPayload;
@@ -48,9 +52,9 @@ struct EnabledCodeCellTraceContext {
 /// output through `CodeCell.output_item_ids` once the conversation item appears.
 /// Keeping the raw runtime payload here preserves stored-value and lifecycle
 /// evidence without duplicating the model-facing transcript.
+#[cfg(not(target_os = "android"))]
 #[derive(Serialize)]
 struct CodeCellResponseTracePayload<'a> {
-    #[cfg(not(target_os = "android"))]
     response: &'a RuntimeResponse,
 }
 
@@ -163,6 +167,7 @@ fn code_cell_response_payload(
     )
 }
 
+#[cfg(not(target_os = "android"))]
 fn write_json_payload_best_effort(
     writer: &TraceWriter,
     kind: RawPayloadKind,
