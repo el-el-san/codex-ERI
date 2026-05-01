@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use serde_json::Value as JsonValue;
 
@@ -10,19 +9,19 @@ use crate::tools::ToolRouter;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = "exec";
 pub(crate) const WAIT_TOOL_NAME: &str = "wait";
-pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 1_000;
 
 const CODE_MODE_UNSUPPORTED_MESSAGE: &str = "code mode is disabled in Android builds";
 
 pub(crate) struct CodeModeService;
 
 impl CodeModeService {
-    pub(crate) fn new(_js_repl_node_path: Option<PathBuf>) -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 
@@ -50,6 +49,10 @@ impl ToolHandler for CodeModeExecuteHandler {
 
     fn kind(&self) -> ToolKind {
         ToolKind::Function
+    }
+
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Custom { .. })
     }
 
     fn handle(

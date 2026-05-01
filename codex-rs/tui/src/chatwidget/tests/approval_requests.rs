@@ -133,7 +133,7 @@ fn app_server_exec_approval_request_preserves_permissions_context() {
     );
     assert_eq!(
         request.additional_permissions,
-        Some(PermissionProfile {
+        Some(codex_protocol::models::AdditionalPermissionProfile {
             network: Some(NetworkPermissions {
                 enabled: Some(true),
             }),
@@ -217,7 +217,7 @@ async fn exec_approval_uses_approval_id_when_present() {
     let mut found = false;
     while let Ok(app_ev) = rx.try_recv() {
         if let AppEvent::SubmitThreadOp {
-            op: Op::ExecApproval { id, decision, .. },
+            op: AppCommand::ExecApproval { id, decision, .. },
             ..
         } = app_ev
         {
