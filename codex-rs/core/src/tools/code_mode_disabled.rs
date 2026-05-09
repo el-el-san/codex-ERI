@@ -52,6 +52,12 @@ impl CodeModeService {
 
 pub(crate) struct CodeModeExecuteHandler;
 
+impl CodeModeExecuteHandler {
+    pub(crate) fn new(_spec: ToolSpec) -> Self {
+        Self
+    }
+}
+
 impl ToolHandler for CodeModeExecuteHandler {
     type Output = FunctionToolOutput;
 
