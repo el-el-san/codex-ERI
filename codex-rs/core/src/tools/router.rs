@@ -21,26 +21,12 @@ use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_tools::ToolsConfig;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 pub use crate::tools::context::ToolCallSource;
-
-#[cfg(not(target_os = "android"))]
-fn is_code_mode_nested_tool(tool_name: &str) -> bool {
-    codex_code_mode::is_code_mode_nested_tool(tool_name)
-}
-
-#[cfg(target_os = "android")]
-fn is_code_mode_nested_tool(tool_name: &str) -> bool {
-    matches!(
-        tool_name,
-        crate::tools::code_mode::PUBLIC_TOOL_NAME | crate::tools::code_mode::WAIT_TOOL_NAME
-    )
-}
 
 #[derive(Clone, Debug)]
 pub struct ToolCall {
@@ -57,8 +43,8 @@ pub struct ToolRouter {
 }
 
 pub(crate) struct ToolRouterParams<'a> {
-    pub(crate) mcp_tools: Option<HashMap<String, ToolInfo>>,
-    pub(crate) deferred_mcp_tools: Option<HashMap<String, ToolInfo>>,
+    pub(crate) mcp_tools: Option<Vec<ToolInfo>>,
+    pub(crate) deferred_mcp_tools: Option<Vec<ToolInfo>>,
     pub(crate) unavailable_called_tools: Vec<ToolName>,
     pub(crate) parallel_mcp_server_names: HashSet<String>,
     pub(crate) discoverable_tools: Option<Vec<DiscoverableTool>>,
@@ -92,9 +78,13 @@ impl ToolRouter {
         let model_visible_specs = specs
             .iter()
             .filter_map(|configured_tool| {
-                if config.code_mode_only_enabled && is_code_mode_nested_tool(configured_tool.name())
+                #[cfg(not(target_os = "android"))]
                 {
-                    return None;
+                    if config.code_mode_only_enabled
+                        && codex_code_mode::is_code_mode_nested_tool(configured_tool.name())
+                    {
+                        return None;
+                    }
                 }
 
                 filter_deferred_dynamic_tool_spec(
