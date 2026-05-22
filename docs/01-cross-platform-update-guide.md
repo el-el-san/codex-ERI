@@ -233,8 +233,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ### 6.4 Androidクロスビルド時のリンク時間対策（LTO）
 - `codex-rs/Cargo.toml` の `[profile.release]` で `lto = "thin"` を維持する
 - 背景: `lto = "fat"` だと Android 向けクロスビルドでリンク工程が長時間化し、CI で `exit code 143`（プロセス終了）を誘発する場合がある
+- `codegen-units = 1` でも Android 向け release build が長時間化する場合があるため、
+  GitHub Actions `Build Android` では `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` で上書きする
 - 再適用時チェック:
   - `codex-rs/Cargo.toml` の `[profile.release]` が `lto = "thin"` になっているか
+  - `.github/workflows/build-android.yml` の `Build` ステップで `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` を設定しているか
   - GitHub Actions `Build Android` で `Build` ステップが完走するか
 
 ## 7. 最近の更新履歴
@@ -251,6 +254,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `core/src/installation_id.rs` の Android `file.lock()` 回避
   - `tui` の Android 向け警告抑止
   - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
+  - Android CI の release build 時間対策として `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` を追加
 
 ### 2026-05-09 更新内容（rust-v0.130.0）
 - 上流 `rust-v0.130.0` を取り込み、`codex-rs` を同期
