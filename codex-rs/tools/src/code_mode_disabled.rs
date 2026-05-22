@@ -12,7 +12,7 @@ pub struct ToolNamespaceDescription {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CodeModeToolDefinition {
     pub tool_name: ToolName,
     pub name: String,
