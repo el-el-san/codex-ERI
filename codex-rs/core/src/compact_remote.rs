@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::Prompt;
@@ -174,9 +173,6 @@ async fn run_remote_compact_task_inner_impl(
     let tool_router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
-        &prompt_input,
-        &HashSet::new(),
-        /*skills_outcome*/ None,
         &CancellationToken::new(),
     )
     .await?;
@@ -287,8 +283,9 @@ pub(crate) async fn process_compacted_history(
 ///
 /// This intentionally keeps:
 /// - `assistant` messages (future remote compaction models may emit them)
-/// - `user`-role warnings and compaction-generated summary messages because
-///   they parse as `TurnItem::UserMessage`.
+/// - `user`-role warnings that parse as `TurnItem::UserMessage` and compaction-generated summary
+///   messages. Legacy warning fragments are filtered by `parse_turn_item` before they reach this
+///   check.
 fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } if role == "developer" => false,
@@ -301,6 +298,7 @@ fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
         ResponseItem::Message { role, .. } if role == "assistant" => true,
         ResponseItem::Message { .. } => false,
         ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => true,
+        ResponseItem::CompactionTrigger => false,
         ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }

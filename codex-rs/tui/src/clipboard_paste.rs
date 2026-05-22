@@ -3,6 +3,7 @@ use std::path::PathBuf;
 #[cfg(not(target_os = "android"))]
 use tempfile::Builder;
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum PasteImageError {
     ClipboardUnavailable(String),
@@ -110,8 +111,8 @@ pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageErro
 }
 
 /// Android/Termux does not support arboard; return a clear error.
-#[cfg_attr(target_os = "android", allow(dead_code))]
 #[cfg(target_os = "android")]
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn paste_image_as_png() -> Result<(Vec<u8>, PastedImageInfo), PasteImageError> {
     Err(PasteImageError::ClipboardUnavailable(
         "clipboard image paste is unsupported on Android".into(),

@@ -4,35 +4,34 @@
 #[cfg(not(target_os = "android"))]
 mod code_mode;
 #[cfg(target_os = "android")]
-mod code_mode_disabled;
-#[cfg(target_os = "android")]
-use code_mode_disabled as code_mode;
+#[path = "code_mode_disabled.rs"]
+mod code_mode;
 mod dynamic_tool;
+mod function_call_error;
 mod image_detail;
 mod json_schema;
 mod mcp_tool;
 mod request_plugin_install;
 mod responses_api;
+mod tool_call;
 mod tool_config;
 mod tool_definition;
 mod tool_discovery;
+mod tool_executor;
+mod tool_output;
+mod tool_payload;
 mod tool_spec;
 
-#[cfg(target_os = "android")]
 pub use code_mode::CodeModeToolDefinition;
-#[cfg(target_os = "android")]
 pub use code_mode::ToolNamespaceDescription;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
 pub use code_mode::collect_code_mode_tool_definitions;
 pub use code_mode::tool_spec_to_code_mode_tool_definition;
-#[cfg(not(target_os = "android"))]
-pub use codex_code_mode::ToolDefinition as CodeModeToolDefinition;
-#[cfg(not(target_os = "android"))]
-pub use codex_code_mode::ToolNamespaceDescription;
 pub use codex_protocol::ToolName;
 pub use dynamic_tool::parse_dynamic_tool;
+pub use function_call_error::FunctionCallError;
 pub use image_detail::can_request_original_image_detail;
 pub use image_detail::normalize_output_image_detail;
 pub use image_detail::sanitize_original_image_detail;
@@ -60,36 +59,38 @@ pub use responses_api::ResponsesApiNamespaceTool;
 pub use responses_api::ResponsesApiTool;
 pub use responses_api::coalesce_loadable_tool_specs;
 pub use responses_api::default_namespace_description;
-pub use responses_api::dynamic_tool_to_loadable_tool_spec;
 pub use responses_api::dynamic_tool_to_responses_api_tool;
 pub use responses_api::mcp_tool_to_deferred_responses_api_tool;
 pub use responses_api::mcp_tool_to_responses_api_tool;
 pub use responses_api::tool_definition_to_responses_api_tool;
+pub use tool_call::ToolCall;
 pub use tool_config::ShellCommandBackendConfig;
 pub use tool_config::ToolEnvironmentMode;
 pub use tool_config::ToolUserShellType;
-pub use tool_config::ToolsConfig;
-pub use tool_config::ToolsConfigParams;
 pub use tool_config::UnifiedExecShellMode;
 pub use tool_config::ZshForkConfig;
 pub use tool_config::request_user_input_available_modes;
+pub use tool_config::shell_command_backend_for_features;
+pub use tool_config::shell_type_for_model_and_features;
 pub use tool_definition::ToolDefinition;
 pub use tool_discovery::DiscoverablePluginInfo;
 pub use tool_discovery::DiscoverableTool;
 pub use tool_discovery::DiscoverableToolAction;
 pub use tool_discovery::DiscoverableToolType;
+pub use tool_discovery::LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME;
+pub use tool_discovery::ListAvailablePluginsToInstallResult;
 pub use tool_discovery::REQUEST_PLUGIN_INSTALL_TOOL_NAME;
 pub use tool_discovery::RequestPluginInstallEntry;
 pub use tool_discovery::TOOL_SEARCH_DEFAULT_LIMIT;
 pub use tool_discovery::TOOL_SEARCH_TOOL_NAME;
-pub use tool_discovery::ToolSearchResultSource;
-pub use tool_discovery::ToolSearchSource;
 pub use tool_discovery::ToolSearchSourceInfo;
 pub use tool_discovery::collect_request_plugin_install_entries;
-pub use tool_discovery::collect_tool_search_source_infos;
 pub use tool_discovery::filter_request_plugin_install_discoverable_tools_for_client;
-pub use tool_discovery::tool_search_result_source_to_loadable_tool_spec;
-pub use tool_spec::ConfiguredToolSpec;
+pub use tool_executor::ToolExecutor;
+pub use tool_executor::ToolExposure;
+pub use tool_output::JsonToolOutput;
+pub use tool_output::ToolOutput;
+pub use tool_payload::ToolPayload;
 pub use tool_spec::ResponsesApiWebSearchFilters;
 pub use tool_spec::ResponsesApiWebSearchUserLocation;
 pub use tool_spec::ToolSpec;

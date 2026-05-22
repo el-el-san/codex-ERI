@@ -446,16 +446,18 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
         Err(err) => return Err(err),
     };
 
-    #[cfg(target_os = "android")]
+    #[cfg(not(target_os = "android"))]
     {
-        return Ok(Some(lock_file));
+        match lock_file.try_lock() {
+            Ok(()) => Ok(Some(lock_file)),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
-    #[cfg(not(target_os = "android"))]
-    match lock_file.try_lock() {
-        Ok(()) => Ok(Some(lock_file)),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(err) => Err(err.into()),
+    #[cfg(target_os = "android")]
+    {
+        Ok(Some(lock_file))
     }
 }
 
@@ -569,7 +571,6 @@ mod tests {
         let dir = root.path().join("locked");
         fs::create_dir(&dir)?;
         let lock_file = create_lock(&dir)?;
-        #[cfg(not(target_os = "android"))]
         lock_file.try_lock()?;
 
         janitor_cleanup(root.path())?;

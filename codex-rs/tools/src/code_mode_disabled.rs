@@ -5,10 +5,6 @@ use crate::ResponsesApiTool;
 use crate::ToolName;
 use crate::ToolSpec;
 use serde::Serialize;
-use std::collections::BTreeMap;
-
-pub const PUBLIC_TOOL_NAME: &str = "exec";
-pub const WAIT_TOOL_NAME: &str = "wait";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ToolNamespaceDescription {
@@ -21,6 +17,15 @@ pub struct CodeModeToolDefinition {
     pub tool_name: ToolName,
     pub name: String,
     pub description: String,
+    pub kind: CodeModeToolKind,
+    pub input_schema: Option<serde_json::Value>,
+    pub output_schema: Option<JsonSchema>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum CodeModeToolKind {
+    Function,
+    Freeform,
 }
 
 pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
@@ -53,8 +58,12 @@ pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
     }
 }
 
+pub fn is_code_mode_nested_tool(_name: &str) -> bool {
+    false
+}
+
 pub fn create_wait_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let properties = std::collections::BTreeMap::from([
         (
             "cell_id".to_string(),
             JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
@@ -81,7 +90,7 @@ pub fn create_wait_tool() -> ToolSpec {
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
-        name: WAIT_TOOL_NAME.to_string(),
+        name: "wait".to_string(),
         description: "Waits on a yielded exec cell.".to_string(),
         strict: false,
         parameters: JsonSchema::object(
@@ -96,7 +105,7 @@ pub fn create_wait_tool() -> ToolSpec {
 
 pub fn create_code_mode_tool(
     _enabled_tools: &[CodeModeToolDefinition],
-    _namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
+    _namespace_descriptions: &std::collections::BTreeMap<String, ToolNamespaceDescription>,
     _code_mode_only_enabled: bool,
     _deferred_tools_available: bool,
 ) -> ToolSpec {
@@ -111,7 +120,7 @@ SOURCE: /[\s\S]+/
 "#;
 
     ToolSpec::Freeform(FreeformTool {
-        name: PUBLIC_TOOL_NAME.to_string(),
+        name: "exec".to_string(),
         description: "Execute JavaScript source in code mode.".to_string(),
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),

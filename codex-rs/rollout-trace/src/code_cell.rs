@@ -9,18 +9,28 @@ use std::sync::Arc;
 
 #[cfg(not(target_os = "android"))]
 use codex_code_mode::RuntimeResponse;
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "android")]
+#[derive(Serialize)]
+pub enum RuntimeResponse {
+    Yielded {
+        cell_id: String,
+    },
+    Terminated {
+        cell_id: String,
+    },
+    Result {
+        cell_id: String,
+        error_text: Option<String>,
+    },
+}
 use serde::Serialize;
 use tracing::warn;
 
 use crate::model::AgentThreadId;
-#[cfg(not(target_os = "android"))]
 use crate::model::CodeCellRuntimeStatus;
 use crate::model::CodexTurnId;
 use crate::model::ModelVisibleCallId;
-#[cfg(not(target_os = "android"))]
 use crate::payload::RawPayloadKind;
-#[cfg(not(target_os = "android"))]
 use crate::payload::RawPayloadRef;
 use crate::raw_event::RawTraceEventContext;
 use crate::raw_event::RawTraceEventPayload;
@@ -52,7 +62,6 @@ struct EnabledCodeCellTraceContext {
 /// output through `CodeCell.output_item_ids` once the conversation item appears.
 /// Keeping the raw runtime payload here preserves stored-value and lifecycle
 /// evidence without duplicating the model-facing transcript.
-#[cfg(not(target_os = "android"))]
 #[derive(Serialize)]
 struct CodeCellResponseTracePayload<'a> {
     response: &'a RuntimeResponse,
@@ -108,7 +117,6 @@ impl CodeCellTraceContext {
     /// running. Terminal initial responses should be followed by `record_ended`
     /// by the caller so the reducer can distinguish model-visible output from
     /// runtime completion.
-    #[cfg(not(target_os = "android"))]
     pub fn record_initial_response(&self, response: &RuntimeResponse) {
         let CodeCellTraceContextState::Enabled(context) = &self.state else {
             return;
@@ -124,7 +132,6 @@ impl CodeCellTraceContext {
     }
 
     /// Records the terminal lifecycle point for a code-mode runtime cell.
-    #[cfg(not(target_os = "android"))]
     pub fn record_ended(&self, response: &RuntimeResponse) {
         let CodeCellTraceContextState::Enabled(context) = &self.state else {
             return;
@@ -140,7 +147,6 @@ impl CodeCellTraceContext {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn code_cell_status_for_runtime_response(response: &RuntimeResponse) -> CodeCellRuntimeStatus {
     match response {
         RuntimeResponse::Yielded { .. } => CodeCellRuntimeStatus::Yielded,
@@ -155,7 +161,6 @@ fn code_cell_status_for_runtime_response(response: &RuntimeResponse) -> CodeCell
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn code_cell_response_payload(
     context: &EnabledCodeCellTraceContext,
     response: &RuntimeResponse,
@@ -167,7 +172,6 @@ fn code_cell_response_payload(
     )
 }
 
-#[cfg(not(target_os = "android"))]
 fn write_json_payload_best_effort(
     writer: &TraceWriter,
     kind: RawPayloadKind,

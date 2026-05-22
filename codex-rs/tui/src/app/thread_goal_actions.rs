@@ -63,10 +63,45 @@ impl App {
         let Some(goal) = response.goal else {
             return;
         };
-        if goal.status == ThreadGoalStatus::Paused {
+        if matches!(
+            goal.status,
+            ThreadGoalStatus::Paused | ThreadGoalStatus::Blocked | ThreadGoalStatus::UsageLimited
+        ) {
             self.chat_widget
                 .show_resume_paused_goal_prompt(thread_id, goal.objective);
         }
+    }
+
+    pub(super) async fn open_thread_goal_editor(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: Option<ThreadId>,
+    ) {
+        let Some(thread_id) = thread_id else {
+            self.show_no_thread_goal_to_edit();
+            return;
+        };
+
+        let result = app_server.thread_goal_get(thread_id).await;
+        if self.current_displayed_thread_id() != Some(thread_id) {
+            return;
+        }
+
+        let response = match result {
+            Ok(response) => response,
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to read thread goal: {err}"));
+                return;
+            }
+        };
+
+        let Some(goal) = response.goal else {
+            self.show_no_thread_goal_to_edit();
+            return;
+        };
+
+        self.chat_widget.show_goal_edit_prompt(thread_id, goal);
     }
 
     pub(super) async fn set_thread_goal_objective(
@@ -76,7 +111,7 @@ impl App {
         objective: String,
         mode: ThreadGoalSetMode,
     ) {
-        if mode == ThreadGoalSetMode::ConfirmIfExists {
+        if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
             let result = app_server.thread_goal_get(thread_id).await;
             if self.current_displayed_thread_id() != Some(thread_id) {
                 return;
@@ -96,13 +131,32 @@ impl App {
             }
         }
 
+        let replacing_goal = matches!(mode, ThreadGoalSetMode::ReplaceExisting);
+        if replacing_goal {
+            let result = app_server.thread_goal_clear(thread_id).await;
+
+            if let Err(err) = result {
+                if self.current_displayed_thread_id() != Some(thread_id) {
+                    return;
+                }
+                self.chat_widget
+                    .add_error_message(format!("Failed to replace thread goal: {err}"));
+                return;
+            }
+        }
+
+        let (status, token_budget) = match mode {
+            ThreadGoalSetMode::ConfirmIfExists | ThreadGoalSetMode::ReplaceExisting => {
+                (ThreadGoalStatus::Active, None)
+            }
+            ThreadGoalSetMode::UpdateExisting {
+                status,
+                token_budget,
+            } => (status, Some(token_budget)),
+        };
+
         let result = app_server
-            .thread_goal_set(
-                thread_id,
-                Some(objective),
-                Some(ThreadGoalStatus::Active),
-                /*token_budget*/ None,
-            )
+            .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
             return;
@@ -113,9 +167,11 @@ impl App {
                 format!("Goal {}", goal_status_label(response.goal.status)),
                 Some(goal_usage_summary(&response.goal)),
             ),
-            Err(err) => self
-                .chat_widget
-                .add_error_message(format!("Failed to set thread goal: {err}")),
+            Err(err) => {
+                let action = if replacing_goal { "replace" } else { "set" };
+                self.chat_widget
+                    .add_error_message(format!("Failed to {action} thread goal: {err}"));
+            }
         }
     }
 
@@ -207,5 +263,14 @@ impl App {
             items,
             ..Default::default()
         });
+    }
+
+    fn show_no_thread_goal_to_edit(&mut self) {
+        self.chat_widget
+            .add_error_message("No goal is currently set.".to_string());
+        self.chat_widget.add_info_message(
+            "Usage: /goal <objective>".to_string(),
+            Some("Create a goal before editing it.".to_string()),
+        );
     }
 }

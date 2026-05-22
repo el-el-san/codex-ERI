@@ -2,7 +2,8 @@ use crate::ResponsesApiNamespaceTool;
 use crate::ToolName;
 use crate::ToolSpec;
 use codex_code_mode::CodeModeToolKind;
-use codex_code_mode::ToolDefinition as CodeModeToolDefinition;
+pub use codex_code_mode::ToolDefinition as CodeModeToolDefinition;
+pub use codex_code_mode::ToolNamespaceDescription;
 
 /// Augment tool descriptions with code-mode-specific exec samples.
 pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
@@ -136,8 +137,7 @@ fn code_mode_tool_definitions_for_spec(spec: &ToolSpec) -> Vec<CodeModeToolDefin
                 }
             })
             .collect(),
-        ToolSpec::LocalShell {}
-        | ToolSpec::ImageGeneration { .. }
+        ToolSpec::ImageGeneration { .. }
         | ToolSpec::ToolSearch { .. }
         | ToolSpec::WebSearch { .. } => Vec::new(),
     }
