@@ -1,7 +1,4 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-
-use serde_json::Value as JsonValue;
 
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
@@ -9,6 +6,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -42,11 +40,9 @@ impl CodeModeService {
         Self
     }
 
-    pub(crate) async fn stored_values(&self) -> HashMap<String, JsonValue> {
-        HashMap::new()
+    pub(crate) fn allocate_cell_id(&self) -> String {
+        String::new()
     }
-
-    pub(crate) async fn replace_stored_values(&self, _values: HashMap<String, JsonValue>) {}
 
     pub(crate) async fn start_turn_worker(
         &self,
@@ -75,14 +71,14 @@ impl ToolExecutor<ToolInvocation> for CodeModeExecuteHandler {
         ToolName::plain(PUBLIC_TOOL_NAME)
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(self.spec.clone())
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
     }
 
     async fn handle(
         &self,
         _invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         Err(FunctionCallError::RespondToModel(
             CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
         ))
@@ -103,14 +99,14 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
         ToolName::plain(WAIT_TOOL_NAME)
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(wait_spec::create_wait_tool())
+    fn spec(&self) -> ToolSpec {
+        wait_spec::create_wait_tool()
     }
 
     async fn handle(
         &self,
         _invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         Err(FunctionCallError::RespondToModel(
             CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
         ))

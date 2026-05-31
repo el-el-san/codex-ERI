@@ -2,9 +2,19 @@
 
 use super::ContextualUserFragment;
 
+/// Hidden runtime-owned goal steering context injected into model input.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct GoalContext {
-    pub(crate) prompt: String,
+pub struct GoalContext {
+    prompt: String,
+}
+
+impl GoalContext {
+    /// Creates goal context around an already-rendered steering prompt.
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+        }
+    }
 }
 
 impl ContextualUserFragment for GoalContext {

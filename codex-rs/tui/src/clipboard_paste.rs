@@ -3,8 +3,8 @@ use std::path::PathBuf;
 #[cfg(not(target_os = "android"))]
 use tempfile::Builder;
 
-#[cfg_attr(target_os = "android", allow(dead_code))]
 #[derive(Debug, Clone)]
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub enum PasteImageError {
     ClipboardUnavailable(String),
     NoImage(String),

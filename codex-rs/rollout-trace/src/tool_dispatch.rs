@@ -16,6 +16,11 @@ use serde_json::Value as JsonValue;
 use serde_json::json;
 use tracing::warn;
 
+#[cfg(not(target_os = "android"))]
+use codex_code_mode::PUBLIC_TOOL_NAME as CODE_MODE_PUBLIC_TOOL_NAME;
+#[cfg(target_os = "android")]
+const CODE_MODE_PUBLIC_TOOL_NAME: &str = "exec";
+
 use crate::model::AgentThreadId;
 use crate::model::CodeModeRuntimeToolId;
 use crate::model::CodexTurnId;
@@ -30,8 +35,6 @@ use crate::raw_event::RawToolCallRequester;
 use crate::raw_event::RawTraceEventContext;
 use crate::raw_event::RawTraceEventPayload;
 use crate::writer::TraceWriter;
-
-const CODE_MODE_PUBLIC_TOOL_NAME: &str = "exec";
 
 /// No-op capable trace handle for one resolved tool dispatch.
 #[derive(Clone, Debug)]

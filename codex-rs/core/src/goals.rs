@@ -26,7 +26,6 @@ use codex_otel::GOAL_TOKEN_COUNT_METRIC;
 use codex_otel::GOAL_USAGE_LIMITED_METRIC;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadGoal;
@@ -173,7 +172,6 @@ pub(crate) struct GoalRuntimeState {
     pub(crate) budget_limit_reported_goal_id: Mutex<Option<String>>,
     accounting_lock: Semaphore,
     accounting: Mutex<GoalAccountingSnapshot>,
-    continuation_turn_id: Mutex<Option<String>>,
     pub(crate) continuation_lock: Semaphore,
 }
 
@@ -189,7 +187,6 @@ impl GoalRuntimeState {
             budget_limit_reported_goal_id: Mutex::new(None),
             accounting_lock: Semaphore::new(/*permits*/ 1),
             accounting: Mutex::new(GoalAccountingSnapshot::new()),
-            continuation_turn_id: Mutex::new(None),
             continuation_lock: Semaphore::new(/*permits*/ 1),
         }
     }
@@ -838,7 +835,7 @@ impl Session {
         let active = self.active_turn.lock().await;
         active
             .as_ref()
-            .and_then(|active_turn| active_turn.tasks.values().next())
+            .and_then(|active_turn| active_turn.task.as_ref())
             .map(|task| Arc::clone(&task.turn_context))
     }
 
@@ -901,24 +898,10 @@ impl Session {
         }
     }
 
-    async fn mark_thread_goal_continuation_turn_started(&self, turn_id: String) {
-        *self.goal_runtime.continuation_turn_id.lock().await = Some(turn_id);
-    }
-
-    async fn take_thread_goal_continuation_turn(&self, turn_id: &str) -> bool {
-        let mut continuation_turn_id = self.goal_runtime.continuation_turn_id.lock().await;
-        if continuation_turn_id.as_deref() == Some(turn_id) {
-            *continuation_turn_id = None;
-            true
-        } else {
-            false
-        }
-    }
-
     async fn clear_reserved_goal_continuation_turn(&self, turn_state: &Arc<Mutex<TurnState>>) {
         let mut active_turn_guard = self.active_turn.lock().await;
         if let Some(active_turn) = active_turn_guard.as_ref()
-            && active_turn.tasks.is_empty()
+            && active_turn.task.is_none()
             && Arc::ptr_eq(&active_turn.turn_state, turn_state)
         {
             *active_turn_guard = None;
@@ -942,8 +925,6 @@ impl Session {
             tracing::warn!("failed to account thread goal progress at turn end: {err}");
         }
 
-        self.take_thread_goal_continuation_turn(&turn_context.sub_id)
-            .await;
         if turn_completed {
             let mut accounting = self.goal_runtime.accounting.lock().await;
             if accounting
@@ -958,8 +939,6 @@ impl Session {
 
     async fn handle_thread_goal_task_abort(&self, turn_context: Option<&TurnContext>) {
         if let Some(turn_context) = turn_context {
-            self.take_thread_goal_continuation_turn(&turn_context.sub_id)
-                .await;
             if let Err(err) = self
                 .account_thread_goal_progress(
                     turn_context,
@@ -1366,7 +1345,7 @@ impl Session {
         let still_reserved = {
             let active_turn = self.active_turn.lock().await;
             active_turn.as_ref().is_some_and(|active_turn| {
-                active_turn.tasks.is_empty() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
+                active_turn.task.is_none() && Arc::ptr_eq(&active_turn.turn_state, &turn_state)
             })
         };
         if !still_reserved {
@@ -1374,8 +1353,6 @@ impl Session {
                 .await;
             return;
         }
-        self.mark_thread_goal_continuation_turn_started(turn_context.sub_id.clone())
-            .await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())
             .await;
     }
@@ -1632,14 +1609,7 @@ fn budget_limit_steering_item(goal: &ThreadGoal) -> ResponseInputItem {
 }
 
 fn goal_context_input_item(prompt: String) -> ResponseInputItem {
-    let context = GoalContext { prompt };
-    ResponseInputItem::Message {
-        role: GoalContext::role().to_string(),
-        content: vec![ContentItem::InputText {
-            text: context.render(),
-        }],
-        phase: None,
-    }
+    GoalContext::new(prompt).into_response_input_item()
 }
 
 pub(crate) fn protocol_goal_from_state(goal: codex_state::ThreadGoal) -> ThreadGoal {

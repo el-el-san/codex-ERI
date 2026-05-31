@@ -454,7 +454,6 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
             Err(err) => Err(err.into()),
         }
     }
-
     #[cfg(target_os = "android")]
     {
         Ok(Some(lock_file))

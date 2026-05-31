@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 
+use serde::Serialize;
+use tracing::warn;
+
 #[cfg(not(target_os = "android"))]
 use codex_code_mode::RuntimeResponse;
 #[cfg(target_os = "android")]
@@ -23,8 +26,6 @@ pub enum RuntimeResponse {
         error_text: Option<String>,
     },
 }
-use serde::Serialize;
-use tracing::warn;
 
 use crate::model::AgentThreadId;
 use crate::model::CodeCellRuntimeStatus;

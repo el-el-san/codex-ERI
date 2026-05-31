@@ -43,15 +43,14 @@ pub(crate) use wait_handler::CodeModeWaitHandler;
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
 pub(crate) const WAIT_TOOL_NAME: &str = codex_code_mode::WAIT_TOOL_NAME;
 pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = codex_code_mode::DEFAULT_WAIT_YIELD_TIME_MS;
-pub(crate) use codex_code_mode::ToolNamespaceDescription;
-
-pub(crate) fn is_code_mode_nested_tool(name: &str) -> bool {
-    codex_code_mode::is_code_mode_nested_tool(name)
-}
 
 /// Returns true for the un-namespaced code-mode `exec` tool.
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none() && tool_name.name == PUBLIC_TOOL_NAME
+}
+
+pub(crate) fn is_code_mode_nested_tool(name: &str) -> bool {
+    codex_code_mode::is_code_mode_nested_tool(name)
 }
 
 #[derive(Clone)]
@@ -69,17 +68,6 @@ impl CodeModeService {
         Self {
             inner: codex_code_mode::CodeModeService::new(),
         }
-    }
-
-    pub(crate) async fn stored_values(&self) -> std::collections::HashMap<String, JsonValue> {
-        self.inner.stored_values().await
-    }
-
-    pub(crate) async fn replace_stored_values(
-        &self,
-        values: std::collections::HashMap<String, JsonValue>,
-    ) {
-        self.inner.replace_stored_values(values).await;
     }
 
     pub(crate) fn allocate_cell_id(&self) -> String {
@@ -187,17 +175,11 @@ pub(super) async fn handle_runtime_response(
         }
         RuntimeResponse::Result {
             content_items,
-            stored_values,
             error_text,
             ..
         } => {
             let mut content_items = into_function_call_output_content_items(content_items);
             sanitize_runtime_image_detail(exec.turn.as_ref(), &mut content_items);
-            exec.session
-                .services
-                .code_mode_service
-                .replace_stored_values(stored_values)
-                .await;
             let success = error_text.is_none();
             if let Some(error_text) = error_text {
                 content_items.push(FunctionCallOutputContentItem::InputText {
