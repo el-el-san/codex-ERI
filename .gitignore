@@ -114,6 +114,8 @@ pnpm-workspace.yaml
 
 # downloads cache
 downloads/
+artifacts/
+logs/
 
 # Removed development tools (not needed for personal project)
 cliff.toml
