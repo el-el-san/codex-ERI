@@ -2053,7 +2053,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "similar",
+ "similar 3.1.1",
  "strum_macros 0.28.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -2133,7 +2133,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "pretty_assertions",
- "similar",
+ "similar 3.1.1",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2609,7 +2609,7 @@ dependencies = [
  "serial_test",
  "sha1 0.10.6",
  "shlex",
- "similar",
+ "similar 3.1.1",
  "tempfile",
  "test-case",
  "test-log",
@@ -2980,7 +2980,7 @@ dependencies = [
  "regex",
  "schemars 0.8.22",
  "serde",
- "similar",
+ "similar 3.1.1",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4452,7 +4452,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "shlex",
- "similar",
+ "similar 3.1.1",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -8028,7 +8028,7 @@ checksum = "e82db8c87c7f1ccecb34ce0c24399b8a73081427f3c7c50a5d597925356115e4"
 dependencies = [
  "console",
  "once_cell",
- "similar",
+ "similar 2.7.0",
  "tempfile",
 ]
 
@@ -10228,7 +10228,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.11.0",
  "log",
  "multimap",
@@ -10248,7 +10248,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -12125,6 +12125,15 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
+name = "similar"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6505efef05804732ed8a3f2d4f279429eb485bd69d5b0cc6b19cc02005cda16"
+dependencies = [
+ "bstr",
+]
 
 [[package]]
 name = "simple_asn1"
