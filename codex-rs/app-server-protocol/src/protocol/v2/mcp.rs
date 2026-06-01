@@ -690,6 +690,10 @@ impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitatio
         Self {
             action: value.action.into(),
             content: value.content,
+            meta: value.meta.and_then(|meta| match meta {
+                JsonValue::Object(object) => Some(rmcp::model::Meta(object)),
+                _ => None,
+            }),
         }
     }
 }
@@ -699,7 +703,7 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: None,
+            meta: value.meta.map(|meta| JsonValue::Object(meta.0)),
         }
     }
 }
