@@ -45,9 +45,14 @@ pub(crate) fn thread_to_transcript_cells(
     let mut cells: TranscriptCells = Vec::new();
     for item in thread.turns.iter().flat_map(|turn| turn.items.iter()) {
         match item {
-            ThreadItem::UserMessage { id, content } => {
+            ThreadItem::UserMessage {
+                id,
+                client_id,
+                content,
+            } => {
                 let item = UserMessageItem {
                     id: id.clone(),
+                    client_id: client_id.clone(),
                     content: content
                         .iter()
                         .cloned()
@@ -62,7 +67,7 @@ pub(crate) fn thread_to_transcript_cells(
                 }));
             }
             ThreadItem::AgentMessage { text, .. } => {
-                let parsed = parse_assistant_markdown(text);
+                let parsed = parse_assistant_markdown(text, cwd);
                 if !parsed.visible_markdown.trim().is_empty() {
                     cells.push(Arc::new(AgentMarkdownCell::new(
                         parsed.visible_markdown,

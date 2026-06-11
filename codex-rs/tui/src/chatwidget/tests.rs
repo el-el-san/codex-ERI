@@ -123,7 +123,6 @@ pub(super) use codex_config::ConfigLayerStack;
 pub(super) use codex_config::RequirementSource;
 pub(super) use codex_config::types::ApprovalsReviewer;
 pub(super) use codex_config::types::Notifications;
-#[cfg(target_os = "windows")]
 pub(super) use codex_config::types::WindowsSandboxModeToml;
 pub(super) use codex_core_plugins::OPENAI_CURATED_MARKETPLACE_NAME;
 pub(super) use codex_core_skills::model::SkillMetadata;
@@ -220,6 +219,8 @@ macro_rules! assert_chatwidget_snapshot {
 mod app_server;
 mod approval_requests;
 mod composer_submission;
+#[path = "tests/config_errors_tests.rs"]
+mod config_errors;
 mod exec_flow;
 mod goal_menu;
 mod goal_validation;

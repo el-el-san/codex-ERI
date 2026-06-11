@@ -5,19 +5,32 @@ use std::sync::atomic::Ordering;
 
 use codex_core::ThreadManager;
 use codex_protocol::ThreadId;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadGoal;
 
 use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
+use crate::steering::continuation_steering_item;
 use crate::steering::objective_updated_steering_item;
 use crate::tool::protocol_goal_from_state;
+use tokio::sync::Semaphore;
+use tokio::sync::SemaphorePermit;
 
 #[derive(Clone)]
 pub struct GoalRuntimeHandle {
     inner: Arc<GoalRuntimeInner>,
+}
+
+pub(crate) struct GoalRuntimeConfig {
+    pub(crate) enabled: bool,
+    pub(crate) tools_available_for_thread: bool,
+}
+
+pub(crate) enum ActiveGoalStopReason {
+    TurnError,
+    UsageLimit,
 }
 
 struct GoalRuntimeInner {
@@ -28,6 +41,8 @@ struct GoalRuntimeInner {
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
     enabled: AtomicBool,
+    tools_available_for_thread: bool,
+    goal_state_lock: Semaphore,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -66,7 +81,7 @@ impl GoalRuntimeHandle {
         metrics: GoalMetrics,
         thread_manager: Weak<ThreadManager>,
         accounting_state: Arc<GoalAccountingState>,
-        enabled: bool,
+        config: GoalRuntimeConfig,
     ) -> Self {
         Self {
             inner: Arc::new(GoalRuntimeInner {
@@ -76,7 +91,9 @@ impl GoalRuntimeHandle {
                 metrics,
                 thread_manager,
                 accounting_state,
-                enabled: AtomicBool::new(enabled),
+                enabled: AtomicBool::new(config.enabled),
+                tools_available_for_thread: config.tools_available_for_thread,
+                goal_state_lock: Semaphore::new(/*permits*/ 1),
             }),
         }
     }
@@ -89,12 +106,24 @@ impl GoalRuntimeHandle {
         self.inner.enabled.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn tools_visible(&self) -> bool {
+        self.is_enabled() && self.inner.tools_available_for_thread
+    }
+
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.inner.thread_id
     }
 
     pub(crate) fn accounting_state(&self) -> Arc<GoalAccountingState> {
         Arc::clone(&self.inner.accounting_state)
+    }
+
+    pub(crate) async fn goal_state_permit(&self) -> Result<SemaphorePermit<'_>, String> {
+        self.inner
+            .goal_state_lock
+            .acquire()
+            .await
+            .map_err(|err| err.to_string())
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
@@ -146,10 +175,8 @@ impl GoalRuntimeHandle {
         self.inner
             .metrics
             .record_terminal_if_status_changed(previous_status, &goal);
-        let should_steer_active_turn = previous_goal.as_ref().is_none_or(|previous_goal| {
-            previous_goal.goal_id != goal.goal_id
-                || previous_goal.status != codex_state::ThreadGoalStatus::Active
-                || previous_goal.objective != goal.objective
+        let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
+            !replaced_existing_goal && previous_goal.objective != goal.objective
         });
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
@@ -163,10 +190,11 @@ impl GoalRuntimeHandle {
                         .accounting_state
                         .mark_idle_goal_active(goal.goal_id.clone());
                 }
-                if should_steer_active_turn {
+                if objective_changed {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));
                     self.inject_active_turn_steering(item).await;
                 }
+                self.continue_if_idle().await?;
             }
             codex_state::ThreadGoalStatus::BudgetLimited => {
                 if self.inner.accounting_state.current_turn_id().is_none() {
@@ -193,10 +221,23 @@ impl GoalRuntimeHandle {
     }
 
     pub async fn usage_limit_active_goal_for_turn(&self, turn_id: &str) -> Result<(), String> {
+        self.stop_active_goal_for_turn(turn_id, ActiveGoalStopReason::UsageLimit)
+            .await
+    }
+
+    /// Accounts the ending turn and stops its active goal after a terminal error.
+    pub(crate) async fn stop_active_goal_for_turn(
+        &self,
+        turn_id: &str,
+        reason: ActiveGoalStopReason,
+    ) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
         }
 
+        // Hold this through accounting and the status update so external goal
+        // mutations and idle continuation cannot interleave between them.
+        let _goal_state_permit = self.goal_state_permit().await?;
         if !self
             .inner
             .accounting_state
@@ -205,23 +246,54 @@ impl GoalRuntimeHandle {
             return Ok(());
         }
 
-        let progress_event_id = format!("{turn_id}:usage-limit-progress");
+        let (event_name, status) = match reason {
+            ActiveGoalStopReason::TurnError => {
+                ("turn-error", codex_state::ThreadGoalStatus::Blocked)
+            }
+            ActiveGoalStopReason::UsageLimit => {
+                ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
+            }
+        };
         self.account_active_goal_progress(
             turn_id,
-            progress_event_id.as_str(),
+            &format!("{turn_id}:{event_name}-progress"),
             codex_state::GoalAccountingMode::ActiveOnly,
             BudgetLimitedGoalDisposition::ClearActive,
         )
         .await?;
 
-        let previous_status = self
-            .current_goal_status_for_metrics(/*expected_goal_id*/ None)
-            .await?;
+        let Some(active_goal) = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        };
+        let can_stop = active_goal.status == codex_state::ThreadGoalStatus::Active
+            || (active_goal.status == codex_state::ThreadGoalStatus::BudgetLimited
+                && status == codex_state::ThreadGoalStatus::UsageLimited);
+        if !can_stop {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
+        let previous_status = Some(active_goal.status);
         let Some(goal) = self
             .inner
             .state_dbs
             .thread_goals()
-            .usage_limit_active_thread_goal(self.thread_id())
+            .update_thread_goal(
+                self.thread_id(),
+                codex_state::GoalUpdate {
+                    objective: None,
+                    status: Some(status),
+                    token_budget: None,
+                    expected_goal_id: Some(active_goal.goal_id),
+                },
+            )
             .await
             .map_err(|err| err.to_string())?
         else {
@@ -233,7 +305,7 @@ impl GoalRuntimeHandle {
         self.inner.accounting_state.clear_active_goal();
         let goal = protocol_goal_from_state(goal);
         self.inner.event_emitter.thread_goal_updated(
-            format!("{turn_id}:usage-limit"),
+            format!("{turn_id}:{event_name}"),
             Some(turn_id.to_string()),
             goal,
         );
@@ -264,7 +336,65 @@ impl GoalRuntimeHandle {
         Ok(())
     }
 
-    pub(crate) async fn inject_active_turn_steering(&self, item: ResponseInputItem) {
+    pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
+        if !self.tools_visible() {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
+        // Hold this through the read/start window so external set/clear cannot
+        // change the goal after we read it but before the continuation launches.
+        let _goal_state_permit = self.goal_state_permit().await?;
+
+        let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
+            tracing::debug!("skipping goal continuation because thread manager is unavailable");
+            return Ok(());
+        };
+        let Ok(thread) = thread_manager.get_thread(self.inner.thread_id).await else {
+            tracing::debug!("skipping goal continuation because live thread is unavailable");
+            return Ok(());
+        };
+
+        let Some(goal) = self
+            .inner
+            .state_dbs
+            .thread_goals()
+            .get_thread_goal(self.thread_id())
+            .await
+            .map_err(|err| err.to_string())?
+        else {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        };
+        if goal.status != codex_state::ThreadGoalStatus::Active {
+            self.inner.accounting_state.clear_active_goal();
+            return Ok(());
+        }
+        let item = continuation_steering_item(&protocol_goal_from_state(goal));
+
+        if let Err(err) = thread.try_start_turn_if_idle(vec![item]).await {
+            let reason = err.reason();
+            tracing::debug!(
+                ?reason,
+                "skipping goal continuation because automatic idle work was rejected"
+            );
+        }
+
+        let current_turn_is_goal_active = self
+            .inner
+            .accounting_state
+            .current_turn_id()
+            .is_some_and(|turn_id| {
+                self.inner
+                    .accounting_state
+                    .turn_is_current_active_goal(turn_id.as_str())
+            });
+        if !current_turn_is_goal_active {
+            self.inner.accounting_state.clear_active_goal();
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn inject_active_turn_steering(&self, item: ResponseItem) {
         let Some(thread_manager) = self.inner.thread_manager.upgrade() else {
             tracing::debug!("skipping goal steering because thread manager is unavailable");
             return;
@@ -273,11 +403,7 @@ impl GoalRuntimeHandle {
             tracing::debug!("skipping goal steering because live thread is unavailable");
             return;
         };
-        if thread
-            .inject_response_items_into_active_turn(vec![item])
-            .await
-            .is_err()
-        {
+        if thread.inject_if_running(vec![item]).await.is_err() {
             tracing::debug!("skipping goal steering because no turn is active");
         }
     }
@@ -290,6 +416,10 @@ impl GoalRuntimeHandle {
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<AccountedGoalProgress>, String> {
         let accounting = self.accounting_state();
+        let _accounting_permit = accounting
+            .progress_accounting_permit()
+            .await
+            .map_err(|err| err.to_string())?;
         let Some(snapshot) = accounting.progress_snapshot(turn_id) else {
             return Ok(None);
         };
@@ -340,6 +470,10 @@ impl GoalRuntimeHandle {
         budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
     ) -> Result<Option<AccountedGoalProgress>, String> {
         let accounting = self.accounting_state();
+        let _accounting_permit = accounting
+            .progress_accounting_permit()
+            .await
+            .map_err(|err| err.to_string())?;
         let Some(snapshot) = accounting.idle_progress_snapshot() else {
             return Ok(None);
         };

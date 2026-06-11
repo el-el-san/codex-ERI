@@ -171,7 +171,6 @@ fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
             reason: "No URL provided".to_string(),
         });
     }
-
     open_url_platform(url)
 }
 
@@ -200,10 +199,13 @@ fn is_container() -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     if is_termux() {
-        return open_url_termux(url);
+        return command_status("termux-open-url", &[url]).and_then(opened_or_error);
     }
     if is_wsl() {
-        return open_url_wsl(url);
+        if command_status("cmd.exe", &["/c", "start", "", url])? == CommandOutcome::Success {
+            return Ok(OpenUrlStatus::Opened);
+        }
+        return command_status("wslview", &[url]).and_then(opened_or_error);
     }
     if is_ssh() {
         return Ok(OpenUrlStatus::Suppressed {
@@ -216,25 +218,44 @@ fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
         });
     }
 
-    open_url_linux(url)
+    let mut candidates = browser_env_candidates();
+    candidates.extend([
+        vec!["xdg-open".to_string()],
+        vec!["gio".to_string(), "open".to_string()],
+        vec!["sensible-browser".to_string()],
+        vec!["firefox".to_string()],
+        vec!["google-chrome".to_string()],
+        vec!["chromium".to_string()],
+        vec!["chromium-browser".to_string()],
+    ]);
+
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let Some((program, args)) = candidate.split_first() else {
+            continue;
+        };
+        match command_status_with_url(program, args, url)? {
+            CommandOutcome::Success => return Ok(OpenUrlStatus::Opened),
+            CommandOutcome::Failure(message) => failures.push(message),
+            CommandOutcome::NotFound => failures.push(format!("{program} not found")),
+        }
+    }
+
+    Err(OpenUrlError::new(if failures.is_empty() {
+        "No supported browser launcher found".to_string()
+    } else {
+        format!("Browser launch failed: {}", failures.join("; "))
+    }))
 }
 
 #[cfg(target_os = "macos")]
 fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    match run_command("open", &[url])? {
-        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
-        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
-        CommandOutcome::NotFound => Err(OpenUrlError::new("open command not found")),
-    }
+    command_status("open", &[url]).and_then(opened_or_error)
 }
 
 #[cfg(target_os = "windows")]
 fn open_url_platform(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    match run_command("cmd", &["/C", "start", "", url])? {
-        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
-        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
-        CommandOutcome::NotFound => Err(OpenUrlError::new("cmd command not found")),
-    }
+    command_status("cmd", &["/C", "start", "", url]).and_then(opened_or_error)
 }
 
 #[cfg(not(any(
@@ -250,99 +271,38 @@ fn open_url_platform(_url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn open_url_termux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    match run_command("termux-open-url", &[url])? {
-        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
-        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
-        CommandOutcome::NotFound => Err(OpenUrlError::new(
-            "termux-open-url not found; install termux-api",
-        )),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn open_url_wsl(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    let mut failures = Vec::new();
-    if let Some(status) = record_outcome(
-        "cmd.exe",
-        run_command("cmd.exe", &["/c", "start", "", url])?,
-        &mut failures,
-    ) {
-        return Ok(status);
-    }
-    if let Some(status) = record_outcome("wslview", run_command("wslview", &[url])?, &mut failures)
-    {
-        return Ok(status);
-    }
-
-    Err(open_url_failed(failures))
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn open_url_linux(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
-    let mut failures = Vec::new();
-
-    for candidate in browser_env_candidates() {
-        let program = &candidate[0];
-        if let Some(status) = record_outcome(
-            program,
-            run_command_with_url(program, &candidate[1..], url)?,
-            &mut failures,
-        ) {
-            return Ok(status);
-        }
-    }
-
-    if let Some(status) =
-        record_outcome("xdg-open", run_command("xdg-open", &[url])?, &mut failures)
-    {
-        return Ok(status);
-    }
-    if let Some(status) = record_outcome("gio", run_command("gio", &["open", url])?, &mut failures)
-    {
-        return Ok(status);
-    }
-    if let Some(status) = record_outcome(
-        "sensible-browser",
-        run_command("sensible-browser", &[url])?,
-        &mut failures,
-    ) {
-        return Ok(status);
-    }
-
-    for browser in ["firefox", "google-chrome", "chromium", "chromium-browser"] {
-        if let Some(status) = record_outcome(browser, run_command(browser, &[url])?, &mut failures)
-        {
-            return Ok(status);
-        }
-    }
-
-    Err(open_url_failed(failures))
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
 fn browser_env_candidates() -> Vec<Vec<String>> {
     let Ok(value) = std::env::var("BROWSER") else {
         return Vec::new();
     };
-
     value
         .split(':')
         .filter_map(|entry| {
             let entry = entry.trim();
             if entry.is_empty() {
-                return None;
-            }
-            match shlex::split(entry) {
-                Some(parts) if !parts.is_empty() => Some(parts),
-                _ => Some(vec![entry.to_string()]),
+                None
+            } else {
+                shlex::split(entry).or_else(|| Some(vec![entry.to_string()]))
             }
         })
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CommandOutcome {
+    Success,
+    Failure(String),
+    NotFound,
+}
+
+fn command_status(program: &str, args: &[&str]) -> Result<CommandOutcome, OpenUrlError> {
+    let mut command = Command::new(program);
+    command.args(args);
+    run_command_status(program, command)
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn run_command_with_url(
+fn command_status_with_url(
     program: &str,
     args: &[String],
     url: &str,
@@ -350,27 +310,6 @@ fn run_command_with_url(
     let mut command = Command::new(program);
     command.args(args);
     command.arg(url);
-    run_command_status(program, command)
-}
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn open_url_failed(failures: Vec<String>) -> OpenUrlError {
-    if failures.is_empty() {
-        OpenUrlError::new("No supported browser launcher found")
-    } else {
-        OpenUrlError::new(format!("Browser launch failed: {}", failures.join("; ")))
-    }
-}
-
-enum CommandOutcome {
-    Success,
-    Failure(String),
-    NotFound,
-}
-
-fn run_command(program: &str, args: &[&str]) -> Result<CommandOutcome, OpenUrlError> {
-    let mut command = Command::new(program);
-    command.args(args);
     run_command_status(program, command)
 }
 
@@ -385,21 +324,11 @@ fn run_command_status(program: &str, mut command: Command) -> Result<CommandOutc
     }
 }
 
-fn record_outcome(
-    program: &str,
-    outcome: CommandOutcome,
-    failures: &mut Vec<String>,
-) -> Option<OpenUrlStatus> {
+fn opened_or_error(outcome: CommandOutcome) -> Result<OpenUrlStatus, OpenUrlError> {
     match outcome {
-        CommandOutcome::Success => Some(OpenUrlStatus::Opened),
-        CommandOutcome::Failure(message) => {
-            failures.push(message);
-            None
-        }
-        CommandOutcome::NotFound => {
-            failures.push(format!("{program} not found"));
-            None
-        }
+        CommandOutcome::Success => Ok(OpenUrlStatus::Opened),
+        CommandOutcome::Failure(message) => Err(OpenUrlError::new(message)),
+        CommandOutcome::NotFound => Err(OpenUrlError::new("browser launcher not found")),
     }
 }
 
@@ -1099,6 +1028,7 @@ pub(crate) async fn persist_tokens_async(
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
             agent_identity: None,
+            personal_access_token: None,
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)?;
         Ok::<_, io::Error>((previous_auth, auth))
@@ -1215,6 +1145,20 @@ pub(crate) fn ensure_workspace_allowed(
     let claims = jwt_auth_claims(id_token);
     let Some(actual) = claims.get("chatgpt_account_id").and_then(JsonValue::as_str) else {
         return Err("Login is restricted to a specific workspace, but the token did not include an chatgpt_account_id claim.".to_string());
+    };
+
+    ensure_workspace_account_allowed(Some(expected), actual)
+}
+
+/// Validates an already known ChatGPT account ID against an optional workspace restriction.
+///
+/// PAT login calls this directly because `/whoami` supplies the account ID without an ID token.
+pub(crate) fn ensure_workspace_account_allowed(
+    expected: Option<&[String]>,
+    actual: &str,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
     };
 
     if expected.iter().any(|workspace_id| workspace_id == actual) {
@@ -1588,6 +1532,7 @@ mod tests {
             }),
             last_refresh: None,
             agent_identity: None,
+            personal_access_token: None,
         }
     }
 

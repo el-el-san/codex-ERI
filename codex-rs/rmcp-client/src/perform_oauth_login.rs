@@ -27,10 +27,8 @@ use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::save_oauth_tokens;
-use crate::utils::OpenUrlStatus;
 use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
-use crate::utils::open_url;
 use codex_config::types::OAuthCredentialsStoreMode;
 
 struct OauthHeaders {
@@ -529,9 +527,9 @@ impl OauthLoginFlow {
                 );
             }
 
-            match open_url(auth_url) {
-                Ok(OpenUrlStatus::Opened) => {}
-                Ok(OpenUrlStatus::Suppressed { reason }) => {
+            match crate::utils::open_url(auth_url) {
+                Ok(crate::utils::OpenUrlStatus::Opened) => {}
+                Ok(crate::utils::OpenUrlStatus::Suppressed { reason }) => {
                     if !emit_browser_url {
                         eprintln!(
                             "Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n"
@@ -635,7 +633,7 @@ async fn start_authorization(
     let metadata = auth_manager.discover_metadata().await?;
     auth_manager.set_metadata(metadata);
     auth_manager.configure_client(
-        OAuthClientConfig::new(oauth_client_id.to_string(), redirect_uri.to_string())
+        OAuthClientConfig::new(oauth_client_id, redirect_uri)
             .with_scopes(scopes.iter().map(|scope| (*scope).to_string()).collect()),
     )?;
     let auth_url = auth_manager.get_authorization_url(scopes).await?;

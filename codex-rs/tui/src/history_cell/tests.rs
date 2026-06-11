@@ -45,6 +45,24 @@ fn test_cwd() -> PathBuf {
     std::env::temp_dir()
 }
 
+#[test]
+fn streaming_agent_tail_blank_line_uses_one_viewport_row() {
+    let cell = StreamingAgentTailCell::new(
+        vec![
+            HyperlinkLine::from("first"),
+            HyperlinkLine::from(""),
+            HyperlinkLine::from("second"),
+        ],
+        /*is_first_line*/ false,
+    );
+
+    let lines = cell.display_lines(/*width*/ 80);
+    insta::assert_snapshot!(render_lines(&lines).join("\n"), @"  first
+
+  second");
+    assert_eq!(cell.desired_height(/*width*/ 80), 3);
+}
+
 fn stdio_server_config(
     command: &str,
     args: Vec<&str>,
@@ -292,6 +310,47 @@ fn proposed_plan_cell_renders_markdown_table() {
     assert!(
         raw.iter().any(|line| line == "| Step | Owner |"),
         "expected raw mode to preserve table markdown source: {raw:?}"
+    );
+}
+
+#[test]
+fn proposed_plan_cell_preserves_wrapped_table_web_links() {
+    let destination = "https://example.com/a/very/long/path/to/a/table/artifact";
+    let plan = new_proposed_plan(
+        format!("| Step | URL |\n| --- | --- |\n| Verify | {destination} |\n"),
+        &test_cwd(),
+    );
+
+    let lines = plan.display_hyperlink_lines(/*width*/ 32);
+    let linked_rows = lines
+        .iter()
+        .filter(|line| !line.hyperlinks.is_empty())
+        .collect::<Vec<_>>();
+
+    assert!(linked_rows.len() > 1);
+    assert!(linked_rows.iter().all(|line| {
+        line.hyperlinks
+            .iter()
+            .all(|link| link.destination == destination)
+    }));
+}
+
+#[test]
+fn composite_cell_preserves_child_web_links() {
+    let destination = "https://chatgpt.com/codex/settings/usage";
+    let cell = CompositeHistoryCell::new(vec![
+        Box::new(PlainHistoryCell::new(vec![Line::from("/status")])),
+        Box::new(WebHyperlinkHistoryCell::new(vec![Line::from(destination)])),
+    ]);
+
+    let lines = cell.display_hyperlink_lines(/*width*/ 80);
+
+    assert_eq!(
+        lines[2].hyperlinks,
+        vec![crate::terminal_hyperlinks::TerminalHyperlink {
+            columns: 0..destination.len(),
+            destination: destination.to_string(),
+        }]
     );
 }
 
@@ -802,6 +861,7 @@ async fn mcp_tools_output_lists_tools_for_hyphenated_server_names() {
 fn mcp_tools_output_from_statuses_renders_status_only_servers() {
     let statuses = vec![McpServerStatus {
         name: "plugin_docs".to_string(),
+        server_info: None,
         tools: HashMap::from([(
             "lookup".to_string(),
             Tool {
@@ -831,6 +891,7 @@ fn mcp_tools_output_from_statuses_renders_status_only_servers() {
 fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
     let statuses = vec![McpServerStatus {
         name: "plugin_docs".to_string(),
+        server_info: None,
         tools: HashMap::from([(
             "lookup".to_string(),
             Tool {
@@ -1042,6 +1103,14 @@ fn standalone_windows_update_available_history_cell_snapshot() {
 }
 
 #[test]
+fn web_search_history_cell_without_detail_snapshot() {
+    let cell = new_web_search_call("call-1".to_string(), String::new(), WebSearchAction::Other);
+    let rendered = render_lines(&cell.display_lines(/*width*/ 64)).join("\n");
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
 fn web_search_history_cell_wraps_with_indented_continuation() {
     let query = "example search query with several generic words to exercise wrapping".to_string();
     let cell = new_web_search_call(
@@ -1057,8 +1126,8 @@ fn web_search_history_cell_wraps_with_indented_continuation() {
     assert_eq!(
         rendered,
         vec![
-            "• Searched example search query with several generic words to".to_string(),
-            "  exercise wrapping".to_string(),
+            "• Searched the web for example search query with several generic".to_string(),
+            "  words to exercise wrapping".to_string(),
         ]
     );
 }
@@ -1076,7 +1145,10 @@ fn web_search_history_cell_short_query_does_not_wrap() {
     );
     let rendered = render_lines(&cell.display_lines(/*width*/ 64));
 
-    assert_eq!(rendered, vec!["• Searched short query".to_string()]);
+    assert_eq!(
+        rendered,
+        vec!["• Searched the web for short query".to_string()]
+    );
 }
 
 #[test]

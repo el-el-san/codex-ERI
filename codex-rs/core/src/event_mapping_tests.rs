@@ -1,6 +1,7 @@
 use super::parse_turn_item;
 use crate::context::ContextualUserFragment;
-use crate::context::GoalContext;
+use crate::context::InternalContextSource;
+use crate::context::InternalModelContextFragment;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::TurnItem;
@@ -66,7 +67,7 @@ fn parses_user_message_with_text_and_two_images() {
 #[test]
 fn skips_local_image_label_text() {
     let image_url = "data:image/png;base64,abc".to_string();
-    let label = codex_protocol::models::local_image_open_tag_text(/*label_number*/ 1);
+    let label = r#"<image name=[Image #1] path="/tmp/local.png">"#.to_string();
     let user_text = "Please review this image.".to_string();
 
     let item = ResponseItem::Message {
@@ -317,12 +318,16 @@ fn parses_hook_prompt_and_hides_other_contextual_fragments() {
 }
 
 #[test]
-fn goal_context_does_not_parse_as_visible_turn_item() {
+fn internal_model_context_does_not_parse_as_visible_turn_item() {
     let item = ResponseItem::Message {
         id: Some("msg-1".to_string()),
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
-            text: GoalContext::new("Continue working toward the active thread goal.").render(),
+            text: InternalModelContextFragment::new(
+                InternalContextSource::from_static("extension"),
+                "Internal steering.",
+            )
+            .render(),
         }],
         phase: None,
     };

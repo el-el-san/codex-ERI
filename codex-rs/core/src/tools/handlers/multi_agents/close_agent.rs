@@ -1,6 +1,7 @@
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
 use crate::turn_timing::now_unix_timestamp_ms;
+use codex_protocol::error::CodexErr;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -13,6 +14,13 @@ impl ToolExecutor<ToolInvocation> for Handler {
 
     fn spec(&self) -> ToolSpec {
         create_close_agent_tool_v1()
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        multi_agent_tool_search_info(
+            "close_agent close shutdown stop agent subagent thread status target",
+            self.spec(),
+        )
     }
 
     async fn handle(
@@ -36,18 +44,16 @@ async fn handle_close_agent(
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
     let agent_id = parse_agent_id_target(&args.target)?;
-    let receiver_agent = session
-        .services
-        .agent_control
-        .get_agent_metadata(agent_id)
-        .unwrap_or_default();
+    let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);
+    let known_agent = receiver_agent.is_some();
+    let receiver_agent = receiver_agent.unwrap_or_default();
     session
         .send_event(
             &turn,
             CollabCloseBeginEvent {
                 call_id: call_id.clone(),
                 started_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.conversation_id,
+                sender_thread_id: session.thread_id,
                 receiver_thread_id: agent_id,
             }
             .into(),
@@ -60,6 +66,9 @@ async fn handle_close_agent(
         .await
     {
         Ok(mut status_rx) => status_rx.borrow_and_update().clone(),
+        Err(CodexErr::ThreadNotFound(_)) if known_agent => {
+            session.services.agent_control.get_status(agent_id).await
+        }
         Err(err) => {
             let status = session.services.agent_control.get_status(agent_id).await;
             session
@@ -68,7 +77,7 @@ async fn handle_close_agent(
                     CollabCloseEndEvent {
                         call_id: call_id.clone(),
                         completed_at_ms: now_unix_timestamp_ms(),
-                        sender_thread_id: session.conversation_id,
+                        sender_thread_id: session.thread_id(),
                         receiver_thread_id: agent_id,
                         receiver_agent_nickname: receiver_agent.agent_nickname.clone(),
                         receiver_agent_role: receiver_agent.agent_role.clone(),
@@ -90,7 +99,7 @@ async fn handle_close_agent(
             CollabCloseEndEvent {
                 call_id,
                 completed_at_ms: now_unix_timestamp_ms(),
-                sender_thread_id: session.conversation_id,
+                sender_thread_id: session.thread_id,
                 receiver_thread_id: agent_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname,
                 receiver_agent_role: receiver_agent.agent_role,
@@ -107,13 +116,6 @@ async fn handle_close_agent(
 }
 
 impl CoreToolRuntime for Handler {
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        multi_agent_tool_search_info(
-            "close_agent close shutdown stop agent subagent thread status target",
-            self.spec(),
-        )
-    }
-
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
