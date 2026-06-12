@@ -14,7 +14,6 @@ members = [
     "app-server-client",
     "app-server-protocol",
     "app-server-test-client",
-    "debug-client",
     "apply-patch",
     "arg0",
     "feedback",
@@ -22,7 +21,7 @@ members = [
     "install-context",
     "codex-backend-openapi-models",
     "code-mode",
-    "cloud-requirements",
+    "cloud-config",
     "cloud-tasks",
     "cloud-tasks-client",
     "cloud-tasks-mock-client",
@@ -30,6 +29,7 @@ members = [
     "collaboration-mode-templates",
     "connectors",
     "config",
+    "context-fragments",
     "shell-command",
     "shell-escalation",
     "skills",
@@ -47,7 +47,9 @@ members = [
     "ext/extension-api",
     "ext/goal",
     "ext/guardian",
+    "ext/image-generation",
     "ext/memories",
+    "ext/skills",
     "ext/web-search",
     "external-agent-migration",
     "external-agent-sessions",
@@ -68,6 +70,7 @@ members = [
     "process-hardening",
     "protocol",
     "realtime-webrtc",
+    "prompts",
     "rollout",
     "rollout-trace",
     "rmcp-client",
@@ -80,6 +83,7 @@ members = [
     "tools",
     "v8-poc",
     "utils/absolute-path",
+    "utils/path-uri",
     "utils/cargo-bin",
     "git-utils",
     "utils/cache",
@@ -117,7 +121,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.135.0"
+version = "0.139.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -148,12 +152,13 @@ codex-chatgpt = { path = "chatgpt" }
 codex-cli = { path = "cli" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
-codex-cloud-requirements = { path = "cloud-requirements" }
+codex-cloud-config = { path = "cloud-config" }
 codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
+codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
 codex-core-plugins = { path = "core-plugins" }
@@ -165,6 +170,7 @@ codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-goal-extension = { path = "ext/goal" }
 codex-guardian = { path = "ext/guardian" }
+codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-external-agent-sessions = { path = "external-agent-sessions" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
@@ -196,6 +202,7 @@ codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-realtime-webrtc = { path = "realtime-webrtc" }
+codex-prompts = { path = "prompts" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
@@ -287,7 +294,7 @@ eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
-gix = { version = "0.83.0", default-features = false, features = ["sha1"] }
+gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
 glob = "0.3"
 globset = "0.4"
 hmac = "0.12.1"
@@ -304,7 +311,7 @@ insta = "1.46.3"
 inventory = "0.3.19"
 itertools = "0.14.0"
 jsonptr = { version = "0.7.1", default-features = false }
-jsonwebtoken = "10.3.0"
+jsonwebtoken = "9.3.1"
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
@@ -312,6 +319,7 @@ libc = "0.2.182"
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
+memchr = "2.7.6"
 mime_guess = "2.0.5"
 multimap = "0.10.0"
 notify = "8.2.0"
@@ -342,7 +350,7 @@ rcgen = { version = "0.14.7", default-features = false, features = [
 regex = "1.12.3"
 regex-lite = "0.1.8"
 reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "1.4.0", default-features = false }
+rmcp = { version = "1.7.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
@@ -377,13 +385,13 @@ sqlx = { version = "0.9.0", default-features = false, features = [
     "time",
     "uuid",
 ] }
-starlark = "0.13.0"
+starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
 strum_macros = "0.28.0"
 supports-color = "3.0.2"
 syntect = "5"
 sys-locale = "0.3.2"
-tar = { version = "0.4.46", default-features = false }
+tar = { version = "=0.4.45", default-features = false }
 tempfile = "3.23.0"
 test-log = "0.2.19"
 textwrap = "0.16.2"
@@ -417,7 +425,7 @@ unicode-width = "0.2"
 url = "2"
 urlencoding = "2.1"
 uuid = "1"
-v8 = "=147.4.0"
+v8 = "=149.2.0"
 vt100 = "0.16.2"
 walkdir = "2.5.0"
 webbrowser = "1.0"
@@ -476,7 +484,6 @@ unwrap_used = "deny"
 [workspace.metadata.cargo-shear]
 ignored = [
     "codex-agent-graph-store",
-    "codex-goal-extension",
     "icu_provider",
     "openssl-sys",
     "codex-v8-poc",
@@ -495,10 +502,11 @@ strip = "symbols"
 
 [profile.release]
 lto = "thin"
+debug = "line-tables-only"
 split-debuginfo = "off"
-# Because we bundle some of these executables with the TypeScript CLI, we
-# remove everything to make the binary as small as possible.
-strip = "symbols"
+# Keep release binaries symbolicateable until packaging has archived the
+# sidecar symbols and stripped the binaries.
+strip = false
 
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1

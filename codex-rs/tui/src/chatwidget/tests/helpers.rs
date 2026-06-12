@@ -112,6 +112,7 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }
@@ -208,7 +209,7 @@ pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op
 pub(super) fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
     loop {
         match op_rx.try_recv() {
-            Ok(Op::Interrupt) => return,
+            Ok(Op::Interrupt { .. }) => return,
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected interrupt op but queue was empty"),
             Err(TryRecvError::Disconnected) => panic!("expected interrupt op but channel closed"),
@@ -722,6 +723,7 @@ pub(super) fn replay_user_message_inputs(
     chat.replay_thread_item(
         AppServerThreadItem::UserMessage {
             id: item_id.to_string(),
+            client_id: None,
             content,
         },
         "turn-1".to_string(),
@@ -946,6 +948,7 @@ pub(super) fn complete_user_message_for_inputs(
             completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: item_id.to_string(),
+                client_id: None,
                 content,
             },
         }),
@@ -1426,6 +1429,7 @@ pub(super) fn plugins_test_detail(
                 needs_auth: *needs_auth,
             })
             .collect(),
+        app_templates: Vec::new(),
         mcp_servers: mcp_servers.iter().map(|name| (*name).to_string()).collect(),
     }
 }

@@ -44,8 +44,7 @@ pub(crate) fn create_call_tool_result_with_thread_id(
         "threadId": thread_id,
         "content": content_text,
     });
-    let mut result = CallToolResult::default();
-    result.content = content;
+    let mut result = CallToolResult::success(content);
     result.is_error = is_error;
     result.structured_content = Some(structured_content);
     result
@@ -104,7 +103,6 @@ pub async fn run_codex_tool_session(
     let submission = Submission {
         id: sub_id.clone(),
         op: Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: initial_prompt.clone(),
                 // MCP tool prompts are plain text with no UI element ranges.
@@ -115,6 +113,7 @@ pub async fn run_codex_tool_session(
             additional_context: Default::default(),
             thread_settings: Default::default(),
         },
+        client_user_message_id: None,
         trace: None,
     };
 
@@ -155,7 +154,6 @@ pub async fn run_codex_tool_session_reply(
         .insert(request_id.clone(), thread_id);
     if let Err(e) = thread
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: prompt,
                 // MCP tool prompts are plain text with no UI element ranges.
@@ -266,7 +264,8 @@ async fn run_codex_tool_session_inner(
                     }
                     EventMsg::Warning(_)
                     | EventMsg::GuardianWarning(_)
-                    | EventMsg::ModelVerification(_) => {
+                    | EventMsg::ModelVerification(_)
+                    | EventMsg::TurnModerationMetadata(_) => {
                         continue;
                     }
                     EventMsg::GuardianAssessment(_) => {

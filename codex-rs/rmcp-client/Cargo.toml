@@ -26,6 +26,7 @@ codex-utils-home-dir = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true, default-features = false, features = ["std"] }
 keyring = { workspace = true, features = ["crypto-rust"] }
+memchr = { workspace = true }
 oauth2 = "5"
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
@@ -47,7 +48,6 @@ rmcp = { workspace = true, default-features = false, features = [
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-shlex = { workspace = true }
 sse-stream = "0.2.1"
 thiserror = { workspace = true }
 tiny_http = { workspace = true }
@@ -62,6 +62,7 @@ tokio = { workspace = true, features = [
 ] }
 tracing = { workspace = true, features = ["log"] }
 urlencoding = { workspace = true }
+shlex = { workspace = true }
 which = { workspace = true }
 
 [dev-dependencies]
@@ -69,6 +70,7 @@ codex-utils-cargo-bin = { workspace = true }
 pretty_assertions = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+wiremock = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { workspace = true, features = ["linux-native-async-persistent"] }
 

@@ -147,22 +147,6 @@ fn remote_compaction_v2_is_under_development() {
 }
 
 #[test]
-fn responses_websocket_response_processed_is_under_development() {
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.stage(),
-        Stage::UnderDevelopment
-    );
-    assert_eq!(
-        Feature::ResponsesWebsocketResponseProcessed.default_enabled(),
-        false
-    );
-    assert_eq!(
-        feature_for_key("responses_websocket_response_processed"),
-        Some(Feature::ResponsesWebsocketResponseProcessed)
-    );
-}
-
-#[test]
 fn terminal_resize_reflow_is_experimental_and_enabled_by_default() {
     assert_eq!(
         feature_for_key("terminal_resize_reflow"),
@@ -245,6 +229,13 @@ fn image_generation_is_stable_and_enabled_by_default() {
 }
 
 #[test]
+fn image_generation_extension_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::ImageGenExt.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::ImageGenExt.default_enabled(), false);
+    assert_eq!(feature_for_key("imagegenext"), Some(Feature::ImageGenExt));
+}
+
+#[test]
 fn use_legacy_landlock_config_records_deprecation_notice() {
     let mut entries = BTreeMap::new();
     entries.insert("use_legacy_landlock".to_string(), true);
@@ -302,6 +293,13 @@ fn auth_elicitation_is_under_development() {
         feature_for_key("auth_elicitation"),
         Some(Feature::AuthElicitation)
     );
+}
+
+#[test]
+fn mentions_v2_is_under_development_and_disabled_by_default() {
+    assert_eq!(Feature::MentionsV2.stage(), Stage::UnderDevelopment);
+    assert_eq!(Feature::MentionsV2.default_enabled(), false);
+    assert_eq!(feature_for_key("mentions_v2"), Some(Feature::MentionsV2));
 }
 
 #[test]

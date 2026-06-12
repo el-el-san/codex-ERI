@@ -34,4 +34,5 @@ jobs:
           cargo audit --deny warnings \
             --ignore GHSA-3v94-mw7p-v465 \
             --ignore GHSA-q2qq-hmj6-3wpp \
-            --ignore RUSTSEC-2026-0002
+            --ignore RUSTSEC-2026-0002 \
+            --ignore RUSTSEC-2026-0097

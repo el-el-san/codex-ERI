@@ -1,7 +1,5 @@
 use std::collections::HashMap;
-use std::env;
 use std::ffi::OsString;
-use std::fs;
 use std::future::Future;
 use std::io;
 use std::path::PathBuf;
@@ -11,10 +9,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
-use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_api::SharedAuthProvider;
+use codex_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
 use futures::FutureExt;
@@ -241,7 +239,7 @@ impl From<CreateElicitationResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.map(|meta| serde_json::Value::Object(meta.0)),
+            meta: None,
         }
     }
 }
@@ -251,10 +249,7 @@ impl From<ElicitationResponse> for CreateElicitationResult {
         Self {
             action: value.action,
             content: value.content,
-            meta: value.meta.and_then(|meta| match meta {
-                serde_json::Value::Object(object) => Some(rmcp::model::Meta(object)),
-                _ => None,
-            }),
+            meta: None,
         }
     }
 }
@@ -581,15 +576,15 @@ impl RmcpClient {
                 let rmcp_params = rmcp_params.clone();
                 let meta = meta.clone();
                 async move {
-                    let mut request_options = rmcp::service::PeerRequestOptions::default();
-                    request_options.meta = meta;
+                    let mut options = rmcp::service::PeerRequestOptions::no_options();
+                    options.meta = meta;
                     let result = service
                         .peer()
                         .send_request_with_option(
                             ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
                                 rmcp_params,
                             )),
-                            request_options,
+                            options,
                         )
                         .await?
                         .await_response()
@@ -1018,8 +1013,11 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
-    let oauth_metadata_client = build_reqwest_013_client_with_custom_ca(builder)?;
+    let mut builder = apply_default_headers(reqwest::Client::builder(), &default_headers);
+    if let Some(tls_config) = maybe_build_rustls_client_config_with_custom_ca()? {
+        builder = builder.tls_backend_preconfigured(tls_config.as_ref().clone());
+    }
+    let oauth_metadata_client = builder.build()?;
     // TODO(aibrahim): teach OAuth bootstrap and refresh to use the same
     // shared HTTP client abstraction instead of always creating the local
     // reqwest metadata client here.
@@ -1036,10 +1034,9 @@ async fn create_oauth_transport_and_runtime(
     let manager = match oauth_state {
         OAuthState::Authorized(manager) => manager,
         OAuthState::Unauthorized(manager) => manager,
-        OAuthState::Session(_) | OAuthState::AuthorizedHttpClient(_) => {
+        _ => {
             return Err(anyhow!("unexpected OAuth state during client setup"));
         }
-        _ => return Err(anyhow!("unsupported OAuth state during client setup")),
     };
 
     let auth_client = AuthClient::new(
@@ -1062,38 +1059,6 @@ async fn create_oauth_transport_and_runtime(
     );
 
     Ok((transport, runtime))
-}
-
-fn build_reqwest_013_client_with_custom_ca(
-    mut builder: reqwest::ClientBuilder,
-) -> Result<reqwest::Client> {
-    let selected_ca = env::var("CODEX_CA_CERTIFICATE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| ("CODEX_CA_CERTIFICATE", value))
-        .or_else(|| {
-            env::var("SSL_CERT_FILE")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| ("SSL_CERT_FILE", value))
-        });
-
-    if let Some((source_env, path)) = selected_ca {
-        let pem = fs::read(&path).with_context(|| {
-            format!("failed to read CA certificate file from {source_env}: {path}")
-        })?;
-        let certificates = reqwest::Certificate::from_pem_bundle(&pem).with_context(|| {
-            format!("failed to parse CA certificate file from {source_env}: {path}")
-        })?;
-        builder = builder.use_rustls_tls();
-        for certificate in certificates {
-            builder = builder.add_root_certificate(certificate);
-        }
-    }
-
-    builder
-        .build()
-        .context("failed to build reqwest 0.13 client")
 }
 
 #[cfg(test)]

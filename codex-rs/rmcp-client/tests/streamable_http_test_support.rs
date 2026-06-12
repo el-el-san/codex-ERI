@@ -57,22 +57,20 @@ fn init_params() -> InitializeRequestParams {
         }),
         url: None,
     });
-    let mut client_info = Implementation::new("codex-test", "0.0.0-test");
-    client_info.title = Some("Codex rmcp recovery test".into());
-    InitializeRequestParams::new(capabilities, client_info)
-        .with_protocol_version(ProtocolVersion::V_2025_06_18)
+    InitializeRequestParams::new(
+        capabilities,
+        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp recovery test"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
-    CallToolResult {
-        content: Vec::new(),
-        structured_content: Some(json!({
-            "echo": format!("ECHOING: {message}"),
-            "env": null,
-        })),
-        is_error: Some(false),
-        meta: None,
-    }
+    let mut result = CallToolResult::success(Vec::new());
+    result.structured_content = Some(json!({
+        "echo": format!("ECHOING: {message}"),
+        "env": null,
+    }));
+    result
 }
 
 pub(crate) async fn create_client(base_url: &str) -> anyhow::Result<RmcpClient> {
@@ -88,6 +86,12 @@ pub(crate) async fn create_client(base_url: &str) -> anyhow::Result<RmcpClient> 
     )
     .await?;
 
+    initialize_client(&client).await?;
+
+    Ok(client)
+}
+
+pub(crate) async fn initialize_client(client: &RmcpClient) -> anyhow::Result<()> {
     client
         .initialize(
             init_params(),
@@ -104,8 +108,7 @@ pub(crate) async fn create_client(base_url: &str) -> anyhow::Result<RmcpClient> 
             }),
         )
         .await?;
-
-    Ok(client)
+    Ok(())
 }
 
 /// Creates a Streamable HTTP RMCP client that sends traffic through the remote
@@ -164,12 +167,14 @@ pub(crate) async fn arm_session_post_failure(
     base_url: &str,
     status: u16,
     remaining: usize,
+    www_authenticate_headers: &[&str],
 ) -> anyhow::Result<()> {
     let response = reqwest::Client::new()
         .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
         .json(&json!({
             "status": status,
             "remaining": remaining,
+            "www_authenticate_headers": www_authenticate_headers,
         }))
         .send()
         .await?;

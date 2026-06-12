@@ -56,13 +56,13 @@ fn annotations(
     destructive: Option<bool>,
     open_world: Option<bool>,
 ) -> ToolAnnotations {
-    ToolAnnotations {
-        destructive_hint: destructive,
-        idempotent_hint: None,
-        open_world_hint: open_world,
-        read_only_hint: read_only,
-        title: None,
-    }
+    ToolAnnotations::from_raw(
+        /*title*/ None,
+        read_only,
+        destructive,
+        /*idempotent_hint*/ None,
+        open_world,
+    )
 }
 
 fn approval_metadata(
@@ -138,7 +138,7 @@ async fn execute_mcp_tool_call_records_replayable_correlation() -> anyhow::Resul
         .rollout_thread_trace
         .start_tool_dispatch_trace(|| {
             Some(ToolDispatchInvocation {
-                thread_id: session.conversation_id.to_string(),
+                thread_id: session.thread_id.to_string(),
                 codex_turn_id: turn_context.sub_id.clone(),
                 tool_call_id: "mcp-call".to_string(),
                 tool_name: "search".to_string(),
@@ -280,7 +280,7 @@ fn attach_trace_bundle(
         codex_rollout_trace::ThreadTraceContext::start_root_in_root_for_test(
             root,
             ThreadStartedTraceMetadata {
-                thread_id: session.conversation_id.to_string(),
+                thread_id: session.thread_id.to_string(),
                 agent_path: "/root".to_string(),
                 task_name: None,
                 nickname: None,
@@ -646,7 +646,7 @@ async fn approval_elicitation_request_uses_message_override_and_preserves_tool_p
     assert_eq!(
         request,
         McpServerElicitationRequestParams {
-            thread_id: session.conversation_id.to_string(),
+            thread_id: session.thread_id.to_string(),
             turn_id: Some(turn_context.sub_id),
             server_name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
             request: McpServerElicitationRequest::Form {
@@ -1886,6 +1886,7 @@ async fn persist_codex_app_tool_approval_writes_tool_override() {
                 "calendar".to_string(),
                 AppConfig {
                     enabled: true,
+                    approvals_reviewer: None,
                     destructive_enabled: None,
                     open_world_enabled: None,
                     default_tools_approval_mode: None,

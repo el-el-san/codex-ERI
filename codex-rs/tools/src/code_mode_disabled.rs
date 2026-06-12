@@ -6,6 +6,9 @@ use crate::ToolName;
 use crate::ToolSpec;
 use serde::Serialize;
 
+pub const PUBLIC_TOOL_NAME: &str = "exec";
+pub const WAIT_TOOL_NAME: &str = "wait";
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ToolNamespaceDescription {
     pub name: String,
@@ -17,15 +20,8 @@ pub struct CodeModeToolDefinition {
     pub tool_name: ToolName,
     pub name: String,
     pub description: String,
-    pub kind: CodeModeToolKind,
     pub input_schema: Option<serde_json::Value>,
     pub output_schema: Option<JsonSchema>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub enum CodeModeToolKind {
-    Function,
-    Freeform,
 }
 
 pub fn augment_tool_spec_for_code_mode(spec: ToolSpec) -> ToolSpec {
@@ -71,26 +67,25 @@ pub fn create_wait_tool() -> ToolSpec {
         (
             "yield_time_ms".to_string(),
             JsonSchema::number(Some(
-                "How long to wait (in milliseconds) for more output before yielding again."
-                    .to_string(),
+                "Wait before yielding more output. Defaults to 10000 ms.".to_string(),
             )),
         ),
         (
             "max_tokens".to_string(),
             JsonSchema::number(Some(
-                "Maximum number of output tokens to return for this wait call.".to_string(),
+                "Output token budget for this wait call. Defaults to 10000 tokens.".to_string(),
             )),
         ),
         (
             "terminate".to_string(),
             JsonSchema::boolean(Some(
-                "Whether to terminate the running exec cell.".to_string(),
+                "True stops the running exec cell; false or omitted waits for output.".to_string(),
             )),
         ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
-        name: "wait".to_string(),
+        name: WAIT_TOOL_NAME.to_string(),
         description: "Waits on a yielded exec cell.".to_string(),
         strict: false,
         parameters: JsonSchema::object(
@@ -120,7 +115,7 @@ SOURCE: /[\s\S]+/
 "#;
 
     ToolSpec::Freeform(FreeformTool {
-        name: "exec".to_string(),
+        name: PUBLIC_TOOL_NAME.to_string(),
         description: "Execute JavaScript source in code mode.".to_string(),
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),

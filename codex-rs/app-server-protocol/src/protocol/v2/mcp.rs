@@ -2,6 +2,7 @@ use super::shared::v2_enum_from_core;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::items::McpToolCallError as CoreMcpToolCallError;
 use codex_protocol::mcp::CallToolResult as CoreMcpCallToolResult;
+use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::mcp::Resource as McpResource;
 pub use codex_protocol::mcp::ResourceContent as McpResourceContent;
 use codex_protocol::mcp::ResourceTemplate as McpResourceTemplate;
@@ -53,6 +54,7 @@ pub enum McpServerStatusDetail {
 #[ts(export_to = "v2/")]
 pub struct McpServerStatus {
     pub name: String,
+    pub server_info: Option<McpServerInfo>,
     pub tools: std::collections::HashMap<String, McpTool>,
     pub resources: Vec<McpResource>,
     pub resource_templates: Vec<McpResourceTemplate>,
@@ -233,6 +235,7 @@ pub enum McpServerStartupState {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct McpServerStatusUpdatedNotification {
+    pub thread_id: Option<String>,
     pub name: String,
     pub status: McpServerStartupState,
     pub error: Option<String>,
@@ -690,10 +693,7 @@ impl From<McpServerElicitationRequestResponse> for rmcp::model::CreateElicitatio
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: value.meta.and_then(|meta| match meta {
-                JsonValue::Object(object) => Some(rmcp::model::Meta(object)),
-                _ => None,
-            }),
+            meta: None,
         }
     }
 }
@@ -703,7 +703,7 @@ impl From<rmcp::model::CreateElicitationResult> for McpServerElicitationRequestR
         Self {
             action: value.action.into(),
             content: value.content,
-            meta: value.meta.map(|meta| JsonValue::Object(meta.0)),
+            meta: None,
         }
     }
 }

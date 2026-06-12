@@ -217,8 +217,8 @@ impl MessageProcessor {
             *suffix = Some(user_agent_suffix);
         }
 
-        let mut server_info = Implementation::new("codex-mcp-server", env!("CARGO_PKG_VERSION"));
-        server_info.title = Some("Codex".to_string());
+        let server_info =
+            Implementation::new("codex-mcp-server", env!("CARGO_PKG_VERSION")).with_title("Codex");
 
         // Preserve Codex's existing non-spec `serverInfo.user_agent` field.
         let mut server_info_value = match serde_json::to_value(&server_info) {
@@ -244,10 +244,10 @@ impl MessageProcessor {
             .enable_tools()
             .enable_tool_list_changed()
             .build();
-        let initialize_result = InitializeResult::new(capabilities)
+        let result = InitializeResult::new(capabilities)
             .with_protocol_version(params.protocol_version.clone())
             .with_server_info(server_info);
-        let mut result_value = match serde_json::to_value(initialize_result) {
+        let mut result_value = match serde_json::to_value(result) {
             Ok(value) => value,
             Err(err) => {
                 self.outgoing
@@ -539,6 +539,7 @@ impl MessageProcessor {
             .submit_with_id(Submission {
                 id: request_id_string,
                 op: codex_protocol::protocol::Op::Interrupt,
+                client_user_message_id: None,
                 trace: None,
             })
             .await
