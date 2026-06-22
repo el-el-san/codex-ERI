@@ -100,6 +100,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -686,6 +687,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 turn_id: request.turn_id,
                 item_id: request.call_id,
                 questions,
+                auto_resolution_ms: request.auto_resolution_ms,
             };
             let (pending_request_id, rx) = outgoing
                 .send_request(ServerRequestPayload::ToolRequestUserInput(params))
@@ -784,6 +786,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
             let pending_response = PendingRequestPermissionsResponse {
                 call_id: request.call_id,
+                conversation_id,
+                turn_id: request.turn_id,
                 requested_permissions,
                 request_cwd,
                 pending_request_id,
@@ -861,6 +865,24 @@ pub(crate) async fn apply_bespoke_event_handling(
             );
             outgoing.send_server_notification(notification).await;
         }
+        EventMsg::SubAgentActivity(activity) => {
+            if activity.kind == SubAgentActivityKind::Interrupted
+                && thread_manager
+                    .get_thread(activity.agent_thread_id)
+                    .await
+                    .is_err()
+            {
+                thread_watch_manager
+                    .remove_thread(&activity.agent_thread_id.to_string())
+                    .await;
+            }
+            let notification = item_event_to_server_notification(
+                EventMsg::SubAgentActivity(activity),
+                &conversation_id.to_string(),
+                &event_turn_id,
+            );
+            outgoing.send_server_notification(notification).await;
+        }
         EventMsg::CollabCloseEnd(end_event) => {
             if thread_manager
                 .get_thread(end_event.receiver_thread_id)
@@ -928,15 +950,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 codex_error_info: ev.codex_error_info.map(V2CodexErrorInfo::from),
                 additional_details: None,
             };
-            handle_error(conversation_id, turn_error.clone(), &thread_state).await;
-            outgoing
-                .send_server_notification(ServerNotification::Error(ErrorNotification {
-                    error: turn_error.clone(),
-                    will_retry: false,
-                    thread_id: conversation_id.to_string(),
-                    turn_id: event_turn_id.clone(),
-                }))
-                .await;
+            handle_error_notification(
+                conversation_id,
+                &event_turn_id,
+                turn_error,
+                &outgoing,
+                &thread_state,
+            )
+            .await;
         }
         EventMsg::StreamError(ev) => {
             // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
@@ -1621,6 +1642,24 @@ async fn handle_error(
     state.turn_summary.last_error = Some(error);
 }
 
+async fn handle_error_notification(
+    conversation_id: ThreadId,
+    event_turn_id: &str,
+    error: TurnError,
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_state: &Arc<Mutex<ThreadState>>,
+) {
+    handle_error(conversation_id, error.clone(), thread_state).await;
+    outgoing
+        .send_server_notification(ServerNotification::Error(ErrorNotification {
+            error,
+            will_retry: false,
+            thread_id: conversation_id.to_string(),
+            turn_id: event_turn_id.to_string(),
+        }))
+        .await;
+}
+
 async fn on_request_user_input_response(
     event_turn_id: String,
     pending_request_id: RequestId,
@@ -1776,6 +1815,8 @@ async fn on_request_permissions_response(
 ) {
     let PendingRequestPermissionsResponse {
         call_id,
+        conversation_id,
+        turn_id,
         requested_permissions,
         request_cwd,
         pending_request_id,
@@ -1786,12 +1827,34 @@ async fn on_request_permissions_response(
     let response = receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id.clone()).await;
     drop(request_permissions_guard);
-    let Some(response) = request_permissions_response_from_client_result(
+    let response = match request_permissions_response_from_client_result(
         requested_permissions,
         response,
         request_cwd.as_path(),
-    ) else {
-        return;
+    ) {
+        Ok(Some(response)) => response,
+        Ok(None) => return,
+        // TODO(anp): Remove this native-path localization error path once core permission paths
+        // remain PathUri after crossing the app-server boundary.
+        Err(err) => {
+            let message = format!("failed to localize granted filesystem paths: {err}");
+            handle_error_notification(
+                conversation_id,
+                &turn_id,
+                TurnError {
+                    message,
+                    codex_error_info: None,
+                    additional_details: None,
+                },
+                &outgoing,
+                &thread_state,
+            )
+            .await;
+            if let Err(err) = conversation.submit(Op::Interrupt).await {
+                error!("failed to interrupt turn after invalid permission paths: {err}");
+            }
+            return;
+        }
     };
     outgoing.track_effective_permissions_approval_response(pending_request_id, response.clone());
 
@@ -1808,6 +1871,8 @@ async fn on_request_permissions_response(
 
 struct PendingRequestPermissionsResponse {
     call_id: String,
+    conversation_id: ThreadId,
+    turn_id: String,
     requested_permissions: CoreRequestPermissionProfile,
     request_cwd: AbsolutePathBuf,
     pending_request_id: RequestId,
@@ -1820,25 +1885,25 @@ fn request_permissions_response_from_client_result(
     requested_permissions: CoreRequestPermissionProfile,
     response: std::result::Result<ClientRequestResult, oneshot::error::RecvError>,
     cwd: &std::path::Path,
-) -> Option<CoreRequestPermissionsResponse> {
+) -> std::io::Result<Option<CoreRequestPermissionsResponse>> {
     let value = match response {
         Ok(Ok(value)) => value,
-        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return None,
+        Ok(Err(err)) if is_turn_transition_server_request_error(&err) => return Ok(None),
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
-            return Some(CoreRequestPermissionsResponse {
+            return Ok(Some(CoreRequestPermissionsResponse {
                 permissions: Default::default(),
                 scope: CorePermissionGrantScope::Turn,
                 strict_auto_review: false,
-            });
+            }));
         }
         Err(err) => {
             error!("request failed: {err:?}");
-            return Some(CoreRequestPermissionsResponse {
+            return Ok(Some(CoreRequestPermissionsResponse {
                 permissions: Default::default(),
                 scope: CorePermissionGrantScope::Turn,
                 strict_auto_review: false,
-            });
+            }));
         }
     };
 
@@ -1859,23 +1924,23 @@ fn request_permissions_response_from_client_result(
         )
     {
         error!("strict auto review is only supported for turn-scoped permission grants");
-        return Some(CoreRequestPermissionsResponse {
+        return Ok(Some(CoreRequestPermissionsResponse {
             permissions: Default::default(),
             scope: CorePermissionGrantScope::Turn,
             strict_auto_review: false,
-        });
+        }));
     }
-    let granted_permissions: CoreAdditionalPermissionProfile = response.permissions.into();
+    let granted_permissions: CoreAdditionalPermissionProfile = response.permissions.try_into()?;
     let permissions = if granted_permissions.is_empty() {
         CoreRequestPermissionProfile::default()
     } else {
         intersect_permission_profiles(requested_permissions.into(), granted_permissions, cwd).into()
     };
-    Some(CoreRequestPermissionsResponse {
+    Ok(Some(CoreRequestPermissionsResponse {
         permissions,
         scope: response.scope.to_core(),
         strict_auto_review,
-    })
+    }))
 }
 
 const REVIEW_FALLBACK_MESSAGE: &str = "Reviewer failed to output a response.";
@@ -2104,6 +2169,7 @@ mod tests {
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_login::CodexAuth;
+    use codex_protocol::AgentPath;
     use codex_protocol::items::HookPromptFragment;
     use codex_protocol::items::build_hook_prompt_message;
     use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
@@ -2125,6 +2191,7 @@ mod tests {
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentActivityEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::UserMessageEvent;
@@ -2877,7 +2944,8 @@ mod tests {
             CoreRequestPermissionProfile::default(),
             Ok(Err(error)),
             std::env::current_dir().expect("current dir").as_path(),
-        );
+        )
+        .expect("paths should localize");
 
         assert_eq!(response, None);
     }
@@ -2972,6 +3040,7 @@ mod tests {
                 }))),
                 cwd.as_path(),
             )
+            .expect("paths should localize")
             .expect("response should be accepted");
 
             assert_eq!(
@@ -2995,6 +3064,7 @@ mod tests {
             }))),
             std::env::current_dir().expect("current dir").as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(
@@ -3022,6 +3092,7 @@ mod tests {
             }))),
             std::env::current_dir().expect("current dir").as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(
@@ -3053,6 +3124,7 @@ mod tests {
             }))),
             std::env::current_dir().expect("current dir").as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(response.scope, CorePermissionGrantScope::Turn);
@@ -3088,6 +3160,7 @@ mod tests {
             }))),
             cwd.as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(
@@ -3134,6 +3207,7 @@ mod tests {
             }))),
             request_cwd.as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(
@@ -3175,6 +3249,7 @@ mod tests {
             }))),
             cwd.as_path(),
         )
+        .expect("paths should localize")
         .expect("response should be accepted");
 
         assert_eq!(
@@ -3296,6 +3371,94 @@ mod tests {
             }
             other => bail!("unexpected message: {other:?}"),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager.start_thread(config).await?;
+        let child_thread_id = ThreadId::new();
+        let child_thread_id_string = child_thread_id.to_string();
+        let thread_watch_manager = ThreadWatchManager::new();
+        thread_watch_manager
+            .note_turn_started(&child_thread_id_string)
+            .await;
+        assert_eq!(thread_watch_manager.running_turn_count().await, 1);
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::SubAgentActivity(SubAgentActivityEvent {
+                    event_id: "activity-1".to_string(),
+                    occurred_at_ms: 42,
+                    agent_thread_id: child_thread_id,
+                    agent_path: AgentPath::try_from("/root/worker")
+                        .expect("agent path should parse"),
+                    kind: SubAgentActivityKind::Interrupted,
+                }),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            new_thread_state(),
+            thread_watch_manager.clone(),
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        assert_eq!(
+            thread_watch_manager
+                .loaded_status_for_thread(&child_thread_id_string)
+                .await,
+            ThreadStatus::NotLoaded
+        );
+        assert_eq!(thread_watch_manager.running_turn_count().await, 0);
+        let message = recv_broadcast_message(&mut rx).await?;
+        let OutgoingMessage::AppServerNotification(ServerNotification::ItemCompleted(payload)) =
+            message
+        else {
+            bail!("unexpected message: {message:?}");
+        };
+        assert_eq!(
+            payload,
+            ItemCompletedNotification {
+                item: ThreadItem::SubAgentActivity {
+                    id: "activity-1".to_string(),
+                    kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                    agent_thread_id: child_thread_id_string,
+                    agent_path: "/root/worker".to_string(),
+                },
+                thread_id: conversation_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 42,
+            }
+        );
         Ok(())
     }
 

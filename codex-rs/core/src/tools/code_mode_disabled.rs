@@ -15,7 +15,7 @@ use codex_tools::ToolSpec;
 
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_tools::CODE_MODE_PUBLIC_TOOL_NAME;
 pub(crate) const WAIT_TOOL_NAME: &str = codex_tools::CODE_MODE_WAIT_TOOL_NAME;
-pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 1000;
+pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 10_000;
 
 const CODE_MODE_UNSUPPORTED_MESSAGE: &str = "code mode is disabled in Android builds";
 
