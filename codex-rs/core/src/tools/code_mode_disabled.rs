@@ -6,7 +6,6 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -55,7 +54,6 @@ impl CodeModeExecuteHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for CodeModeExecuteHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(PUBLIC_TOOL_NAME)
@@ -65,13 +63,15 @@ impl ToolExecutor<ToolInvocation> for CodeModeExecuteHandler {
         self.spec.clone()
     }
 
-    async fn handle(
+    fn handle(
         &self,
         _invocation: ToolInvocation,
-    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        Err(FunctionCallError::RespondToModel(
-            CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
-        ))
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            Err(FunctionCallError::RespondToModel(
+                CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            ))
+        })
     }
 }
 
@@ -83,7 +83,6 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
 
 pub(crate) struct CodeModeWaitHandler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WAIT_TOOL_NAME)
@@ -93,13 +92,15 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
         execute_spec::create_wait_tool()
     }
 
-    async fn handle(
+    fn handle(
         &self,
         _invocation: ToolInvocation,
-    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        Err(FunctionCallError::RespondToModel(
-            CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
-        ))
+    ) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            Err(FunctionCallError::RespondToModel(
+                CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            ))
+        })
     }
 }
 
