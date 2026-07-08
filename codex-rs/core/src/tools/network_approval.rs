@@ -660,7 +660,7 @@ impl NetworkApprovalService {
                     .turn_environments
                     .iter()
                     .find(|environment| environment.environment_id == environment_id)
-                    .and_then(|environment| environment.cwd().to_abs_path().ok())
+                    .map(|environment| environment.cwd().clone())
                     .unwrap_or_else(|| {
                         #[allow(deprecated)]
                         turn_context.cwd.clone()

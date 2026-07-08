@@ -131,9 +131,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
     for environment in &invocation.step_context.environments.turn_environments {
         // TODO(anp): Migrate extension ToolEnvironment and granted-permission lookup to PathUri
         // so extensions can receive foreign environment cwd values.
-        let Ok(native_cwd) = environment.cwd().to_abs_path() else {
-            continue;
-        };
+        let native_cwd = environment.cwd().clone();
         let additional_permissions = apply_granted_turn_permissions(
             invocation.session.as_ref(),
             &environment.environment_id,

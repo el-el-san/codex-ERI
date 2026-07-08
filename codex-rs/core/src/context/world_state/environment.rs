@@ -324,7 +324,7 @@ fn environment_states(snapshot: &TurnEnvironmentSnapshot) -> BTreeMap<String, En
             (
                 environment.environment_id.clone(),
                 EnvironmentState {
-                    cwd: environment.cwd().clone(),
+                    cwd: environment.cwd().clone().into(),
                     status: EnvironmentStatus::Available,
                     shell: environment
                         .shell

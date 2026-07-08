@@ -175,8 +175,13 @@ impl ThreadEnvironments {
             } else {
                 Some(local_shell)
             };
+            let cwd = selection.cwd.to_abs_path().map_err(|err| {
+                Arc::new(ExecServerError::Protocol(format!(
+                    "turn environment cwd is not native to the Codex host: {err}"
+                )))
+            })?;
             let mut turn_environment =
-                TurnEnvironment::new(selection.environment_id, environment, selection.cwd, shell);
+                TurnEnvironment::new(selection.environment_id, environment, cwd, shell);
             let task = shell_snapshot
                 .build(turn_environment.clone())
                 .boxed()
@@ -288,7 +293,7 @@ impl TurnEnvironmentSnapshot {
     pub(crate) fn single_local_environment_cwd(&self) -> Option<AbsolutePathBuf> {
         // TODO(anp): Migrate local-environment consumers to PathUri so this compatibility
         // conversion can be removed.
-        self.single_local_environment()?.cwd().to_abs_path().ok()
+        Some(self.single_local_environment()?.cwd().clone())
     }
 }
 

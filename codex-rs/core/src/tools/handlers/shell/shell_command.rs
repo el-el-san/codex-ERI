@@ -187,12 +187,7 @@ impl ShellCommandHandler {
             ));
         };
 
-        let environment_cwd = turn_environment.cwd().to_abs_path().map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "shell_command cwd `{}` is not native to the Codex host: {err}",
-                turn_environment.cwd()
-            ))
-        })?;
+        let environment_cwd = turn_environment.cwd().clone();
         let cwd = resolve_workdir_base_path(&arguments, &environment_cwd)?;
         let params: ShellCommandToolCallParams = parse_arguments_with_base_path(&arguments, &cwd)?;
         maybe_emit_implicit_skill_invocation(

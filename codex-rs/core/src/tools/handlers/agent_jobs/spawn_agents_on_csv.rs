@@ -314,10 +314,5 @@ fn single_local_environment_cwd(turn: &TurnContext) -> Result<AbsolutePathBuf, F
 
     // TODO(anp): Migrate spawn_agents_on_csv filesystem access to PathUri before enabling it for
     // remote environments.
-    turn_environment.cwd().to_abs_path().map_err(|err| {
-        FunctionCallError::RespondToModel(format!(
-            "spawn_agents_on_csv cwd `{}` is not native to the Codex host: {err}",
-            turn_environment.cwd()
-        ))
-    })
+    Ok(turn_environment.cwd().clone())
 }

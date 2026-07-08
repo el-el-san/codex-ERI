@@ -75,12 +75,7 @@ impl RequestPermissionsHandler {
         };
         // TODO(anp): Migrate request_permissions parsing and permission profiles to PathUri so
         // environment-native foreign paths do not require host conversion.
-        let native_cwd = turn_environment.cwd().to_abs_path().map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "request_permissions cwd `{}` is not native to the Codex host: {err}",
-                turn_environment.cwd()
-            ))
-        })?;
+        let native_cwd = turn_environment.cwd().clone();
         let mut args: RequestPermissionsArgs =
             parse_arguments_with_base_path(&arguments, &native_cwd)?;
         args.permissions = normalize_additional_permissions(args.permissions.into())

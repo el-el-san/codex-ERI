@@ -350,7 +350,7 @@ impl ExecCommandHandler {
                     yield_time_ms,
                     max_output_tokens,
                     cwd,
-                    sandbox_cwd: native_environment_cwd,
+                    sandbox_cwd: native_environment_cwd.into(),
                     turn_environment: turn_environment.clone(),
                     shell_mode,
                     network: context.turn.network.clone(),

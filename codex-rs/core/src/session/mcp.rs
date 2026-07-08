@@ -337,7 +337,7 @@ impl Session {
         // values can be used without falling back to the legacy host cwd.
         let cwd = environments
             .primary()
-            .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
+            .map(|turn_environment| turn_environment.cwd().clone())
             .map(|cwd| cwd.to_path_buf())
             .unwrap_or_else(|| {
                 #[allow(deprecated)]

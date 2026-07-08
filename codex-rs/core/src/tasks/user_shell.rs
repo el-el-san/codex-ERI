@@ -147,15 +147,7 @@ pub(crate) async fn execute_user_shell_command(
     let display_command = environment_shell.derive_exec_args(&command, use_login_shell);
     // TODO(anp): Migrate user-shell events and execution plumbing to PathUri so this local-only
     // feature does not need to project the selected environment cwd onto the Codex host.
-    let Ok(cwd) = turn_environment.cwd().to_abs_path() else {
-        send_user_shell_error(
-            &session,
-            turn_context.as_ref(),
-            "shell working directory is not native to the Codex host",
-        )
-        .await;
-        return;
-    };
+    let cwd = turn_environment.cwd().clone();
     let shell_snapshot_location = turn_environment.shell_snapshot(&cwd);
     let mut exec_env_map = create_env(
         &turn_context.config.permissions.shell_environment_policy,

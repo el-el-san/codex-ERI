@@ -140,16 +140,16 @@ impl ViewImageHandler {
                 "view_image is unavailable in this session".to_string(),
             ));
         };
-        let path_uri = turn_environment.cwd().join(&path).map_err(|err| {
+        let path_uri = turn_environment.cwd_uri().join(&path).map_err(|err| {
             FunctionCallError::RespondToModel(format!(
                 "unable to resolve image path `{path}` against environment cwd `{}`: {err}",
-                turn_environment.cwd(),
+                turn_environment.cwd_uri(),
             ))
         })?;
         let model_visible_path = path_uri.inferred_native_path_string();
         let sandbox = turn.file_system_sandbox_context(
             /*additional_permissions*/ None,
-            turn_environment.cwd(),
+            turn_environment.cwd_uri(),
         );
         let fs = turn_environment.environment.get_filesystem();
 

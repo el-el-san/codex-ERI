@@ -766,7 +766,7 @@ fn sandbox_cwd_for_mcp_server(step_context: &StepContext, environment_id: &str) 
         .iter()
         .find(|environment| environment.environment_id == environment_id)
     {
-        return Some(environment.cwd().clone());
+        return Some(environment.cwd().clone().into());
     }
 
     if environment_id == codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID {
