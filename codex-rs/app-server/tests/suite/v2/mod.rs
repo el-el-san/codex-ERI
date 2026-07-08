@@ -2,6 +2,7 @@ mod account;
 mod analytics;
 mod app_list;
 mod attestation;
+mod auto_env;
 mod client_metadata;
 mod collaboration_mode_list;
 #[cfg(unix)]
@@ -11,7 +12,11 @@ mod config_rpc;
 mod connection_handling_websocket;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
+mod current_time;
 mod dynamic_tools;
+mod environment_add;
+mod environment_info;
+mod exec_server_test_support;
 #[cfg(not(target_os = "windows"))]
 mod executor_mcp;
 mod executor_skills;
@@ -44,13 +49,18 @@ mod process_exec;
 mod rate_limit_reset_credits;
 mod rate_limits;
 mod realtime_conversation;
+mod recommended_plugins;
 mod remote_control;
 #[cfg(debug_assertions)]
 mod remote_thread_store;
 mod request_permissions;
 mod request_user_input;
+mod request_validation;
 mod review;
 mod safety_check_downgrade;
+#[cfg(not(target_os = "windows"))]
+mod selected_capability_stack;
+mod selected_environment;
 mod skills_list;
 mod sleep;
 mod thread_archive;

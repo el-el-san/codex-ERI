@@ -10,9 +10,7 @@ pub(crate) mod zsh_fork_backend;
 
 use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::exec::ExecCapturePolicy;
-use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::GuardianNetworkAccessTrigger;
-use crate::guardian::review_approval_request;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::SandboxPermissions;
 use crate::sandboxing::execute_env;
@@ -29,6 +27,7 @@ use crate::tools::runtimes::disable_powershell_profile_for_elevated_windows_sand
 use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
 use crate::tools::sandboxing::Approvable;
+use crate::tools::sandboxing::ApprovalAction;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use crate::tools::sandboxing::PermissionRequestPayload;
@@ -93,6 +92,7 @@ pub struct ShellRuntime {
 
 #[derive(serde::Serialize, Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct ApprovalKey {
+    environment_id: String,
     command: Vec<String>,
     cwd: AbsolutePathBuf,
     sandbox_permissions: SandboxPermissions,
@@ -127,6 +127,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
 
     fn approval_keys(&self, req: &ShellRequest) -> Vec<Self::ApprovalKey> {
         vec![ApprovalKey {
+            environment_id: req.turn_environment.environment_id.clone(),
             command: canonicalize_command_for_approval(&req.command),
             cwd: req.cwd.clone(),
             sandbox_permissions: req.sandbox_permissions,
@@ -142,30 +143,15 @@ impl Approvable<ShellRequest> for ShellRuntime {
         let keys = self.approval_keys(req);
         let command = req.command.clone();
         let cwd = req.cwd.clone();
-        let retry_reason = ctx.retry_reason.clone();
-        let reason = retry_reason.clone().or_else(|| req.justification.clone());
+        let environment_id = Some(req.turn_environment.environment_id.clone());
+        let reason = ctx
+            .retry_reason
+            .clone()
+            .or_else(|| req.justification.clone());
         let session = ctx.session;
         let turn = ctx.turn;
         let call_id = ctx.call_id.to_string();
-        let guardian_review_id = ctx.guardian_review_id.clone();
         Box::pin(async move {
-            if let Some(review_id) = guardian_review_id {
-                return review_approval_request(
-                    session,
-                    turn,
-                    review_id,
-                    GuardianApprovalRequest::Shell {
-                        id: call_id,
-                        command,
-                        cwd: cwd.clone(),
-                        sandbox_permissions: req.sandbox_permissions,
-                        additional_permissions: req.additional_permissions.clone(),
-                        justification: req.justification.clone(),
-                    },
-                    retry_reason,
-                )
-                .await;
-            }
             with_cached_approval(&session.services, "shell", keys, move || async move {
                 let available_decisions = None;
                 session
@@ -173,6 +159,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                         turn,
                         call_id,
                         /*approval_id*/ None,
+                        environment_id,
                         command,
                         cwd,
                         reason,
@@ -186,6 +173,21 @@ impl Approvable<ShellRequest> for ShellRuntime {
                     .await
             })
             .await
+        })
+    }
+
+    fn approval_action(
+        &self,
+        req: &ShellRequest,
+        ctx: &ApprovalCtx<'_>,
+    ) -> std::io::Result<ApprovalAction> {
+        Ok(ApprovalAction::Shell {
+            id: ctx.call_id.to_string(),
+            command: req.command.clone(),
+            cwd: req.cwd.clone(),
+            sandbox_permissions: req.sandbox_permissions,
+            additional_permissions: req.additional_permissions.clone(),
+            justification: req.justification.clone(),
         })
     }
 
@@ -232,6 +234,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
                 tty: None,
             },
             command: req.hook_command.clone(),
+            environment_id: req.turn_environment.environment_id.clone(),
         })
     }
 
@@ -317,7 +320,12 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             capture_policy: ExecCapturePolicy::ShellTool,
         };
         let env = attempt
-            .env_for(command, options, managed_network)
+            .env_for(
+                command,
+                options,
+                managed_network,
+                Some(&req.turn_environment.environment_id),
+            )
             .map_err(ToolError::Codex)?;
         let out = execute_env(env, Self::stdout_stream(ctx))
             .await
@@ -325,3 +333,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+#[path = "shell_tests.rs"]
+mod tests;

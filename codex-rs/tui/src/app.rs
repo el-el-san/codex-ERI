@@ -51,6 +51,7 @@ use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::ConfigOverrides;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::legacy_core::config::edit::ConfigEditsBuilder;
+use crate::managed_new_thread_defaults::apply_managed_new_thread_defaults;
 use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
@@ -88,7 +89,6 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::ConfigBatchWriteParams;
-use codex_app_server_protocol::ConfigLayerSource;
 use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
@@ -113,7 +113,6 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallParams;
 use codex_app_server_protocol::PluginUninstallResponse;
-use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::SandboxMode as AppServerSandboxMode;
 use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
 use codex_app_server_protocol::ServerNotification;
@@ -796,7 +795,18 @@ impl App {
             None => app_server.bootstrap(&config).await?,
         };
         let bootstrap_ms = bootstrap.duration.as_millis();
-        let mut model = bootstrap.default_model;
+        if matches!(
+            &session_selection,
+            SessionSelection::StartFresh | SessionSelection::Exit
+        ) {
+            apply_managed_new_thread_defaults(
+                &mut config,
+                app_server.managed_new_thread_defaults(),
+                &cli_kv_overrides,
+                &harness_overrides,
+            );
+        }
+        let mut model = config.model.clone().unwrap_or(bootstrap.default_model);
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
             &app_server_target,
@@ -1116,9 +1126,16 @@ See the Codex keymap documentation for supported actions and examples."
         );
         app.refresh_startup_skills(&app_server);
         // Kick off a non-blocking rate-limit prefetch so the first `/status`
-        // already has data, without delaying the initial frame render.
+        // already has data and available reset credits can be surfaced, without
+        // delaying the initial frame render.
         if requires_openai_auth && has_chatgpt_account {
-            app.refresh_rate_limits(&app_server, RateLimitRefreshOrigin::StartupPrefetch);
+            let reset_hint_request_id = app.chat_widget.start_rate_limit_reset_startup_check();
+            app.refresh_rate_limits(
+                &app_server,
+                RateLimitRefreshOrigin::StartupPrefetch {
+                    reset_hint_request_id,
+                },
+            );
         }
 
         let mut listen_for_app_server_events = true;

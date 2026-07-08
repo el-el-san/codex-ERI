@@ -6,14 +6,17 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
 use codex_app_server_protocol::PluginInstallPolicy;
+use codex_app_server_protocol::PluginInstallPolicySource;
 use codex_app_server_protocol::PluginInterface;
 use codex_app_server_protocol::SkillInterface;
 use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
 use codex_plugin::AppConnectorId;
 use codex_plugin::AppDeclaration;
+use codex_plugin::PluginCapabilitySummary;
 use codex_plugin::PluginId;
 use codex_plugin::app_connector_ids_from_declarations;
+use codex_plugin::prompt_safe_plugin_description;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use reqwest::RequestBuilder;
 use serde::Deserialize;
@@ -27,6 +30,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing::instrument;
 use url::Url;
 
 mod catalog_cache;
@@ -79,7 +83,11 @@ const OPENAI_CURATED_REMOTE_COLLECTION_KEY: &str = "vertical";
 const OAI_PRODUCT_SKU_HEADER: &str = "OAI-Product-Sku";
 const CODEX_PRODUCT_SKU: &str = "codex";
 const REMOTE_PLUGIN_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
+const RECOMMENDED_PLUGINS_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_PLUGIN_LIST_PAGE_LIMIT: u32 = 200;
+const MAX_RECOMMENDED_PLUGINS: usize = 50;
+const MAX_RECOMMENDED_PLUGIN_NAME_LEN: usize = 64;
+const MAX_RECOMMENDED_PLUGIN_DISPLAY_NAME_LEN: usize = 64;
 const MAX_REMOTE_DEFAULT_PROMPT_COUNT: usize = 3;
 const MAX_REMOTE_DEFAULT_PROMPT_LEN: usize = 128;
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
@@ -115,6 +123,13 @@ pub struct RemotePluginServiceConfig {
     pub chatgpt_base_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePluginUninstallTarget {
+    pub plugin_id: PluginId,
+    pub remote_plugin_id: String,
+    pub fallback_capability_summary: PluginCapabilitySummary,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteMarketplace {
     pub name: String,
@@ -134,9 +149,11 @@ pub enum RemoteMarketplaceSource {
 pub struct RemoteInstalledPlugin {
     pub marketplace_name: String,
     pub id: String,
+    pub version: Option<String>,
     pub name: String,
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
+    pub install_policy_source: Option<PluginInstallPolicySource>,
     pub auth_policy: PluginAuthPolicy,
     pub availability: PluginAvailability,
     pub interface: Option<PluginInterface>,
@@ -147,11 +164,14 @@ pub struct RemoteInstalledPlugin {
 pub struct RemotePluginSummary {
     pub id: String,
     pub remote_plugin_id: String,
+    pub version: Option<String>,
+    pub local_version: Option<String>,
     pub name: String,
     pub share_context: Option<RemotePluginShareContext>,
     pub installed: bool,
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
+    pub install_policy_source: Option<PluginInstallPolicySource>,
     pub auth_policy: PluginAuthPolicy,
     pub availability: PluginAvailability,
     pub interface: Option<PluginInterface>,
@@ -235,6 +255,20 @@ pub struct RemoteDiscoverablePlugin {
     pub app_ids: Vec<String>,
     pub install_policy: PluginInstallPolicy,
     pub availability: PluginAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecommendedPlugin {
+    pub config_id: String,
+    pub remote_plugin_id: String,
+    pub display_name: String,
+    pub app_connector_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecommendedPluginsMode {
+    Legacy,
+    Endpoint { plugins: Vec<RecommendedPlugin> },
 }
 
 pub fn is_valid_remote_plugin_id(plugin_id: &str) -> bool {
@@ -444,6 +478,7 @@ struct RemotePluginReleaseInterfaceResponse {
     default_prompts: Option<Vec<String>>,
     composer_icon_url: Option<String>,
     logo_url: Option<String>,
+    logo_url_dark: Option<String>,
     #[serde(default)]
     screenshot_urls: Vec<String>,
 }
@@ -496,6 +531,26 @@ struct RemoteAppTemplateResponse {
     reason: Option<RemoteAppTemplateUnavailableReason>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+enum RemotePluginInstallPolicySource {
+    #[serde(rename = "WORKSPACE_SETTING")]
+    WorkspaceSetting,
+    #[serde(rename = "IMPLICIT_CANONICAL_APP")]
+    ImplicitCanonicalApp,
+    #[serde(other)]
+    Unknown,
+}
+
+impl RemotePluginInstallPolicySource {
+    fn into_protocol(self) -> Option<PluginInstallPolicySource> {
+        match self {
+            Self::WorkspaceSetting => Some(PluginInstallPolicySource::WorkspaceSetting),
+            Self::ImplicitCanonicalApp => Some(PluginInstallPolicySource::ImplicitCanonicalApp),
+            Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct RemotePluginDirectoryItem {
     id: String,
@@ -512,6 +567,7 @@ struct RemotePluginDirectoryItem {
     #[serde(default)]
     share_principals: Option<Vec<RemotePluginDirectorySharePrincipal>>,
     installation_policy: PluginInstallPolicy,
+    installation_policy_source: Option<RemotePluginInstallPolicySource>,
     authentication_policy: PluginAuthPolicy,
     #[serde(rename = "status", default)]
     availability: PluginAvailability,
@@ -566,6 +622,32 @@ struct RemotePluginInstalledItem {
 struct RemotePluginListResponse {
     plugins: Vec<RemotePluginDirectoryItem>,
     pagination: RemotePluginPagination,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RecommendedPluginsResponse {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    plugins: Vec<RecommendedPluginItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RecommendedPluginItem {
+    id: String,
+    name: String,
+    #[serde(default)]
+    status: Option<PluginAvailability>,
+    #[serde(default)]
+    installation_policy: Option<PluginInstallPolicy>,
+    release: RecommendedPluginRelease,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct RecommendedPluginRelease {
+    display_name: String,
+    #[serde(default)]
+    app_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -761,6 +843,87 @@ pub async fn fetch_and_cache_global_remote_plugin_catalog(
     Ok(())
 }
 
+#[instrument(level = "trace", skip_all)]
+pub async fn fetch_recommended_plugins(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+) -> Result<RecommendedPluginsMode, RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+    let base_url = config.chatgpt_base_url.trim_end_matches('/');
+    let url = format!("{base_url}/ps/plugins/suggested");
+    let client = build_reqwest_client();
+    let request = authenticated_request(client.get(&url), auth)?
+        .timeout(RECOMMENDED_PLUGINS_TIMEOUT)
+        .query(&[("scope", "GLOBAL")]);
+    let response: RecommendedPluginsResponse = send_and_decode(request, &url).await?;
+    Ok(recommended_plugins_mode(response))
+}
+
+fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> RecommendedPluginsMode {
+    if response.enabled != Some(true) {
+        return RecommendedPluginsMode::Legacy;
+    }
+
+    let mut plugins = BTreeMap::new();
+    for plugin in response.plugins {
+        if !is_valid_remote_plugin_id(&plugin.id)
+            || plugin.name.chars().count() > MAX_RECOMMENDED_PLUGIN_NAME_LEN
+            || plugin
+                .status
+                .is_some_and(|status| status != PluginAvailability::Available)
+            || plugin
+                .installation_policy
+                .is_some_and(|policy| policy != PluginInstallPolicy::Available)
+        {
+            continue;
+        }
+        let plugin_id = match PluginId::new(
+            plugin.name.clone(),
+            REMOTE_GLOBAL_MARKETPLACE_NAME.to_string(),
+        ) {
+            Ok(plugin_id) => plugin_id,
+            Err(err) => {
+                tracing::warn!(
+                    plugin_name = plugin.name,
+                    error = %err,
+                    "ignoring invalid recommended plugin"
+                );
+                continue;
+            }
+        };
+        let RecommendedPluginRelease {
+            display_name,
+            app_ids,
+        } = plugin.release;
+        let display_name = non_empty_string(Some(&display_name))
+            .unwrap_or_else(|| plugin.name.clone())
+            .chars()
+            .take(MAX_RECOMMENDED_PLUGIN_DISPLAY_NAME_LEN)
+            .collect();
+        let mut seen_app_ids = HashSet::new();
+        let app_connector_ids = app_ids
+            .into_iter()
+            .filter(|app_id| !app_id.is_empty() && seen_app_ids.insert(app_id.clone()))
+            .collect();
+        let config_id = plugin_id.as_key();
+        plugins
+            .entry(config_id.clone())
+            .or_insert(RecommendedPlugin {
+                config_id,
+                remote_plugin_id: plugin.id,
+                display_name,
+                app_connector_ids,
+            });
+    }
+
+    RecommendedPluginsMode::Endpoint {
+        plugins: plugins
+            .into_values()
+            .take(MAX_RECOMMENDED_PLUGINS)
+            .collect(),
+    }
+}
+
 pub fn has_cached_global_remote_plugin_catalog(
     codex_home: &Path,
     config: &RemotePluginServiceConfig,
@@ -904,11 +1067,14 @@ pub fn group_remote_installed_plugins_by_marketplaces(
         let plugin_summary = RemotePluginSummary {
             id: plugin_id.as_key(),
             remote_plugin_id: plugin.id.clone(),
+            version: plugin.version.clone(),
+            local_version: None,
             name: plugin.name.clone(),
             share_context: None,
             installed: true,
             enabled: plugin.enabled,
             install_policy: plugin.install_policy,
+            install_policy_source: plugin.install_policy_source,
             auth_policy: plugin.auth_policy,
             availability: plugin.availability,
             interface: plugin.interface.clone(),
@@ -1177,40 +1343,90 @@ pub async fn install_remote_plugin(
     })
 }
 
+pub async fn resolve_remote_plugin_uninstall_target(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    remote_plugin_id: &str,
+) -> Result<RemotePluginUninstallTarget, RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+    let plugin = fetch_plugin_detail(
+        config,
+        auth,
+        remote_plugin_id,
+        /*include_download_urls*/ false,
+    )
+    .await?;
+    let marketplace_name = remote_plugin_canonical_marketplace_name(&plugin)?.to_string();
+    let plugin_id = PluginId::new(plugin.name.clone(), marketplace_name).map_err(|err| {
+        RemotePluginCatalogError::UnexpectedResponse(format!(
+            "invalid local plugin id for remote plugin `{}`: {err}",
+            plugin.id
+        ))
+    })?;
+    let app_declarations = plugin
+        .release
+        .app_manifest
+        .as_ref()
+        .map(plugin_app_declarations_from_value)
+        .unwrap_or_else(|| app_declarations_from_remote_app_ids(&plugin.release.app_ids));
+    let mut mcp_server_names = plugin
+        .release
+        .mcp_servers
+        .iter()
+        .map(|server| server.key.clone())
+        .collect::<Vec<_>>();
+    mcp_server_names.sort_unstable();
+    mcp_server_names.dedup();
+    let fallback_capability_summary = PluginCapabilitySummary {
+        config_name: plugin_id.as_key(),
+        display_name: plugin.release.display_name,
+        description: prompt_safe_plugin_description(Some(&plugin.release.description)),
+        has_skills: !plugin.release.skills.is_empty(),
+        mcp_server_names,
+        app_connector_ids: app_connector_ids_from_declarations(&app_declarations),
+    };
+    Ok(RemotePluginUninstallTarget {
+        plugin_id,
+        remote_plugin_id: plugin.id,
+        fallback_capability_summary,
+    })
+}
+
 pub async fn uninstall_remote_plugin(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
     codex_home: PathBuf,
-    plugin_id: &str,
+    target: RemotePluginUninstallTarget,
 ) -> Result<(), RemotePluginCatalogError> {
     let auth = ensure_chatgpt_auth(auth)?;
-    let plugin = fetch_plugin_detail(
-        config, auth, plugin_id, /*include_download_urls*/ false,
-    )
-    .await?;
-    let marketplace_name = remote_plugin_canonical_marketplace_name(&plugin)?.to_string();
-    let plugin_name = plugin.name;
+    let RemotePluginUninstallTarget {
+        plugin_id,
+        remote_plugin_id,
+        fallback_capability_summary: _,
+    } = target;
+    let marketplace_name = plugin_id.marketplace_name.clone();
+    let plugin_name = plugin_id.plugin_name.clone();
 
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let url = format!("{base_url}/ps/plugins/{plugin_id}/uninstall");
+    let url = format!("{base_url}/ps/plugins/{remote_plugin_id}/uninstall");
     let client = build_reqwest_client();
     let request = authenticated_request(client.post(&url), auth)?;
     let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
-    if response.id != plugin_id {
+    if response.id != remote_plugin_id {
         return Err(RemotePluginCatalogError::UnexpectedPluginId {
-            expected: plugin_id.to_string(),
+            expected: remote_plugin_id,
             actual: response.id,
         });
     }
     if response.enabled {
         return Err(RemotePluginCatalogError::UnexpectedEnabledState {
-            plugin_id: plugin_id.to_string(),
+            plugin_id: response.id,
             expected_enabled: false,
             actual_enabled: response.enabled,
         });
     }
 
-    let legacy_plugin_id = plugin_id.to_string();
+    let legacy_plugin_id = response.id;
     tokio::task::spawn_blocking(move || {
         remove_remote_plugin_cache(codex_home, marketplace_name, plugin_name, legacy_plugin_id)
     })
@@ -1284,11 +1500,17 @@ fn build_remote_plugin_summary(
     Ok(RemotePluginSummary {
         id: plugin_id.as_key(),
         remote_plugin_id: plugin.id.clone(),
+        version: plugin.release.version.clone(),
+        local_version: installed_plugin
+            .and_then(|installed| installed.plugin.release.version.clone()),
         name: plugin.name.clone(),
         share_context: remote_plugin_share_context(plugin)?,
         installed: installed_plugin.is_some(),
         enabled: installed_plugin.is_some_and(|plugin| plugin.enabled),
         install_policy: plugin.installation_policy,
+        install_policy_source: plugin
+            .installation_policy_source
+            .and_then(RemotePluginInstallPolicySource::into_protocol),
         auth_policy: plugin.authentication_policy,
         availability: plugin.availability,
         interface: remote_plugin_interface_to_info(plugin),
@@ -1364,9 +1586,13 @@ fn remote_installed_plugin_to_cache_entry(
     Ok(RemoteInstalledPlugin {
         marketplace_name: remote_plugin_canonical_marketplace_name(plugin)?.to_string(),
         id: plugin.id.clone(),
+        version: plugin.release.version.clone(),
         name: plugin.name.clone(),
         enabled: installed_plugin.enabled,
         install_policy: plugin.installation_policy,
+        install_policy_source: plugin
+            .installation_policy_source
+            .and_then(RemotePluginInstallPolicySource::into_protocol),
         auth_policy: plugin.authentication_policy,
         availability: plugin.availability,
         interface: remote_plugin_interface_to_info(plugin),
@@ -1403,7 +1629,9 @@ fn remote_plugin_interface_to_info(plugin: &RemotePluginDirectoryItem) -> Option
         composer_icon: None,
         composer_icon_url: interface.composer_icon_url.clone(),
         logo: None,
+        logo_dark: None,
         logo_url: interface.logo_url.clone(),
+        logo_url_dark: interface.logo_url_dark.clone(),
         screenshots: Vec::new(),
         screenshot_urls: interface.screenshot_urls.clone(),
     };
@@ -1420,6 +1648,7 @@ fn remote_plugin_interface_to_info(plugin: &RemotePluginDirectoryItem) -> Option
         || result.brand_color.is_some()
         || result.composer_icon_url.is_some()
         || result.logo_url.is_some()
+        || result.logo_url_dark.is_some()
         || !result.screenshot_urls.is_empty();
     has_fields.then_some(result)
 }

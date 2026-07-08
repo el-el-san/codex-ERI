@@ -54,7 +54,7 @@ impl ChatWidget {
             self.app_event_tx.send(AppEvent::StopCommitAnimation);
         }
         if had_stream_controller {
-            self.request_completed_token_activity_output_insertion();
+            self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
     }
 
@@ -193,7 +193,7 @@ impl ChatWidget {
         if should_restore_after_stream {
             self.status_state.pending_status_indicator_restore = true;
             self.maybe_restore_status_indicator_after_stream_idle();
-            self.request_completed_token_activity_output_insertion();
+            self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
     }
 
@@ -202,6 +202,11 @@ impl ChatWidget {
         // current reasoning block and extract the first bold element
         // (between **/**) as the chunk header. Show this header as status.
         self.reasoning_buffer.push_str(&delta);
+
+        if self.safety_buffering_is_waiting() {
+            self.request_redraw();
+            return;
+        }
 
         if self.unified_exec_wait_streak.is_some() {
             // Unified exec waiting should take precedence over reasoning-derived status headers.
@@ -383,6 +388,7 @@ impl ChatWidget {
     pub(super) fn handle_streaming_delta(&mut self, delta: String) {
         if !delta.is_empty() {
             self.record_visible_turn_activity();
+            self.mark_safety_buffering_agent_message_started();
         }
         if self.stream_controller.is_none() {
             // Before starting an agent stream, flush any active exec cell group.

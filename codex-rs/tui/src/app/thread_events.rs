@@ -488,10 +488,11 @@ mod tests {
                 item_id: item_id.to_string(),
                 started_at_ms: 0,
                 approval_id: approval_id.map(str::to_string),
+                environment_id: None,
                 reason: Some("needs approval".to_string()),
                 network_approval_context: None,
                 command: Some("echo hello".to_string()),
-                cwd: Some(test_path_buf("/tmp/project").abs()),
+                cwd: Some(test_path_buf("/tmp/project").abs().into()),
                 command_actions: None,
                 additional_permissions: None,
                 proposed_execpolicy_amendment: None,
@@ -618,6 +619,7 @@ mod tests {
                 name: "sentry".to_string(),
                 status: codex_app_server_protocol::McpServerStartupState::Failed,
                 error: Some("sentry is not logged in".to_string()),
+                failure_reason: None,
             },
         );
         let mut store = ThreadEventStore::new(/*capacity*/ 8);

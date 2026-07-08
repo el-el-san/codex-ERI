@@ -11,13 +11,16 @@ use codex_tools::ToolExecutor;
 
 use crate::ExtensionData;
 
+mod context;
 mod mcp;
 mod prompt;
 mod thread_lifecycle;
 mod tool_lifecycle;
 mod turn_input;
 mod turn_lifecycle;
+mod world_state;
 
+pub use context::TurnContextContributionInput;
 pub use mcp::McpServerContribution;
 pub use mcp::McpServerContributionContext;
 pub use prompt::PromptFragment;
@@ -37,6 +40,10 @@ pub use turn_lifecycle::TurnAbortInput;
 pub use turn_lifecycle::TurnErrorInput;
 pub use turn_lifecycle::TurnStartInput;
 pub use turn_lifecycle::TurnStopInput;
+pub use world_state::PreviousWorldStateSection;
+pub use world_state::RenderedWorldStateFragment;
+pub use world_state::WorldStateContributionInput;
+pub use world_state::WorldStateSectionContribution;
 
 /// Boxed, sendable future returned by asynchronous extension contributors.
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -62,12 +69,45 @@ pub trait McpServerContributor<C: Sync>: Send + Sync {
 }
 
 /// Extension contribution that adds prompt fragments during prompt assembly.
+///
+/// Implementations should use the method matching the scope needed by the
+/// fragment: thread/session context for stable inputs, and turn context for
+/// fragments that depend on turn-local host state.
 pub trait ContextContributor: Send + Sync {
-    fn contribute<'a>(
+    fn contribute_thread_context<'a>(
         &'a self,
         session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
-    ) -> ExtensionFuture<'a, Vec<PromptFragment>>;
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+        Box::pin(async move {
+            let _self = self;
+            let _session_store = session_store;
+            let _thread_store = thread_store;
+            Vec::new()
+        })
+    }
+
+    fn contribute_turn_context<'a>(
+        &'a self,
+        input: TurnContextContributionInput<'a>,
+    ) -> ExtensionFuture<'a, Vec<PromptFragment>> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+            Vec::new()
+        })
+    }
+
+    fn contribute_world_state<'a>(
+        &'a self,
+        input: WorldStateContributionInput<'a>,
+    ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
+        Box::pin(async move {
+            let _self = self;
+            let _input = input;
+            Vec::new()
+        })
+    }
 }
 
 /// Contributor for host-owned thread lifecycle gates.

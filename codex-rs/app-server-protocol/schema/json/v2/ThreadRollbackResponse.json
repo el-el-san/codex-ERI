@@ -33,6 +33,7 @@
         {
           "enum": [
             "contextWindowExceeded",
+            "sessionBudgetExceeded",
             "usageLimitExceeded",
             "serverOverloaded",
             "cyberPolicy",
@@ -457,6 +458,50 @@
       ],
       "type": "string"
     },
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "McpToolCallAppContext": {
+      "properties": {
+        "actionName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "appName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "connectorId": {
+          "type": "string"
+        },
+        "linkId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resourceUri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "templateId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectorId"
+      ],
+      "type": "object"
+    },
     "McpToolCallError": {
       "properties": {
         "message": {
@@ -839,6 +884,7 @@
           "description": "Optional Git metadata captured when the thread was created."
         },
         "id": {
+          "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
         },
         "modelProvider": {
@@ -869,6 +915,14 @@
         "preview": {
           "description": "Usually the first user message in the thread, if available.",
           "type": "string"
+        },
+        "recencyAt": {
+          "description": "Unix timestamp (in seconds) used for thread recency ordering.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "sessionId": {
           "description": "Session id shared by threads that belong to the same session tree.",
@@ -934,6 +988,17 @@
       "enum": [
         "waitingOnApproval",
         "waitingOnUserInput"
+      ],
+      "type": "string"
+    },
+    "ThreadExtra": {
+      "description": "Extra app-server data for a thread.",
+      "type": "object"
+    },
+    "ThreadHistoryMode": {
+      "enum": [
+        "legacy",
+        "paginated"
       ],
       "type": "string"
     },
@@ -1130,7 +1195,7 @@
             "cwd": {
               "allOf": [
                 {
-                  "$ref": "#/definitions/AbsolutePathBuf"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 }
               ],
               "description": "The command's working directory."
@@ -1224,6 +1289,16 @@
         },
         {
           "properties": {
+            "appContext": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/McpToolCallAppContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "arguments": true,
             "durationMs": {
               "description": "The duration of the MCP tool call in milliseconds.",
@@ -1247,6 +1322,7 @@
               "type": "string"
             },
             "mcpAppResourceUri": {
+              "description": "Deprecated: use `appContext.resourceUri` instead.",
               "type": [
                 "string",
                 "null"
@@ -1512,7 +1588,7 @@
               "type": "string"
             },
             "path": {
-              "$ref": "#/definitions/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
               "enum": [
@@ -1778,6 +1854,7 @@
           "description": "Only populated when the Turn's status is failed."
         },
         "id": {
+          "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
           "type": "string"
         },
         "items": {

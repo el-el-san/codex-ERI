@@ -19,6 +19,7 @@ use super::ReadResourcePayload;
 use super::call_tool_result_from_content;
 use super::emit_tool_call_begin;
 use super::emit_tool_call_end;
+use super::ensure_model_can_access_mcp_server;
 use super::normalize_required_string;
 use super::parse_args;
 use super::parse_arguments;
@@ -51,11 +52,13 @@ impl ReadMcpResourceHandler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
-            turn,
+            step_context,
             call_id,
             payload,
             ..
         } = invocation;
+        let turn = std::sync::Arc::clone(&step_context.turn);
+        let manager = step_context.mcp.manager();
 
         let arguments = match payload {
             ToolPayload::Function { arguments } => arguments,
@@ -82,7 +85,8 @@ impl ReadMcpResourceHandler {
         let start = Instant::now();
 
         let payload_result: Result<ReadResourcePayload, FunctionCallError> = async {
-            let result = session
+            ensure_model_can_access_mcp_server(turn.as_ref(), &server)?;
+            let result = manager
                 .read_resource(&server, ReadResourceRequestParams::new(uri.clone()))
                 .await
                 .map_err(|err| {
@@ -96,9 +100,10 @@ impl ReadMcpResourceHandler {
             })
         }
         .await;
+        let truncation_policy = turn.model_info.truncation_policy.into();
 
         match payload_result {
-            Ok(payload) => match serialize_function_output(payload, turn.truncation_policy) {
+            Ok(payload) => match serialize_function_output(payload, truncation_policy) {
                 Ok(output) => {
                     let content = function_call_output_content_items_to_text(&output.body)
                         .unwrap_or_default();

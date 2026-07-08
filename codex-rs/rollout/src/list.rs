@@ -26,7 +26,9 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
+use serde_json::Value;
 
 /// Returned page of thread (thread) summaries.
 #[derive(Debug, Default, PartialEq)]
@@ -62,6 +64,8 @@ pub struct ThreadItem {
     pub git_origin_url: Option<String>,
     /// Session source from session metadata.
     pub source: Option<SessionSource>,
+    /// Persisted thread history contract selected when this thread was created.
+    pub history_mode: ThreadHistoryMode,
     /// Immediate control/spawn parent thread id from session metadata.
     pub parent_thread_id: Option<ThreadId>,
     /// Random unique nickname from session metadata for AgentControl-spawned sub-agents.
@@ -77,6 +81,8 @@ pub struct ThreadItem {
     pub created_at: Option<String>,
     /// RFC3339 timestamp string for the most recent update (from file mtime).
     pub updated_at: Option<String>,
+    /// RFC3339 timestamp string used for product recency ordering.
+    pub recency_at: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -97,6 +103,7 @@ struct HeadTailSummary {
     git_sha: Option<String>,
     git_origin_url: Option<String>,
     source: Option<SessionSource>,
+    history_mode: ThreadHistoryMode,
     parent_thread_id: Option<ThreadId>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
@@ -115,6 +122,7 @@ const USER_EVENT_SCAN_LIMIT: usize = 200;
 pub enum ThreadSortKey {
     CreatedAt,
     UpdatedAt,
+    RecencyAt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,19 +145,28 @@ pub struct ThreadListConfig<'a> {
     pub layout: ThreadListLayout,
 }
 
-/// Pagination cursor identifying the timestamp of the last item in a page.
+/// Pagination cursor identifying the last item in a page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cursor {
     ts: OffsetDateTime,
+    id: Option<ThreadId>,
 }
 
 impl Cursor {
-    fn new(ts: OffsetDateTime) -> Self {
-        Self { ts }
+    pub(crate) fn new(ts: OffsetDateTime) -> Self {
+        Self { ts, id: None }
+    }
+
+    pub(crate) fn with_thread_id(ts: OffsetDateTime, id: ThreadId) -> Self {
+        Self { ts, id: Some(id) }
     }
 
     pub(crate) fn timestamp(&self) -> OffsetDateTime {
         self.ts
+    }
+
+    pub(crate) fn thread_id(&self) -> Option<ThreadId> {
+        self.id
     }
 }
 
@@ -287,7 +304,10 @@ impl serde::Serialize for Cursor {
             .ts
             .format(&Rfc3339)
             .map_err(|e| serde::ser::Error::custom(format!("format error: {e}")))?;
-        serializer.serialize_str(&ts_str)
+        match self.id {
+            Some(id) => serializer.serialize_str(&format!("{ts_str}|{id}")),
+            None => serializer.serialize_str(&ts_str),
+        }
     }
 }
 
@@ -308,7 +328,7 @@ impl From<codex_state::Anchor> for Cursor {
             .timestamp_nanos_opt()
             .and_then(|nanos| OffsetDateTime::from_unix_timestamp_nanos(nanos as i128).ok())
             .unwrap_or(OffsetDateTime::UNIX_EPOCH);
-        Self::new(ts)
+        Self { ts, id: anchor.id }
     }
 }
 
@@ -419,7 +439,7 @@ async fn traverse_directories_for_paths(
             )
             .await
         }
-        ThreadSortKey::UpdatedAt => {
+        ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => {
             traverse_directories_for_paths_updated(
                 root,
                 page_size,
@@ -454,7 +474,7 @@ async fn traverse_flat_paths(
             )
             .await
         }
-        ThreadSortKey::UpdatedAt => {
+        ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => {
             traverse_flat_paths_updated(
                 root,
                 page_size,
@@ -702,35 +722,48 @@ async fn traverse_flat_paths_updated(
     })
 }
 
-/// Pagination cursor token format: an RFC3339 timestamp.
+/// Pagination cursor token format: an RFC3339 timestamp with an optional thread ID tie-breaker.
 pub fn parse_cursor(token: &str) -> Option<Cursor> {
-    if token.contains('|') {
-        return None;
-    }
+    let (timestamp, id) = match token.rsplit_once('|') {
+        Some((timestamp, id)) => (timestamp, Some(ThreadId::from_string(id).ok()?)),
+        None => (token, None),
+    };
 
-    let ts = OffsetDateTime::parse(token, &Rfc3339).ok().or_else(|| {
-        let format: &[FormatItem] =
-            format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
-        PrimitiveDateTime::parse(token, format)
-            .ok()
-            .map(PrimitiveDateTime::assume_utc)
-    })?;
+    let ts = OffsetDateTime::parse(timestamp, &Rfc3339)
+        .ok()
+        .or_else(|| {
+            let format: &[FormatItem] =
+                format_description!("[year]-[month]-[day]T[hour]-[minute]-[second]");
+            PrimitiveDateTime::parse(timestamp, format)
+                .ok()
+                .map(PrimitiveDateTime::assume_utc)
+        })?;
 
-    Some(Cursor::new(ts))
+    Some(Cursor { ts, id })
 }
 
 fn build_next_cursor(items: &[ThreadItem], sort_key: ThreadSortKey) -> Option<Cursor> {
     let last = items.last()?;
     let file_name = last.path.file_name()?.to_string_lossy();
-    let (created_ts, _id) = parse_timestamp_uuid_from_filename(&file_name)?;
+    let (created_ts, id) = parse_timestamp_uuid_from_filename(&file_name)?;
     let ts = match sort_key {
         ThreadSortKey::CreatedAt => created_ts,
         ThreadSortKey::UpdatedAt => {
             let updated_at = last.updated_at.as_deref()?;
             OffsetDateTime::parse(updated_at, &Rfc3339).ok()?
         }
+        ThreadSortKey::RecencyAt => {
+            let recency_at = last.recency_at.as_deref().or(last.updated_at.as_deref())?;
+            OffsetDateTime::parse(recency_at, &Rfc3339).ok()?
+        }
     };
-    Some(Cursor::new(ts))
+    match sort_key {
+        ThreadSortKey::RecencyAt => Some(Cursor::with_thread_id(
+            ts,
+            ThreadId::from_string(&id.to_string()).ok()?,
+        )),
+        ThreadSortKey::CreatedAt | ThreadSortKey::UpdatedAt => Some(Cursor::new(ts)),
+    }
 }
 
 async fn build_thread_item(
@@ -778,6 +811,7 @@ async fn build_thread_item(
             git_sha,
             git_origin_url,
             source,
+            history_mode,
             parent_thread_id,
             agent_nickname,
             agent_role,
@@ -800,12 +834,14 @@ async fn build_thread_item(
             git_sha,
             git_origin_url,
             source,
+            history_mode,
             parent_thread_id,
             agent_nickname,
             agent_role,
             model_provider,
             cli_version,
             created_at,
+            recency_at: summary_updated_at.clone(),
             updated_at: summary_updated_at,
         });
     }
@@ -1088,12 +1124,26 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
         lines_scanned += 1;
 
         let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
-        let Ok(rollout_line) = parsed else { continue };
+        let rollout_line = match parsed {
+            Ok(rollout_line) => rollout_line,
+            Err(_) => {
+                if !summary.saw_session_meta
+                    && let Ok(value) = serde_json::from_str::<Value>(trimmed)
+                {
+                    // The first SessionMeta belongs to this rollout. Later SessionMeta lines can
+                    // be copied from fork history, so only an unknown mode before the first parsed
+                    // SessionMeta should make this thread unreadable.
+                    crate::recorder::reject_unknown_thread_history_mode(&value)?;
+                }
+                continue;
+            }
+        };
 
         match rollout_line.item {
             RolloutItem::SessionMeta(session_meta_line) => {
                 if !summary.saw_session_meta {
                     summary.source = Some(session_meta_line.meta.source.clone());
+                    summary.history_mode = session_meta_line.meta.history_mode;
                     summary.parent_thread_id = session_meta_line.meta.parent_thread_id;
                     summary.agent_nickname = session_meta_line.meta.agent_nickname.clone();
                     summary.agent_role = session_meta_line.meta.agent_role.clone();
@@ -1122,7 +1172,11 @@ async fn read_head_summary(path: &Path, head_limit: usize) -> io::Result<HeadTai
                     .created_at
                     .get_or_insert_with(|| rollout_line.timestamp.clone());
             }
+            RolloutItem::InterAgentCommunicationMetadata { .. } => {}
             RolloutItem::TurnContext(_) => {
+                // Not included in `head`; skip.
+            }
+            RolloutItem::WorldState(_) => {
                 // Not included in `head`; skip.
             }
             RolloutItem::Compacted(_) => {
@@ -1184,8 +1238,10 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
                         head.push(value);
                     }
                 }
-                RolloutItem::Compacted(_)
+                RolloutItem::InterAgentCommunicationMetadata { .. }
+                | RolloutItem::Compacted(_)
                 | RolloutItem::TurnContext(_)
+                | RolloutItem::WorldState(_)
                 | RolloutItem::EventMsg(_) => {}
             }
         }

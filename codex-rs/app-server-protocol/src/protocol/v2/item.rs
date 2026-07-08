@@ -8,12 +8,17 @@ use super::NetworkPolicyAmendment;
 use super::RequestPermissionProfile;
 use super::UserInput;
 use super::shared::v2_enum_from_core;
+use crate::protocol::item_builders::command_actions_for_path_uri;
 use crate::protocol::item_builders::convert_patch_changes;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
 use codex_protocol::approvals::GuardianCommandSource as CoreGuardianCommandSource;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
+use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
+use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
@@ -30,7 +35,9 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -256,7 +263,7 @@ pub enum ThreadItem {
         /// The command to be executed.
         command: String,
         /// The command's working directory.
-        cwd: AbsolutePathBuf,
+        cwd: LegacyAppPathString,
         /// Identifier for the underlying PTY process (when available).
         process_id: Option<String>,
         #[serde(default)]
@@ -289,8 +296,10 @@ pub enum ThreadItem {
         tool: String,
         status: McpToolCallStatus,
         arguments: JsonValue,
+        app_context: Option<McpToolCallAppContext>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
+        /// Deprecated: use `appContext.resourceUri` instead.
         mcp_app_resource_uri: Option<String>,
         plugin_id: Option<String>,
         result: Option<Box<McpToolCallResult>>,
@@ -353,7 +362,10 @@ pub enum ThreadItem {
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
-    ImageView { id: String, path: AbsolutePathBuf },
+    ImageView {
+        id: String,
+        path: LegacyAppPathString,
+    },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     Sleep {
@@ -381,6 +393,18 @@ pub enum ThreadItem {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     ContextCompaction { id: String },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub struct McpToolCallAppContext {
+    pub connector_id: String,
+    pub link_id: Option<String>,
+    pub resource_uri: Option<String>,
+    pub app_name: Option<String>,
+    pub template_id: Option<String>,
+    pub action_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -836,6 +860,64 @@ impl From<CoreTurnItem> for ThreadItem {
                 summary: reasoning.summary_text,
                 content: reasoning.raw_content,
             },
+            CoreTurnItem::CommandExecution(command) => ThreadItem::CommandExecution {
+                id: command.id,
+                command: shlex_join(&command.command),
+                cwd: command.cwd.clone().into(),
+                process_id: command.process_id,
+                source: command.source.into(),
+                status: command.status.into(),
+                command_actions: command_actions_for_path_uri(&command.parsed_cmd, &command.cwd),
+                aggregated_output: command
+                    .aggregated_output
+                    .filter(|output| !output.is_empty()),
+                exit_code: command.exit_code,
+                duration_ms: command
+                    .duration
+                    .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
+            },
+            CoreTurnItem::DynamicToolCall(call) => ThreadItem::DynamicToolCall {
+                id: call.id,
+                namespace: call.namespace,
+                tool: call.tool,
+                arguments: call.arguments,
+                status: call.status.into(),
+                content_items: call.content_items.map(|items| {
+                    items
+                        .into_iter()
+                        .map(DynamicToolCallOutputContentItem::from)
+                        .collect()
+                }),
+                success: call.success,
+                duration_ms: call
+                    .duration
+                    .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
+            },
+            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
+                id: call.id,
+                tool: call.tool.into(),
+                status: call.status.into(),
+                sender_thread_id: call.sender_thread_id.to_string(),
+                receiver_thread_ids: call
+                    .receiver_thread_ids
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                prompt: call.prompt,
+                model: call.model,
+                reasoning_effort: call.reasoning_effort,
+                agents_states: call
+                    .agents_states
+                    .into_iter()
+                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
+                    .collect(),
+            },
+            CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
+                id: activity.id,
+                kind: activity.kind.into(),
+                agent_thread_id: activity.agent_thread_id.to_string(),
+                agent_path: String::from(activity.agent_path),
+            },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch {
                 id: search.id,
                 query: search.query,
@@ -843,7 +925,7 @@ impl From<CoreTurnItem> for ThreadItem {
             },
             CoreTurnItem::ImageView(image) => ThreadItem::ImageView {
                 id: image.id,
-                path: image.path,
+                path: image.path.into(),
             },
             CoreTurnItem::Sleep(sleep) => ThreadItem::Sleep {
                 id: sleep.id,
@@ -876,6 +958,14 @@ impl From<CoreTurnItem> for ThreadItem {
                     tool: mcp.tool,
                     status: McpToolCallStatus::from(mcp.status),
                     arguments: mcp.arguments,
+                    app_context: mcp.connector_id.map(|connector_id| McpToolCallAppContext {
+                        connector_id,
+                        link_id: mcp.link_id,
+                        resource_uri: mcp.mcp_app_resource_uri.clone(),
+                        app_name: mcp.app_name,
+                        template_id: mcp.template_id,
+                        action_name: mcp.action_name,
+                    }),
                     mcp_app_resource_uri: mcp.mcp_app_resource_uri,
                     plugin_id: mcp.plugin_id,
                     result: mcp.result.map(McpToolCallResult::from).map(Box::new),
@@ -912,6 +1002,17 @@ pub enum CommandExecutionStatus {
 impl From<CoreExecCommandStatus> for CommandExecutionStatus {
     fn from(value: CoreExecCommandStatus) -> Self {
         Self::from(&value)
+    }
+}
+
+impl From<CoreCommandExecutionStatus> for CommandExecutionStatus {
+    fn from(value: CoreCommandExecutionStatus) -> Self {
+        match value {
+            CoreCommandExecutionStatus::InProgress => Self::InProgress,
+            CoreCommandExecutionStatus::Completed => Self::Completed,
+            CoreCommandExecutionStatus::Failed => Self::Failed,
+            CoreCommandExecutionStatus::Declined => Self::Declined,
+        }
     }
 }
 
@@ -1002,6 +1103,16 @@ impl From<CoreMcpToolCallStatus> for McpToolCallStatus {
     }
 }
 
+impl From<CoreDynamicToolCallStatus> for DynamicToolCallStatus {
+    fn from(value: CoreDynamicToolCallStatus) -> Self {
+        match value {
+            CoreDynamicToolCallStatus::InProgress => Self::InProgress,
+            CoreDynamicToolCallStatus::Completed => Self::Completed,
+            CoreDynamicToolCallStatus::Failed => Self::Failed,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1027,6 +1138,28 @@ pub enum CollabAgentToolCallStatus {
     InProgress,
     Completed,
     Failed,
+}
+
+impl From<CoreCollabAgentTool> for CollabAgentTool {
+    fn from(value: CoreCollabAgentTool) -> Self {
+        match value {
+            CoreCollabAgentTool::SpawnAgent => Self::SpawnAgent,
+            CoreCollabAgentTool::SendInput => Self::SendInput,
+            CoreCollabAgentTool::ResumeAgent => Self::ResumeAgent,
+            CoreCollabAgentTool::Wait => Self::Wait,
+            CoreCollabAgentTool::CloseAgent => Self::CloseAgent,
+        }
+    }
+}
+
+impl From<CoreCollabAgentToolCallStatus> for CollabAgentToolCallStatus {
+    fn from(value: CoreCollabAgentToolCallStatus) -> Self {
+        match value {
+            CoreCollabAgentToolCallStatus::InProgress => Self::InProgress,
+            CoreCollabAgentToolCallStatus::Completed => Self::Completed,
+            CoreCollabAgentToolCallStatus::Failed => Self::Failed,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -1321,6 +1454,9 @@ pub struct CommandExecutionRequestApprovalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub approval_id: Option<String>,
+    /// Environment in which the command will run.
+    #[serde(default)]
+    pub environment_id: Option<String>,
     /// Optional explanatory reason (e.g. request for network access).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -1336,7 +1472,7 @@ pub struct CommandExecutionRequestApprovalParams {
     /// The command's working directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
-    pub cwd: Option<AbsolutePathBuf>,
+    pub cwd: Option<LegacyAppPathString>,
     /// Best-effort parsed command actions for friendly display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -1431,6 +1567,21 @@ pub enum DynamicToolCallOutputContentItem {
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
     InputImage { image_url: String },
+}
+
+impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
+    for DynamicToolCallOutputContentItem
+{
+    fn from(item: codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem) -> Self {
+        match item {
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text } => {
+                Self::InputText { text }
+            }
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
+                image_url,
+            } => Self::InputImage { image_url },
+        }
+    }
 }
 
 impl From<DynamicToolCallOutputContentItem>

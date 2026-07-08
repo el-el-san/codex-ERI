@@ -608,7 +608,7 @@ fn spawn_app_server_page_loader(
 fn sort_key_label(sort_key: ThreadSortKey) -> &'static str {
     match sort_key {
         ThreadSortKey::CreatedAt => "Created",
-        ThreadSortKey::UpdatedAt => "Updated",
+        ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => "Updated",
     }
 }
 
@@ -1614,7 +1614,7 @@ impl PickerState {
     fn toggle_sort_key(&mut self) {
         self.sort_key = match self.sort_key {
             ThreadSortKey::CreatedAt => ThreadSortKey::UpdatedAt,
-            ThreadSortKey::UpdatedAt => ThreadSortKey::CreatedAt,
+            ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => ThreadSortKey::CreatedAt,
         };
         self.start_initial_load();
     }
@@ -1822,6 +1822,7 @@ fn thread_list_params(
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         archived: Some(false),
         parent_thread_id: None,
+        ancestor_thread_id: None,
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
         use_state_db_only: false,
         search_term: None,
@@ -2613,7 +2614,7 @@ fn render_dense_session_lines(
     let updated = format_relative_time(reference, row.updated_at.or(row.created_at));
     let date = match state.sort_key {
         ThreadSortKey::CreatedAt => created,
-        ThreadSortKey::UpdatedAt => updated,
+        ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => updated,
     };
     let mut lines = vec![dense_summary_line(DenseSummaryInput {
         marker,
@@ -2742,7 +2743,7 @@ fn render_footer_lines(
 ) -> Vec<Line<'static>> {
     let date = match sort_key {
         ThreadSortKey::CreatedAt => created,
-        ThreadSortKey::UpdatedAt => updated,
+        ThreadSortKey::UpdatedAt | ThreadSortKey::RecencyAt => updated,
     };
     let mut parts = vec![FooterPart::Date(date.to_string())];
     if show_cwd {
@@ -5720,14 +5721,17 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            extra: None,
             session_id: thread_id.to_string(),
             forked_from_id: None,
             parent_thread_id: None,
             preview: String::from("remote thread"),
             ephemeral: false,
+            history_mode: Default::default(),
             model_provider: String::from("openai"),
             created_at: 1,
             updated_at: 2,
+            recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp").abs(),
@@ -5755,14 +5759,17 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            extra: None,
             session_id: thread_id.to_string(),
             forked_from_id: None,
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            history_mode: Default::default(),
             model_provider: String::from("openai"),
             created_at: 1,
             updated_at: 2,
+            recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp").abs(),
@@ -5824,14 +5831,17 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            extra: None,
             session_id: thread_id.to_string(),
             forked_from_id: None,
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            history_mode: Default::default(),
             model_provider: String::from("openai"),
             created_at: 1,
             updated_at: 2,
+            recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp").abs(),
@@ -5882,14 +5892,17 @@ session_picker_view = "dense"
         let thread_id = ThreadId::new();
         let thread = Thread {
             id: thread_id.to_string(),
+            extra: None,
             session_id: thread_id.to_string(),
             forked_from_id: None,
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            history_mode: Default::default(),
             model_provider: String::from("openai"),
             created_at: 1,
             updated_at: 2,
+            recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp").abs(),

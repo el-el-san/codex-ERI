@@ -5,6 +5,9 @@
 
 use super::*;
 
+const SAFETY_ACCESS_BLOCK_PREFIX: &str =
+    "Invalid prompt: we've limited access to this content for safety reasons.";
+
 impl ChatWidget {
     /// Synchronize the bottom-pane "task running" indicator with the current lifecycles.
     ///
@@ -48,11 +51,12 @@ impl ChatWidget {
 
     pub(super) fn on_task_started(&mut self) {
         self.input_queue.user_turn_pending_start = false;
+        self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
         self.transcript.reset_turn_flags();
         self.adaptive_chunking.reset();
         if self.plan_stream_controller.take().is_some() {
-            self.request_completed_token_activity_output_insertion();
+            self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
         self.turn_runtime_metrics = RuntimeMetricsSummary::default();
         self.session_telemetry.reset_runtime_metrics();
@@ -128,7 +132,7 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::ConsolidateProposedPlan(source));
             }
-            self.request_completed_token_activity_output_insertion();
+            self.request_pending_usage_output_insertion_after_stream_shutdown();
         }
         self.flush_unified_exec_wait_streak();
         if !from_replay {
@@ -166,6 +170,7 @@ impl ChatWidget {
         self.input_queue.user_turn_pending_start = false;
         self.clear_active_hook_cell();
         self.turn_lifecycle.finish();
+        self.clear_safety_buffering();
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -297,6 +302,7 @@ impl ChatWidget {
     /// This does not clear MCP startup tracking, because MCP startup can overlap with turn cleanup
     /// and should continue to drive the bottom-pane running indicator while it is in progress.
     pub(super) fn finalize_turn(&mut self) {
+        self.clear_safety_buffering();
         // Drop preview-only stream tail content on any termination path before
         // failed-cell finalization, so transient tail cells are never persisted.
         self.clear_active_stream_tail();
@@ -317,7 +323,7 @@ impl ChatWidget {
         self.adaptive_chunking.reset();
         self.stream_controller = None;
         self.plan_stream_controller = None;
-        self.request_completed_token_activity_output_insertion();
+        self.request_pending_usage_output_insertion_after_stream_shutdown();
         self.status_state.pending_status_indicator_restore = false;
         self.clear_cancel_edit();
         self.request_status_line_branch_refresh();
@@ -366,8 +372,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_rate_limit_error(&mut self, error_kind: RateLimitErrorKind, message: String) {
+        let usage_limit_error = matches!(error_kind, RateLimitErrorKind::UsageLimit);
         let rate_limit_reached_type = self.codex_rate_limit_reached_type.map(|kind| {
-            if matches!(error_kind, RateLimitErrorKind::UsageLimit) {
+            if usage_limit_error {
                 match kind {
                     RateLimitReachedType::WorkspaceOwnerCreditsDepleted => {
                         RateLimitReachedType::WorkspaceOwnerUsageLimitReached
@@ -382,7 +389,6 @@ impl ChatWidget {
             }
         });
         self.codex_rate_limit_reached_type = rate_limit_reached_type;
-
         match rate_limit_reached_type {
             Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => {
                 self.on_error(
@@ -424,6 +430,18 @@ impl ChatWidget {
             .is_some_and(is_app_server_cyber_policy_error)
         {
             self.on_cyber_policy_error();
+        } else if message.starts_with(SAFETY_ACCESS_BLOCK_PREFIX)
+            || serde_json::from_str::<serde_json::Value>(&message).is_ok_and(|response| {
+                response["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with(SAFETY_ACCESS_BLOCK_PREFIX))
+            })
+        {
+            self.input_queue.submit_pending_steers_after_interrupt = false;
+            self.finalize_turn();
+            self.add_to_history(history_cell::new_safety_access_block_event());
+            self.request_redraw();
+            self.maybe_send_next_queued_input();
         } else if let Some(info) = codex_error_info
             .as_ref()
             .and_then(app_server_rate_limit_error_kind)

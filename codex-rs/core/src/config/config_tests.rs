@@ -4,7 +4,12 @@ use crate::config::edit::apply_blocking;
 use assert_matches::assert_matches;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
+use codex_config::McpServerCommandMatcher;
+use codex_config::McpServerIdentity;
+use codex_config::McpServerRequirement;
+use codex_config::McpServerValueMatcher;
 use codex_config::ProfileV2Name;
 use codex_config::RequirementSource;
 use codex_config::Sourced;
@@ -14,7 +19,6 @@ use codex_config::config_toml::AutoReviewToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::ExperimentalRequestUserInput;
 use codex_config::config_toml::ProjectConfig;
-use codex_config::config_toml::RealtimeArchitecture;
 use codex_config::config_toml::RealtimeConfig;
 use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
@@ -90,6 +94,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
 use tempfile::tempdir;
 
@@ -112,10 +117,15 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 fn stdio_mcp(command: &str) -> McpServerConfig {
+    stdio_mcp_with_args(command, &[])
+}
+
+fn stdio_mcp_with_args(command: &str, args: &[&str]) -> McpServerConfig {
     McpServerConfig {
+        auth: Default::default(),
         transport: McpServerTransportConfig::Stdio {
             command: command.to_string(),
-            args: Vec::new(),
+            args: args.iter().map(ToString::to_string).collect(),
             env: None,
             env_vars: Vec::new(),
             cwd: None,
@@ -139,6 +149,7 @@ fn stdio_mcp(command: &str) -> McpServerConfig {
 
 fn http_mcp(url: &str) -> McpServerConfig {
     McpServerConfig {
+        auth: Default::default(),
         transport: McpServerTransportConfig::StreamableHttp {
             url: url.to_string(),
             bearer_token_env_var: None,
@@ -438,6 +449,7 @@ async fn load_config_resolves_code_mode_config() -> std::io::Result<()> {
 [features.code_mode]
 enabled = true
 excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
+direct_only_tool_namespaces = ["mcp__history", "mcp__notes"]
 "#,
     )
     .expect("TOML deserialization should succeed");
@@ -452,8 +464,204 @@ excluded_tool_namespaces = ["mcp__codex_apps", "multi_agent_v1"]
         config.code_mode.excluded_tool_namespaces,
         vec!["mcp__codex_apps".to_string(), "multi_agent_v1".to_string()]
     );
+    assert_eq!(
+        config.code_mode.direct_only_tool_namespaces,
+        vec!["mcp__history".to_string(), "mcp__notes".to_string()]
+    );
     assert!(config.features.enabled(Feature::CodeMode));
     Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_token_budget_config() -> std::io::Result<()> {
+    for (config_toml, expected) in [
+        (
+            "[features]\ntoken_budget = true\n",
+            TokenBudgetConfig::default(),
+        ),
+        (
+            r#"
+[features.token_budget]
+enabled = true
+reminder_threshold_tokens = 16000
+reminder_message_template = "Custom reminder: {n_remaining} tokens."
+guidance_message = "Preserve important state before compaction."
+"#,
+            TokenBudgetConfig {
+                reminder_threshold_tokens: Some(16_000),
+                reminder_message_template: "Custom reminder: {n_remaining} tokens.".to_string(),
+                guidance_message: Some("Preserve important state before compaction.".to_string()),
+            },
+        ),
+    ] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(config_toml).expect("TOML should deserialize");
+        let config = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+
+        assert!(config.features.enabled(Feature::TokenBudget));
+        assert_eq!(config.token_budget, Some(expected));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_invalid_token_budget_reminder_template() -> std::io::Result<()> {
+    for reminder_message_template in [
+        String::new(),
+        "x".repeat(TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES + 1),
+    ] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(&format!(
+            "[features.token_budget]\nenabled = true\nreminder_message_template = {reminder_message_template:?}\n"
+        ))
+        .expect("TOML should deserialize");
+        let error = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("invalid reminder template should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_non_positive_token_budget_reminder_threshold() -> std::io::Result<()> {
+    for reminder_threshold_tokens in [-1, 0] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(&format!(
+            "[features.token_budget]\nenabled = true\nreminder_threshold_tokens = {reminder_threshold_tokens}\n"
+        ))
+        .expect("TOML should deserialize");
+        let error = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("non-positive reminder threshold should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "features.token_budget.reminder_threshold_tokens must be positive"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_rollout_budget() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml: ConfigToml = toml::from_str(
+        r#"
+[features.rollout_budget]
+enabled = true
+limit_tokens = 100000
+reminder_at_remaining_tokens = [50000, 25000, 10000]
+sampling_token_weight = 1.0
+prefill_token_weight = 0.1
+"#,
+    )
+    .expect("TOML deserialization should succeed");
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.features.enabled(Feature::RolloutBudget));
+    assert!(!config.features.enabled(Feature::TokenBudget));
+    assert_eq!(
+        config.rollout_budget,
+        Some(RolloutBudgetConfig {
+            limit_tokens: 100_000,
+            reminder_at_remaining_tokens: vec![50_000, 25_000, 10_000],
+            sampling_token_weight: 1.0,
+            prefill_token_weight: 0.1,
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_enabled_rollout_budget_without_limit() -> std::io::Result<()> {
+    for config_toml in [
+        "[features]\nrollout_budget = true\n",
+        "[features.rollout_budget]\nenabled = true\n",
+    ] {
+        let codex_home = tempdir()?;
+        let config_toml: ConfigToml =
+            toml::from_str(config_toml).expect("TOML deserialization should succeed");
+        let err = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("enabled rollout budget without limit_tokens should be rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            err.to_string(),
+            "features.rollout_budget.limit_tokens is required when rollout_budget is enabled"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_resolves_current_time_reminder() -> std::io::Result<()> {
+    for (config_toml, expected) in [
+        (
+            r#"
+[features]
+current_time_reminder = true
+"#,
+            CurrentTimeReminderConfig::default(),
+        ),
+        (
+            r#"
+[features.current_time_reminder]
+enabled = true
+reminder_interval_seconds = 0
+clock_source = "external"
+delivery_mode = "after_user_or_tool_output"
+sleep_tool = true
+"#,
+            CurrentTimeReminderConfig {
+                reminder_interval_seconds: 0,
+                clock_source: CurrentTimeSource::External,
+                delivery_mode: CurrentTimeReminderDeliveryMode::AfterUserOrToolOutput,
+                sleep_tool: true,
+            },
+        ),
+    ] {
+        let config = load_current_time_reminder_config(config_toml).await?;
+        assert!(config.features.enabled(Feature::CurrentTimeReminder));
+        assert_eq!(config.current_time_reminder, Some(expected));
+    }
+    Ok(())
+}
+
+async fn load_current_time_reminder_config(config_toml: &str) -> std::io::Result<Config> {
+    let codex_home = tempdir()?;
+    let config_toml = toml::from_str(config_toml).expect("TOML should deserialize");
+    Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
 }
 
 #[test]
@@ -1358,6 +1566,96 @@ sandbox = "elevated"
         .expect("network_proxy should start the managed network proxy");
     assert_eq!(network.proxy_host_and_port(), "127.0.0.1:3128");
     assert!(!network.socks_enabled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn respect_system_proxy_feature_resolves_enabled() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            features: Some(
+                toml::from_str(
+                    r#"
+respect_system_proxy = true
+"#,
+                )
+                .expect("valid features"),
+            ),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert!(config.respect_system_proxy);
+    assert_eq!(
+        config.http_client_factory().outbound_proxy_policy(),
+        codex_http_client::OutboundProxyPolicy::RespectSystemProxy
+    );
+    Ok(())
+}
+
+#[test]
+fn bootstrap_respect_system_proxy_honors_feature_requirements() -> std::io::Result<()> {
+    let configured = ConfigToml {
+        features: Some(
+            toml::from_str(
+                r#"
+respect_system_proxy = true
+"#,
+            )
+            .expect("valid features"),
+        ),
+        ..Default::default()
+    };
+    let disabled = Sourced::new(
+        FeatureRequirementsToml {
+            entries: BTreeMap::from([("respect_system_proxy".to_string(), false)]),
+        },
+        RequirementSource::Unknown,
+    );
+    assert!(!resolve_bootstrap_respect_system_proxy(
+        &configured,
+        Some(&disabled)
+    )?);
+
+    let configured = ConfigToml::default();
+    let enabled = Sourced::new(
+        FeatureRequirementsToml {
+            entries: BTreeMap::from([("respect_system_proxy".to_string(), true)]),
+        },
+        RequirementSource::Unknown,
+    );
+    assert!(resolve_bootstrap_respect_system_proxy(
+        &configured,
+        Some(&enabled)
+    )?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn respect_system_proxy_cli_override_enables_feature() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"
+[features]
+respect_system_proxy = false
+"#,
+    )?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(vec![(
+            "features.respect_system_proxy".to_string(),
+            toml::Value::Boolean(true),
+        )])
+        .build()
+        .await?;
+
+    assert!(config.respect_system_proxy);
     Ok(())
 }
 
@@ -2896,9 +3194,10 @@ async fn permissions_profiles_allow_direct_write_roots_outside_workspace_root()
 
     assert_eq!(
         config.custom_permission_profiles,
-        vec![CustomPermissionProfileSummary {
+        vec![PermissionProfileCatalogEntry {
             id: "dev".to_string(),
             description: Some("Workspace access.".to_string()),
+            allowed: true,
         }]
     );
     assert!(
@@ -3841,7 +4140,7 @@ fn filter_mcp_servers_by_allowlist_enforces_identity_rules() {
         BTreeMap::from([
             (
                 MISMATCHED_URL_SERVER.to_string(),
-                McpServerRequirement {
+                McpServerRequirement::Identity {
                     identity: McpServerIdentity::Url {
                         url: "https://example.com/other".to_string(),
                     },
@@ -3849,7 +4148,7 @@ fn filter_mcp_servers_by_allowlist_enforces_identity_rules() {
             ),
             (
                 MISMATCHED_COMMAND_SERVER.to_string(),
-                McpServerRequirement {
+                McpServerRequirement::Identity {
                     identity: McpServerIdentity::Command {
                         command: "other-cmd".to_string(),
                     },
@@ -3857,7 +4156,7 @@ fn filter_mcp_servers_by_allowlist_enforces_identity_rules() {
             ),
             (
                 MATCHED_URL_SERVER.to_string(),
-                McpServerRequirement {
+                McpServerRequirement::Identity {
                     identity: McpServerIdentity::Url {
                         url: GOOD_URL.to_string(),
                     },
@@ -3865,7 +4164,7 @@ fn filter_mcp_servers_by_allowlist_enforces_identity_rules() {
             ),
             (
                 MATCHED_COMMAND_SERVER.to_string(),
-                McpServerRequirement {
+                McpServerRequirement::Identity {
                     identity: McpServerIdentity::Command {
                         command: GOOD_CMD.to_string(),
                     },
@@ -3923,6 +4222,117 @@ fn filter_mcp_servers_by_allowlist_allows_all_when_unset() {
 }
 
 #[test]
+fn filter_mcp_servers_by_matchers_enforces_command_and_positional_args() {
+    let mut servers = HashMap::from([
+        (
+            "internal_mcp_proxy".to_string(),
+            stdio_mcp_with_args(
+                "company-cli",
+                &[
+                    "mcp",
+                    "proxy",
+                    "--server",
+                    "https://pricing.mcp.internal.example.com",
+                ],
+            ),
+        ),
+        (
+            "unlisted".to_string(),
+            stdio_mcp_with_args(
+                "company-cli",
+                &[
+                    "mcp",
+                    "proxy",
+                    "--server",
+                    "https://pricing.mcp.internal.example.com",
+                ],
+            ),
+        ),
+        (
+            "wrong-order".to_string(),
+            stdio_mcp_with_args(
+                "company-cli",
+                &[
+                    "proxy",
+                    "mcp",
+                    "--server",
+                    "https://pricing.mcp.internal.example.com",
+                ],
+            ),
+        ),
+        (
+            "trailing-arg".to_string(),
+            stdio_mcp_with_args(
+                "company-cli",
+                &[
+                    "mcp",
+                    "proxy",
+                    "--server",
+                    "https://pricing.mcp.internal.example.com",
+                    "--verbose",
+                ],
+            ),
+        ),
+        (
+            "wrong-host".to_string(),
+            stdio_mcp_with_args(
+                "company-cli",
+                &["mcp", "proxy", "--server", "https://mcp.example.com"],
+            ),
+        ),
+    ]);
+    let source = RequirementSource::LegacyManagedConfigTomlFromMdm;
+    let requirement = McpServerRequirement::Command(McpServerCommandMatcher {
+        executable: "company-cli".to_string(),
+        args: vec![
+            McpServerValueMatcher::Exact {
+                value: "mcp".to_string(),
+            },
+            McpServerValueMatcher::Exact {
+                value: "proxy".to_string(),
+            },
+            McpServerValueMatcher::Exact {
+                value: "--server".to_string(),
+            },
+            McpServerValueMatcher::Regex {
+                expression:
+                    r"^https://[A-Za-z0-9-]+\.mcp\.internal\.example\.com(?::443)?(?:/.*)?$"
+                        .to_string(),
+            },
+        ],
+    });
+    let requirements = Sourced::new(
+        BTreeMap::from([
+            ("internal_mcp_proxy".to_string(), requirement.clone()),
+            ("wrong-order".to_string(), requirement.clone()),
+            ("trailing-arg".to_string(), requirement.clone()),
+            ("wrong-host".to_string(), requirement),
+        ]),
+        source.clone(),
+    );
+
+    filter_mcp_servers_by_requirements(&mut servers, Some(&requirements));
+
+    let reason = Some(McpServerDisabledReason::Requirements { source });
+    assert_eq!(
+        servers
+            .iter()
+            .map(|(name, server)| (
+                name.clone(),
+                (server.enabled, server.disabled_reason.clone())
+            ))
+            .collect::<HashMap<String, (bool, Option<McpServerDisabledReason>)>>(),
+        HashMap::from([
+            ("internal_mcp_proxy".to_string(), (true, None)),
+            ("unlisted".to_string(), (false, reason.clone())),
+            ("wrong-order".to_string(), (false, reason.clone())),
+            ("trailing-arg".to_string(), (false, reason.clone())),
+            ("wrong-host".to_string(), (false, reason)),
+        ])
+    );
+}
+
+#[test]
 fn filter_mcp_servers_by_allowlist_blocks_all_when_empty() {
     let mut servers = HashMap::from([
         ("server-a".to_string(), stdio_mcp("cmd-a")),
@@ -3972,7 +4382,7 @@ fn filter_plugin_mcp_servers_by_allowlist_enforces_plugin_and_identity_rules() {
                 mcp_servers: Some(BTreeMap::from([
                     (
                         MATCHED_SERVER.to_string(),
-                        McpServerRequirement {
+                        McpServerRequirement::Identity {
                             identity: McpServerIdentity::Command {
                                 command: GOOD_CMD.to_string(),
                             },
@@ -3980,7 +4390,7 @@ fn filter_plugin_mcp_servers_by_allowlist_enforces_plugin_and_identity_rules() {
                     ),
                     (
                         MISMATCHED_SERVER.to_string(),
-                        McpServerRequirement {
+                        McpServerRequirement::Identity {
                             identity: McpServerIdentity::Command {
                                 command: GOOD_CMD.to_string(),
                             },
@@ -4021,7 +4431,7 @@ fn filter_plugin_mcp_servers_by_allowlist_blocks_unlisted_plugin() {
             codex_config::PluginRequirementsToml {
                 mcp_servers: Some(BTreeMap::from([(
                     "server-a".to_string(),
-                    McpServerRequirement {
+                    McpServerRequirement::Identity {
                         identity: McpServerIdentity::Command {
                             command: "cmd-a".to_string(),
                         },
@@ -4052,6 +4462,65 @@ fn filter_plugin_mcp_servers_by_allowlist_blocks_unlisted_plugin() {
     );
 }
 
+#[test]
+fn filter_plugin_mcp_servers_by_matchers_enforces_name_and_invocation() {
+    const MATCHED_SERVER: &str = "matched";
+    const MISMATCHED_SERVER: &str = "mismatched";
+    const UNLISTED_SERVER: &str = "unlisted";
+
+    let mut servers = HashMap::from([
+        (
+            MATCHED_SERVER.to_string(),
+            stdio_mcp_with_args("company-cli", &["approved"]),
+        ),
+        (
+            MISMATCHED_SERVER.to_string(),
+            stdio_mcp_with_args("company-cli", &["rejected"]),
+        ),
+        (
+            UNLISTED_SERVER.to_string(),
+            stdio_mcp_with_args("company-cli", &["approved"]),
+        ),
+    ]);
+    let source = RequirementSource::LegacyManagedConfigTomlFromMdm;
+    let requirement = McpServerRequirement::Command(McpServerCommandMatcher {
+        executable: "company-cli".to_string(),
+        args: vec![McpServerValueMatcher::Exact {
+            value: "approved".to_string(),
+        }],
+    });
+    let requirements = Sourced::new(
+        BTreeMap::from([(
+            "sample@test".to_string(),
+            codex_config::PluginRequirementsToml {
+                mcp_servers: Some(BTreeMap::from([
+                    (MATCHED_SERVER.to_string(), requirement.clone()),
+                    (MISMATCHED_SERVER.to_string(), requirement),
+                ])),
+            },
+        )]),
+        source.clone(),
+    );
+
+    filter_plugin_mcp_servers_by_requirements("sample@test", &mut servers, Some(&requirements));
+
+    let reason = Some(McpServerDisabledReason::Requirements { source });
+    assert_eq!(
+        servers
+            .iter()
+            .map(|(name, server)| (
+                name.clone(),
+                (server.enabled, server.disabled_reason.clone())
+            ))
+            .collect::<HashMap<String, (bool, Option<McpServerDisabledReason>)>>(),
+        HashMap::from([
+            (MATCHED_SERVER.to_string(), (true, None)),
+            (MISMATCHED_SERVER.to_string(), (false, reason.clone())),
+            (UNLISTED_SERVER.to_string(), (false, reason)),
+        ])
+    );
+}
+
 #[tokio::test]
 async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
@@ -4061,7 +4530,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
     let mcp_requirements = BTreeMap::from([
         (
             "session_overrides_user".to_string(),
-            McpServerRequirement {
+            McpServerRequirement::Identity {
                 identity: McpServerIdentity::Command {
                     command: "session-command".to_string(),
                 },
@@ -4069,7 +4538,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         ),
         (
             "managed_overrides_session".to_string(),
-            McpServerRequirement {
+            McpServerRequirement::Identity {
                 identity: McpServerIdentity::Command {
                     command: "managed-command".to_string(),
                 },
@@ -4077,7 +4546,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         ),
         (
             "fresh_global".to_string(),
-            McpServerRequirement {
+            McpServerRequirement::Identity {
                 identity: McpServerIdentity::Command {
                     command: "fresh-global-command".to_string(),
                 },
@@ -4085,7 +4554,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
         ),
         (
             "fresh_project".to_string(),
-            McpServerRequirement {
+            McpServerRequirement::Identity {
                 identity: McpServerIdentity::Command {
                     command: "fresh-project-command".to_string(),
                 },
@@ -4103,7 +4572,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
     let refreshed_layer_stack = ConfigLayerStack::new(
         vec![
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::User {
+                ConfigLayerSource::User {
                     file: user_file.clone(),
                     profile: None,
                 },
@@ -4118,7 +4587,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
                 .into(),
             ),
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::Project {
+                ConfigLayerSource::Project {
                     dot_codex_folder: project_dot_codex.clone(),
                 },
                 toml::toml! {
@@ -4128,7 +4597,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
                 .into(),
             ),
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
+                ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
                 toml::toml! {
                     [mcp_servers.managed_overrides_session]
                     command = "managed-command"
@@ -4158,7 +4627,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
     let thread_layer_stack = ConfigLayerStack::new(
         vec![
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::User {
+                ConfigLayerSource::User {
                     file: user_file.clone(),
                     profile: None,
                 },
@@ -4173,7 +4642,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
                 .into(),
             ),
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::Project {
+                ConfigLayerSource::Project {
                     dot_codex_folder: project_dot_codex,
                 },
                 toml::toml! {
@@ -4183,7 +4652,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
                 .into(),
             ),
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::SessionFlags,
+                ConfigLayerSource::SessionFlags,
                 toml::toml! {
                     [mcp_servers.session_overrides_user]
                     command = "session-command"
@@ -4195,7 +4664,7 @@ async fn rebuild_preserving_session_layers_refreshes_requirements() -> std::io::
                 .into(),
             ),
             ConfigLayerEntry::new(
-                codex_app_server_protocol::ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
+                ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
                 toml::toml! {
                     [mcp_servers.managed_overrides_session]
                     command = "old-managed-command"
@@ -4289,7 +4758,7 @@ async fn rebuild_preserving_session_layers_refreshes_plugin_derived_mcp_config()
     let user_file = AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home.path());
     let refreshed_layer_stack = ConfigLayerStack::new(
         vec![ConfigLayerEntry::new(
-            codex_app_server_protocol::ConfigLayerSource::User {
+            ConfigLayerSource::User {
                 file: user_file.clone(),
                 profile: None,
             },
@@ -4318,7 +4787,7 @@ async fn rebuild_preserving_session_layers_refreshes_plugin_derived_mcp_config()
     .await?;
     let thread_layer_stack = ConfigLayerStack::new(
         vec![ConfigLayerEntry::new(
-            codex_app_server_protocol::ConfigLayerSource::User {
+            ConfigLayerSource::User {
                 file: user_file,
                 profile: None,
             },
@@ -4975,6 +5444,14 @@ fn web_search_mode_disabled_overrides_legacy_request() {
 }
 
 #[test]
+fn web_search_mode_for_turn_preserves_indexed_for_disabled_permissions() {
+    let web_search_mode = Constrained::allow_any(WebSearchMode::Indexed);
+    let mode = resolve_web_search_mode_for_turn(&web_search_mode, &PermissionProfile::Disabled);
+
+    assert_eq!(mode, WebSearchMode::Indexed);
+}
+
+#[test]
 fn web_search_mode_for_turn_uses_preference_for_read_only() {
     let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
     let permission_profile = PermissionProfile::read_only();
@@ -5002,6 +5479,31 @@ fn web_search_mode_for_turn_respects_disabled_for_disabled_permissions() {
 #[test]
 fn web_search_mode_for_turn_falls_back_when_live_is_disallowed() -> anyhow::Result<()> {
     let allowed = [WebSearchMode::Disabled, WebSearchMode::Cached];
+    let web_search_mode = Constrained::new(WebSearchMode::Cached, move |candidate| {
+        if allowed.contains(candidate) {
+            Ok(())
+        } else {
+            Err(ConstraintError::InvalidValue {
+                field_name: "web_search_mode",
+                candidate: format!("{candidate:?}"),
+                allowed: format!("{allowed:?}"),
+                requirement_source: RequirementSource::Unknown,
+            })
+        }
+    })?;
+    let mode = resolve_web_search_mode_for_turn(&web_search_mode, &PermissionProfile::Disabled);
+
+    assert_eq!(mode, WebSearchMode::Cached);
+    Ok(())
+}
+
+#[test]
+fn web_search_mode_for_turn_does_not_implicitly_select_indexed() -> anyhow::Result<()> {
+    let allowed = [
+        WebSearchMode::Disabled,
+        WebSearchMode::Cached,
+        WebSearchMode::Indexed,
+    ];
     let web_search_mode = Constrained::new(WebSearchMode::Cached, move |candidate| {
         if allowed.contains(candidate) {
             Ok(())
@@ -5224,17 +5726,19 @@ async fn load_global_mcp_servers_returns_empty_if_missing() -> anyhow::Result<()
 #[tokio::test]
 async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
+    let expected_cwd = LegacyAppPathString::from_path(codex_home.path());
 
     let mut servers = BTreeMap::new();
     servers.insert(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "echo".to_string(),
                 args: vec!["hello".to_string()],
                 env: None,
                 env_vars: Vec::new(),
-                cwd: Some(codex_home.path().to_path_buf()),
+                cwd: Some(expected_cwd.clone()),
             },
             environment_id: "remote".to_string(),
             enabled: true,
@@ -5273,7 +5777,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
             assert_eq!(args, &vec!["hello".to_string()]);
             assert!(env.is_none());
             assert!(env_vars.is_empty());
-            assert_eq!(cwd, &Some(codex_home.path().to_path_buf()));
+            assert_eq!(cwd, &Some(expected_cwd));
         }
         other => panic!("unexpected transport {other:?}"),
     }
@@ -5586,6 +6090,7 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: vec!["--verbose".to_string()],
@@ -5665,6 +6170,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
@@ -5720,6 +6226,7 @@ async fn replace_mcp_servers_serializes_sourced_env_vars() -> anyhow::Result<()>
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
@@ -5774,15 +6281,17 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
 
     let cwd_path = PathBuf::from("/tmp/codex-mcp");
+    let cwd = LegacyAppPathString::from_path(&cwd_path);
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
                 env: None,
                 env_vars: Vec::new(),
-                cwd: Some(cwd_path.clone()),
+                cwd: Some(cwd.clone()),
             },
             environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
@@ -5817,7 +6326,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
     let docs = loaded.get("docs").expect("docs entry");
     match &docs.transport {
         McpServerTransportConfig::Stdio { cwd, .. } => {
-            assert_eq!(cwd.as_deref(), Some(Path::new("/tmp/codex-mcp")));
+            assert_eq!(cwd, &Some(LegacyAppPathString::from_path(&cwd_path)));
         }
         other => panic!("unexpected transport {other:?}"),
     }
@@ -5832,6 +6341,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token_env_var: Some("MCP_TOKEN".to_string()),
@@ -5899,6 +6409,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token_env_var: Some("MCP_TOKEN".to_string()),
@@ -5981,6 +6492,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
     let mut servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token_env_var: Some("MCP_TOKEN".to_string()),
@@ -6019,6 +6531,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
     servers.insert(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token_env_var: None,
@@ -6086,6 +6599,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
         (
             "docs".to_string(),
             McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "https://example.com/mcp".to_string(),
                     bearer_token_env_var: Some("MCP_TOKEN".to_string()),
@@ -6114,6 +6628,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
         (
             "logs".to_string(),
             McpServerConfig {
+                auth: Default::default(),
                 transport: McpServerTransportConfig::Stdio {
                     command: "logs-server".to_string(),
                     args: vec!["--follow".to_string()],
@@ -6202,6 +6717,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
@@ -6252,6 +6768,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
@@ -6302,6 +6819,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::Stdio {
                 command: "docs-server".to_string(),
                 args: Vec::new(),
@@ -6357,6 +6875,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
     let servers = BTreeMap::from([(
         "docs".to_string(),
         McpServerConfig {
+            auth: Default::default(),
             transport: McpServerTransportConfig::StreamableHttp {
                 url: "https://example.com/mcp".to_string(),
                 bearer_token_env_var: None,
@@ -6860,7 +7379,7 @@ config_file = "./agents/researcher.toml"
     .expect("agent role layer config should parse");
     let config_layer_stack = codex_config::ConfigLayerStack::new(
         vec![codex_config::ConfigLayerEntry::new(
-            codex_app_server_protocol::ConfigLayerSource::User {
+            ConfigLayerSource::User {
                 file: codex_home.path().join(CONFIG_TOML_FILE).abs(),
                 profile: None,
             },
@@ -7939,7 +8458,7 @@ model_provider = "openai-custom"
 [profiles.zdr]
 model = "o3"
 model_provider = "openai"
-approval_policy = "on-failure"
+approval_policy = "on-request"
 
 [profiles.zdr.analytics]
 enabled = false
@@ -7947,7 +8466,7 @@ enabled = false
 [profiles.gpt5]
 model = "gpt-5.4"
 model_provider = "openai"
-approval_policy = "on-failure"
+approval_policy = "on-request"
 model_reasoning_effort = "high"
 model_reasoning_summary = "detailed"
 model_verbosity = "high"
@@ -8346,11 +8865,13 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         hooks: None,
         mcp_servers: None,
         plugins: None,
+        marketplaces: None,
         apps: None,
         rules: None,
         enforce_residency: None,
         network: None,
         permissions: None,
+        models: None,
         guardian_policy_config: None,
     };
     let requirement_source = codex_config::RequirementSource::Unknown;
@@ -8863,6 +9384,39 @@ apps_mcp_product_sku = "tpp"
     .await?;
 
     assert_eq!(config.apps_mcp_product_sku.as_deref(), Some("tpp"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_loads_orchestrator_settings_from_toml() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+model = "gpt-5.4"
+
+[orchestrator.skills]
+enabled = false
+
+[orchestrator.mcp]
+enabled = false
+"#,
+    )
+    .expect("TOML deserialization should succeed for orchestrator settings");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        (
+            config.orchestrator_skills_enabled,
+            config.orchestrator_mcp_enabled
+        ),
+        (false, false)
+    );
     Ok(())
 }
 
@@ -9389,6 +9943,7 @@ async fn browser_feature_requirements_are_valid() -> std::io::Result<()> {
 [features]
 in_app_browser = false
 browser_use = false
+browser_use_full_cdp_access = false
 "#,
             ),
         )
@@ -9397,6 +9952,7 @@ browser_use = false
 
     assert!(!config.features.enabled(Feature::InAppBrowser));
     assert!(!config.features.enabled(Feature::BrowserUse));
+    assert!(!config.features.enabled(Feature::BrowserUseFullCdpAccess));
 
     Ok(())
 }
@@ -9752,10 +10308,10 @@ max_concurrent_threads_per_session = 5
 min_wait_timeout_ms = 2500
 max_wait_timeout_ms = 120000
 default_wait_timeout_ms = 30000
-usage_hint_enabled = false
 usage_hint_text = "Custom delegation guidance."
 root_agent_usage_hint_text = "Root guidance."
 subagent_usage_hint_text = "Subagent guidance."
+multi_agent_mode_hint_text = "Custom mode guidance."
 tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 non_code_mode_only = true
@@ -9780,7 +10336,6 @@ non_code_mode_only = true
         ),
         (None, Some(4))
     );
-    assert!(!config.multi_agent_v2.usage_hint_enabled);
     assert_eq!(
         config.multi_agent_v2.usage_hint_text.as_deref(),
         Some("Custom delegation guidance.")
@@ -9792,6 +10347,10 @@ non_code_mode_only = true
     assert_eq!(
         config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
         Some("Subagent guidance.")
+    );
+    assert_eq!(
+        config.multi_agent_v2.multi_agent_mode_hint_text.as_deref(),
+        Some("Custom mode guidance.")
     );
     assert_eq!(
         config.multi_agent_v2.tool_namespace.as_deref(),
@@ -9843,9 +10402,8 @@ max_concurrent_threads_per_session = 17
 
     let config = resolve_multi_agent_v2_config(&config_toml);
     let concurrency_guidance = "There are 17 available concurrency slots, meaning that up to 17 agents can be active at once, including you.";
-    let expected_suffix = format!(
-        "{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{concurrency_guidance}\n\n{DEFAULT_MULTI_AGENT_V2_NO_SPAWN_HINT_TEXT}"
-    );
+    let expected_suffix =
+        format!("{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{concurrency_guidance}");
     assert!(
         [
             config.root_agent_usage_hint_text,
@@ -9854,6 +10412,22 @@ max_concurrent_threads_per_session = 17
         .into_iter()
         .all(|hint| hint.is_some_and(|hint| hint.ends_with(expected_suffix.as_str())))
     );
+}
+
+#[test]
+fn multi_agent_v2_preserves_empty_mode_hint_override() {
+    let config_toml = toml::from_str(
+        r#"[features.multi_agent_v2]
+multi_agent_mode_hint_text = ""
+"#,
+    )
+    .expect("multi-agent v2 config should parse");
+
+    let expected = MultiAgentV2Config {
+        multi_agent_mode_hint_text: Some(String::new()),
+        ..Default::default()
+    };
+    assert_eq!(resolve_multi_agent_v2_config(&config_toml), expected);
 }
 
 #[tokio::test]
@@ -10683,7 +11257,6 @@ async fn realtime_loads_from_config_toml() -> std::io::Result<()> {
     let cfg: ConfigToml = toml::from_str(
         r#"
 [realtime]
-architecture = "avas"
 version = "v2"
 type = "transcription"
 transport = "webrtc"
@@ -10695,7 +11268,6 @@ voice = "cedar"
     assert_eq!(
         cfg.realtime,
         Some(RealtimeToml {
-            architecture: Some(RealtimeArchitecture::Avas),
             version: Some(RealtimeWsVersion::V2),
             session_type: Some(RealtimeWsMode::Transcription),
             transport: Some(RealtimeTransport::WebRtc),
@@ -10714,7 +11286,6 @@ voice = "cedar"
     assert_eq!(
         config.realtime,
         RealtimeConfig {
-            architecture: RealtimeArchitecture::Avas,
             version: RealtimeWsVersion::V2,
             session_type: RealtimeWsMode::Transcription,
             transport: RealtimeTransport::WebRtc,

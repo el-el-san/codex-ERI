@@ -63,10 +63,7 @@ impl ToolExecutor<ToolInvocation> for CodeModeExecuteHandler {
         self.spec.clone()
     }
 
-    fn handle(
-        &self,
-        _invocation: ToolInvocation,
-    ) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async move {
             Err(FunctionCallError::RespondToModel(
                 CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
@@ -92,10 +89,7 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
         execute_spec::create_wait_tool()
     }
 
-    fn handle(
-        &self,
-        _invocation: ToolInvocation,
-    ) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async move {
             Err(FunctionCallError::RespondToModel(
                 CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),

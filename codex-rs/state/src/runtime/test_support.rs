@@ -11,6 +11,8 @@ use codex_protocol::protocol::AskForApproval;
 #[cfg(test)]
 use codex_protocol::protocol::SandboxPolicy;
 #[cfg(test)]
+use codex_protocol::protocol::ThreadHistoryMode;
+#[cfg(test)]
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -47,7 +49,9 @@ pub(super) fn test_thread_metadata(
         rollout_path: codex_home.join(format!("rollout-{thread_id}.jsonl")),
         created_at: now,
         updated_at: now,
+        recency_at: now,
         source: "cli".to_string(),
+        history_mode: ThreadHistoryMode::Legacy,
         thread_source: None,
         agent_nickname: None,
         agent_role: None,

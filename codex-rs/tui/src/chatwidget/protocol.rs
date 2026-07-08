@@ -147,6 +147,9 @@ impl ChatWidget {
             ServerNotification::ModelVerification(notification) => {
                 self.on_app_server_model_verification(&notification.verifications)
             }
+            ServerNotification::ModelSafetyBufferingUpdated(notification) => {
+                self.on_model_safety_buffering_updated(notification, replay_kind)
+            }
             ServerNotification::Warning(notification) => self.on_warning(notification.message),
             ServerNotification::GuardianWarning(notification) => {
                 self.on_warning(notification.message)
@@ -205,6 +208,7 @@ impl ChatWidget {
             | ServerNotification::McpServerOauthLoginCompleted(_)
             | ServerNotification::AppListUpdated(_)
             | ServerNotification::RemoteControlStatusChanged(_)
+            | ServerNotification::ExternalAgentConfigImportProgress(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::FsChanged(_)
             | ServerNotification::TurnModerationMetadata(_)

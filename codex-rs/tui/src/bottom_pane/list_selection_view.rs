@@ -200,6 +200,9 @@ pub(crate) struct SelectionViewParams {
     /// Receives the *actual* item index, not the filtered/visible index.
     pub on_selection_changed: OnSelectionChangedCallback,
 
+    /// Whether cancellation keys can dismiss the picker.
+    pub allow_cancel: bool,
+
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     pub on_cancel: OnCancelCallback,
 }
@@ -229,6 +232,7 @@ impl Default for SelectionViewParams {
             stacked_side_content: None,
             preserve_side_content_bg: false,
             on_selection_changed: None,
+            allow_cancel: true,
             on_cancel: None,
         }
     }
@@ -270,9 +274,68 @@ pub(crate) struct ListSelectionView {
     /// Called when the highlighted item changes (navigation, filter, number-key).
     on_selection_changed: OnSelectionChangedCallback,
 
+    allow_cancel: bool,
+
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     on_cancel: OnCancelCallback,
     keymap: ListKeymap,
+}
+
+const SELECTION_TOGGLE_ON_PREFIX: &str = "[*] ";
+const SELECTION_TOGGLE_OFF_PREFIX: &str = "[ ] ";
+pub(crate) const SELECTION_TOGGLE_UNAVAILABLE_PREFIX: &str = "[-] ";
+pub(crate) const SELECTION_TOGGLE_BLOCKED_PREFIX: &str = "[!] ";
+
+fn selection_toggle_prefix(toggle: &SelectionToggle) -> &'static str {
+    if toggle.is_on {
+        SELECTION_TOGGLE_ON_PREFIX
+    } else {
+        SELECTION_TOGGLE_OFF_PREFIX
+    }
+}
+
+fn selection_item_toggle_prefix(item: &SelectionItem) -> Option<&'static str> {
+    item.toggle
+        .as_ref()
+        .map(selection_toggle_prefix)
+        .or(item.toggle_placeholder)
+}
+
+impl ListSelectionView {
+    fn selected_item_has_toggle(&self) -> bool {
+        self.selected_actual_idx()
+            .and_then(|actual_idx| self.active_items().get(actual_idx))
+            .is_some_and(|item| item.toggle.is_some() && Self::item_is_enabled(item))
+    }
+
+    fn selected_item_has_toggle_placeholder(&self) -> bool {
+        self.selected_actual_idx()
+            .and_then(|actual_idx| self.active_items().get(actual_idx))
+            .is_some_and(|item| {
+                item.toggle.is_none()
+                    && item.toggle_placeholder.is_some()
+                    && Self::item_is_enabled(item)
+            })
+    }
+
+    fn toggle_selected(&mut self) {
+        let Some(actual_idx) = self.selected_actual_idx() else {
+            return;
+        };
+        let app_event_tx = self.app_event_tx.clone();
+        let Some(item) = self.active_items_mut().get_mut(actual_idx) else {
+            return;
+        };
+        if !Self::item_is_enabled(item) {
+            return;
+        }
+        let Some(toggle) = item.toggle.as_mut() else {
+            return;
+        };
+
+        toggle.is_on = !toggle.is_on;
+        (toggle.action)(toggle.is_on, &app_event_tx);
+    }
 }
 
 impl ListSelectionView {
@@ -342,6 +405,7 @@ impl ListSelectionView {
             stacked_side_content: params.stacked_side_content,
             preserve_side_content_bg: params.preserve_side_content_bg,
             on_selection_changed: params.on_selection_changed,
+            allow_cancel: params.allow_cancel,
             on_cancel: params.on_cancel,
             keymap,
         };
@@ -526,10 +590,8 @@ impl ListSelectionView {
                     let wrap_prefix_width = UnicodeWidthStr::width(wrap_prefix.as_str());
                     let mut name_prefix_spans = Vec::new();
                     name_prefix_spans.push(wrap_prefix.into());
-                    if let Some(toggle) = &item.toggle {
-                        name_prefix_spans.push(if toggle.is_on { "[*] " } else { "[ ] " }.into());
-                    } else if let Some(placeholder) = item.toggle_placeholder {
-                        name_prefix_spans.push(placeholder.into());
+                    if let Some(toggle_prefix) = selection_item_toggle_prefix(item) {
+                        name_prefix_spans.push(toggle_prefix.into());
                     }
                     name_prefix_spans.extend(item.name_prefix_spans.clone());
                     let description = is_selected
@@ -604,22 +666,6 @@ impl ListSelectionView {
         item.disabled_reason.is_none() && !item.is_disabled
     }
 
-    fn selected_item_has_toggle(&self) -> bool {
-        self.selected_actual_idx()
-            .and_then(|actual_idx| self.active_items().get(actual_idx))
-            .is_some_and(|item| item.toggle.is_some() && Self::item_is_enabled(item))
-    }
-
-    fn selected_item_has_toggle_placeholder(&self) -> bool {
-        self.selected_actual_idx()
-            .and_then(|actual_idx| self.active_items().get(actual_idx))
-            .is_some_and(|item| {
-                item.toggle.is_none()
-                    && item.toggle_placeholder.is_some()
-                    && Self::item_is_enabled(item)
-            })
-    }
-
     fn actual_idx_for_enabled_number(&self, number: usize) -> Option<usize> {
         if number == 0 {
             return None;
@@ -631,25 +677,6 @@ impl ListSelectionView {
             .filter(|(_, item)| Self::item_is_enabled(item))
             .nth(number - 1)
             .map(|(idx, _)| idx)
-    }
-
-    fn toggle_selected(&mut self) {
-        let Some(actual_idx) = self.selected_actual_idx() else {
-            return;
-        };
-        let app_event_tx = self.app_event_tx.clone();
-        let Some(item) = self.active_items_mut().get_mut(actual_idx) else {
-            return;
-        };
-        if !Self::item_is_enabled(item) {
-            return;
-        }
-        let Some(toggle) = item.toggle.as_mut() else {
-            return;
-        };
-
-        toggle.is_on = !toggle.is_on;
-        (toggle.action)(toggle.is_on, &app_event_tx);
     }
 
     fn move_up(&mut self) {
@@ -968,7 +995,7 @@ impl BottomPaneView for ListSelectionView {
             } if self.is_searchable
                 && self.search_query.is_empty()
                 && self.selected_item_has_toggle_placeholder() => {}
-            _ if self.keymap.cancel.is_pressed(key_event) => {
+            _ if self.allow_cancel && self.keymap.cancel.is_pressed(key_event) => {
                 self.on_ctrl_c();
             }
             _ if self.keymap.accept.is_pressed(key_event) => self.accept(),
@@ -1062,6 +1089,9 @@ impl BottomPaneView for ListSelectionView {
     }
 
     fn on_ctrl_c(&mut self) -> CancellationEvent {
+        if !self.allow_cancel {
+            return CancellationEvent::NotHandled;
+        }
         if let Some(cb) = &self.on_cancel {
             cb(&self.app_event_tx);
         }

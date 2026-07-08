@@ -25,6 +25,7 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+use crate::error::reject_paginated_history_mode;
 
 pub(super) async fn read_thread(
     store: &LocalThreadStore,
@@ -47,7 +48,7 @@ pub(super) async fn read_thread(
             .await)
     {
         let metadata_sandbox_policy = metadata.sandbox_policy.clone();
-        let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await;
+        let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
         if !params.include_history
             && let Some(rollout_path) = thread.rollout_path.clone()
             && let Ok(mut rollout_thread) = read_thread_from_rollout_path(store, rollout_path).await
@@ -55,6 +56,7 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
@@ -65,6 +67,7 @@ pub(super) async fn read_thread(
             );
             thread = rollout_thread;
         }
+        reject_paginated_history(&thread, params.include_history)?;
         attach_history_if_requested(&mut thread, params.include_history).await?;
         return Ok(thread);
     }
@@ -81,6 +84,7 @@ pub(super) async fn read_thread(
             message: format!("thread {} is archived", thread.thread_id),
         });
     }
+    reject_paginated_history(&thread, params.include_history)?;
     attach_history_if_requested(&mut thread, params.include_history).await?;
     Ok(thread)
 }
@@ -115,6 +119,7 @@ pub(super) async fn read_thread_by_rollout_path(
         });
     }
     if let Some(metadata) = read_sqlite_metadata(store, thread.thread_id).await {
+        thread.recency_at = metadata.recency_at;
         let existing_git_info = thread.git_info.take();
         let (fallback_sha, fallback_branch, fallback_origin_url) = match existing_git_info {
             Some(info) => (
@@ -130,8 +135,16 @@ pub(super) async fn read_thread_by_rollout_path(
             metadata.git_origin_url.or(fallback_origin_url),
         );
     }
+    reject_paginated_history(&thread, include_history)?;
     attach_history_if_requested(&mut thread, include_history).await?;
     Ok(thread)
+}
+
+fn reject_paginated_history(thread: &StoredThread, include_history: bool) -> ThreadStoreResult<()> {
+    if include_history {
+        reject_paginated_history_mode(thread.history_mode)?;
+    }
+    Ok(())
 }
 
 async fn resolve_requested_rollout_path(
@@ -259,16 +272,16 @@ async fn read_thread_from_rollout_path(
         message: format!("failed to read thread id from {}", path.display()),
     })?;
     thread.rollout_path = Some(codex_rollout::plain_rollout_path(path.as_path()));
-    if let Ok(meta_line) = read_session_meta_line(path.as_path()).await {
-        thread.forked_from_id = meta_line.meta.forked_from_id;
-        thread.parent_thread_id = meta_line.meta.parent_thread_id;
-        if let Some(model_provider) = meta_line
-            .meta
-            .model_provider
-            .filter(|provider| !provider.is_empty())
-        {
-            thread.model_provider = model_provider;
-        }
+    let meta_line = read_required_session_meta_line(path.as_path()).await?;
+    thread.forked_from_id = meta_line.meta.forked_from_id;
+    thread.parent_thread_id = meta_line.meta.parent_thread_id;
+    thread.history_mode = meta_line.meta.history_mode;
+    if let Some(model_provider) = meta_line
+        .meta
+        .model_provider
+        .filter(|provider| !provider.is_empty())
+    {
+        thread.model_provider = model_provider;
     }
     if let Ok(Some(title)) =
         find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
@@ -300,7 +313,7 @@ async fn read_sqlite_metadata(
 async fn stored_thread_from_sqlite_metadata(
     store: &LocalThreadStore,
     metadata: ThreadMetadata,
-) -> StoredThread {
+) -> ThreadStoreResult<StoredThread> {
     let name = match distinct_thread_metadata_title(&metadata) {
         Some(title) => Some(title),
         None => find_thread_name_by_id(store.config.codex_home.as_path(), &metadata.id)
@@ -309,13 +322,32 @@ async fn stored_thread_from_sqlite_metadata(
             .flatten()
             .filter(|title| !title.trim().is_empty()),
     };
-    let session_meta = read_session_meta_line(metadata.rollout_path.as_path())
-        .await
-        .ok()
-        .map(|meta_line| meta_line.meta);
+    let session_meta = match read_required_session_meta_line(metadata.rollout_path.as_path()).await
+    {
+        Ok(meta_line) => Some(meta_line.meta),
+        Err(_)
+            if codex_rollout::existing_rollout_path(metadata.rollout_path.as_path())
+                .await
+                .is_none() =>
+        {
+            None
+        }
+        Err(err) => {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "failed to read session metadata {}: {err}",
+                    metadata.rollout_path.display()
+                ),
+            });
+        }
+    };
     let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
+    let history_mode = session_meta
+        .as_ref()
+        .map(|meta| meta.history_mode)
+        .unwrap_or(metadata.history_mode);
     let preview = metadata
         .preview
         .clone()
@@ -323,7 +355,7 @@ async fn stored_thread_from_sqlite_metadata(
         .unwrap_or_default();
     let permission_profile =
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
-    StoredThread {
+    Ok(StoredThread {
         thread_id: metadata.id,
         extra_config: None,
         rollout_path: Some(rollout_path),
@@ -340,10 +372,12 @@ async fn stored_thread_from_sqlite_metadata(
         reasoning_effort: metadata.reasoning_effort,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
+        recency_at: metadata.recency_at,
         archived_at: metadata.archived_at,
         cwd: metadata.cwd,
         cli_version: metadata.cli_version,
         source: parse_session_source(&metadata.source),
+        history_mode,
         thread_source: metadata.thread_source,
         agent_nickname: metadata.agent_nickname,
         agent_role: metadata.agent_role,
@@ -358,22 +392,28 @@ async fn stored_thread_from_sqlite_metadata(
         token_usage: None,
         first_user_message: metadata.first_user_message,
         history: None,
-    }
+    })
 }
 
 async fn stored_thread_from_session_meta(
     store: &LocalThreadStore,
     path: std::path::PathBuf,
 ) -> ThreadStoreResult<StoredThread> {
-    let meta_line = read_session_meta_line(path.as_path())
-        .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to read thread {}: {err}", path.display()),
-        })?;
+    let meta_line = read_required_session_meta_line(path.as_path()).await?;
     let archived = rollout_path_is_archived(store.config.codex_home.as_path(), path.as_path());
     Ok(stored_thread_from_meta_line(
         store, meta_line, path, archived,
     ))
+}
+
+async fn read_required_session_meta_line(
+    path: &std::path::Path,
+) -> ThreadStoreResult<SessionMetaLine> {
+    read_session_meta_line(path)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to read session metadata {}: {err}", path.display()),
+        })
 }
 
 fn stored_thread_from_meta_line(
@@ -406,10 +446,12 @@ fn stored_thread_from_meta_line(
         reasoning_effort: None,
         created_at,
         updated_at,
+        recency_at: updated_at,
         archived_at: archived.then_some(updated_at),
         cwd: meta_line.meta.cwd,
         cli_version: meta_line.meta.cli_version,
         source: meta_line.meta.source,
+        history_mode: meta_line.meta.history_mode,
         thread_source: meta_line.meta.thread_source,
         agent_nickname: meta_line.meta.agent_nickname,
         agent_role: meta_line.meta.agent_role,
@@ -453,6 +495,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::ThreadHistoryMode;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -547,6 +590,10 @@ mod tests {
         );
         builder.model_provider = Some(config.default_model_provider_id.clone());
         builder.git_branch = Some("sqlite-branch".to_string());
+        let recency_at = chrono::DateTime::parse_from_rfc3339("2026-01-03T12:00:00Z")
+            .expect("timestamp should parse")
+            .with_timezone(&Utc);
+        builder.recency_at = Some(recency_at);
         runtime
             .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
             .await
@@ -562,6 +609,7 @@ mod tests {
             .expect("read thread by rollout path");
 
         let git_info = thread.git_info.expect("git info should be present");
+        assert_eq!(thread.recency_at, recency_at);
         assert_eq!(git_info.branch.as_deref(), Some("sqlite-branch"));
         assert_eq!(
             git_info.commit_hash.as_ref().map(|sha| sha.0.as_str()),
@@ -656,6 +704,7 @@ mod tests {
             "Forked user message",
             Some("test-provider"),
             Some(parent_uuid),
+            ThreadHistoryMode::Legacy,
         )
         .expect("forked session file");
 
@@ -812,6 +861,7 @@ mod tests {
             "timestamp": "2025-01-03T12:00:00Z",
             "type": "session_meta",
             "payload": {
+                "session_id": uuid,
                 "id": uuid,
                 "timestamp": "2025-01-03T12:00:00Z",
                 "cwd": rollout_cwd,
@@ -917,6 +967,7 @@ mod tests {
             "timestamp": "2025-01-03T12-00-00",
             "type": "session_meta",
             "payload": {
+                "session_id": uuid,
                 "id": uuid,
                 "timestamp": "2025-01-03T12-00-00",
                 "cwd": home.path(),
@@ -1082,6 +1133,7 @@ mod tests {
             "timestamp": "2025-01-03T12:00:00Z",
             "type": "session_meta",
             "payload": {
+                "session_id": uuid,
                 "id": uuid,
                 "timestamp": "2025-01-03T12:00:00Z",
                 "cwd": home.path(),
