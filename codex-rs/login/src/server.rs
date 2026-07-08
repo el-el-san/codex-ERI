@@ -28,16 +28,17 @@ use std::time::Duration;
 use crate::auth::AuthDotJson;
 use crate::auth::AuthKeyringBackendKind;
 use crate::auth::save_auth;
+use crate::default_client::build_raw_auth_reqwest_client;
 use crate::default_client::originator;
+use crate::outbound_proxy::AuthRouteConfig;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
 use crate::token_data::TokenData;
 use crate::token_data::parse_chatgpt_jwt_claims;
 use base64::Engine;
 use chrono::Utc;
-use codex_app_server_protocol::AuthMode;
-use codex_client::build_reqwest_client_with_custom_ca;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_protocol::auth::AuthMode;
 use codex_utils_template::Template;
 use rand::RngCore;
 use serde_json::Value as JsonValue;
@@ -72,6 +73,7 @@ pub struct ServerOptions {
     pub codex_streamlined_login: bool,
     pub cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
     pub auth_keyring_backend_kind: AuthKeyringBackendKind,
+    pub auth_route_config: Option<AuthRouteConfig>,
 }
 
 impl ServerOptions {
@@ -82,6 +84,7 @@ impl ServerOptions {
         forced_chatgpt_workspace_id: Option<Vec<String>>,
         cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
         auth_keyring_backend_kind: AuthKeyringBackendKind,
+        auth_route_config: Option<AuthRouteConfig>,
     ) -> Self {
         Self {
             codex_home,
@@ -94,6 +97,7 @@ impl ServerOptions {
             codex_streamlined_login: false,
             cli_auth_credentials_store_mode,
             auth_keyring_backend_kind,
+            auth_route_config,
         }
     }
 }
@@ -542,8 +546,15 @@ async fn process_request(
                 }
             };
 
-            match exchange_code_for_tokens(&opts.issuer, &opts.client_id, redirect_uri, pkce, &code)
-                .await
+            match exchange_code_for_tokens(
+                &opts.issuer,
+                &opts.client_id,
+                redirect_uri,
+                pkce,
+                &code,
+                opts.auth_route_config.as_ref(),
+            )
+            .await
             {
                 Ok(tokens) => {
                     if let Err(message) = ensure_workspace_allowed(
@@ -925,6 +936,7 @@ pub(crate) async fn exchange_code_for_tokens(
     redirect_uri: &str,
     pkce: &PkceCodes,
     code: &str,
+    auth_route_config: Option<&AuthRouteConfig>,
 ) -> io::Result<ExchangedTokens> {
     #[derive(serde::Deserialize)]
     struct TokenResponse {
@@ -933,7 +945,7 @@ pub(crate) async fn exchange_code_for_tokens(
         refresh_token: String,
     }
 
-    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
+    let client = build_raw_auth_reqwest_client(issuer.trim_end_matches('/'), auth_route_config)?;
     let token_endpoint = format!("{}/oauth/token", issuer.trim_end_matches('/'));
     info!(
         issuer = %sanitize_url_for_logging(issuer),
