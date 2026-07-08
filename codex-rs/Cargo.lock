@@ -2626,7 +2626,6 @@ dependencies = [
  "bm25",
  "chrono",
  "clap",
- "codex-agent-graph-store",
  "codex-analytics",
  "codex-api",
  "codex-app-server-protocol",
@@ -2647,7 +2646,6 @@ dependencies = [
  "codex-git-utils",
  "codex-home",
  "codex-hooks",
- "codex-http-client",
  "codex-image-generation-extension",
  "codex-install-context",
  "codex-login",
@@ -3317,8 +3315,9 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "codex-agent-identity",
+ "codex-app-server-protocol",
+ "codex-client",
  "codex-config",
- "codex-http-client",
  "codex-keyring-store",
  "codex-model-provider-info",
  "codex-otel",
@@ -3339,6 +3338,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
+ "shlex",
  "tempfile",
  "thiserror 2.0.18",
  "tiny_http",
@@ -3346,7 +3346,6 @@ dependencies = [
  "tracing",
  "url",
  "urlencoding",
- "webbrowser",
  "wiremock",
 ]
 
@@ -3792,6 +3791,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "codex-api",
+ "codex-client",
  "codex-config",
  "codex-exec-server",
  "codex-keyring-store",
@@ -3812,6 +3812,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
+ "shlex",
  "sse-stream",
  "tempfile",
  "thiserror 2.0.18",
@@ -3819,7 +3820,6 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
- "webbrowser",
  "which 8.0.0",
  "wiremock",
 ]
@@ -4069,8 +4069,8 @@ dependencies = [
 name = "codex-tools"
 version = "0.143.0"
 dependencies = [
+ "codex-app-server-protocol",
  "codex-code-mode",
- "codex-connectors",
  "codex-features",
  "codex-file-system",
  "codex-protocol",
@@ -10587,7 +10587,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.11.0",
  "log",
  "multimap",
@@ -10607,7 +10607,7 @@ version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
- "heck 0.5.0",
+ "heck 0.4.1",
  "itertools 0.14.0",
  "log",
  "multimap",
@@ -10775,9 +10775,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "aws-lc-rs",
  "bytes",
