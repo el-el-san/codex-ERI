@@ -570,9 +570,14 @@ async fn process_request(
                         );
                     }
                     // Obtain API key via token-exchange and persist
-                    let api_key = obtain_api_key(&opts.issuer, &opts.client_id, &tokens.id_token)
-                        .await
-                        .ok();
+                    let api_key = obtain_api_key(
+                        &opts.issuer,
+                        &opts.client_id,
+                        &tokens.id_token,
+                        opts.auth_route_config.as_ref(),
+                    )
+                    .await
+                    .ok();
                     if let Err(err) = persist_tokens_async(
                         &opts.codex_home,
                         api_key.clone(),
@@ -1347,14 +1352,15 @@ pub(crate) async fn obtain_api_key(
     issuer: &str,
     client_id: &str,
     id_token: &str,
+    auth_route_config: Option<&AuthRouteConfig>,
 ) -> io::Result<String> {
     // Token exchange for an API key access token
     #[derive(serde::Deserialize)]
     struct ExchangeResp {
         access_token: String,
     }
-    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
     let token_endpoint = format!("{}/oauth/token", issuer.trim_end_matches('/'));
+    let client = build_raw_auth_reqwest_client(&token_endpoint, auth_route_config)?;
     let resp = client
         .post(token_endpoint)
         .header("Content-Type", "application/x-www-form-urlencoded")
