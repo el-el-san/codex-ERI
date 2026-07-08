@@ -2225,6 +2225,7 @@ dependencies = [
  "codex-shell-escalation",
  "codex-utils-absolute-path",
  "codex-utils-home-dir",
+ "codex-utils-path-uri",
  "codex-windows-sandbox",
  "dotenvy",
  "pretty_assertions",

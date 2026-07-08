@@ -124,7 +124,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
                 };
                 match runtime.block_on(codex_apply_patch::apply_patch(
                     &patch_arg,
-                    &cwd,
+                    &codex_utils_path_uri::PathUri::from_abs_path(&cwd),
                     &mut stdout,
                     &mut stderr,
                     codex_exec_server::LOCAL_FS.as_ref(),
