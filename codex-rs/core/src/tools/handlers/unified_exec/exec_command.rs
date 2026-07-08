@@ -145,7 +145,7 @@ impl ExecCommandHandler {
             .filter(|workdir| !workdir.is_empty())
             .map_or_else(
                 || Ok(native_environment_cwd.clone()),
-                |workdir| native_environment_cwd.join(workdir),
+                |workdir| Ok(native_environment_cwd.join(workdir)),
             )
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
         let environment = Arc::clone(&turn_environment.environment);

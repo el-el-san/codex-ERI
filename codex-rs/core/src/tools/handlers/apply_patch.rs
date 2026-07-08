@@ -385,11 +385,11 @@ impl ApplyPatchHandler {
         let fs = turn_environment.environment.get_filesystem();
         let sandbox = turn.file_system_sandbox_context(
             /*additional_permissions*/ None,
-            turn_environment.cwd(),
+            turn_environment.cwd_uri(),
         );
         match codex_apply_patch::verify_apply_patch_args(
             args,
-            turn_environment.cwd(),
+            turn_environment.cwd_uri(),
             fs.as_ref(),
             Some(&sandbox),
         )
@@ -402,7 +402,7 @@ impl ApplyPatchHandler {
                         turn.as_ref(),
                         &turn_environment.environment_id,
                         &changes,
-                        turn_environment.cwd(),
+                        turn_environment.cwd_uri(),
                     )
                     .await
                     .unwrap_or_else(|_| patch_permissions_without_path_matching(&changes));

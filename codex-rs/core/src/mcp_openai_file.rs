@@ -124,10 +124,7 @@ async fn build_uploaded_argument_value(
     };
     // TODO(anp): Resolve app tool file arguments using the selected environment's native path
     // convention so uploads can read relative paths from foreign environments.
-    let native_environment_cwd = turn_environment
-        .cwd()
-        .to_abs_path()
-        .map_err(|error| contextualize_error(error.to_string()))?;
+    let native_environment_cwd = turn_environment.cwd().clone();
     let resolved_path = native_environment_cwd.join(file_path);
     let path_uri = PathUri::from_abs_path(&resolved_path);
     let fs = turn_environment.environment.get_filesystem();

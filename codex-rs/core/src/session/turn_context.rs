@@ -312,6 +312,7 @@ impl TurnContext {
             session_source: self.session_source.clone(),
             parent_thread_id: self.parent_thread_id,
             thread_source: self.thread_source.clone(),
+            originator: self.originator.clone(),
             environments: self.environments.clone(),
             #[allow(deprecated)]
             cwd: self.cwd.clone(),
@@ -342,6 +343,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_skills: self.turn_skills.clone(),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
+            terminal_error: Arc::clone(&self.terminal_error),
             server_model_warning_emitted: AtomicBool::new(
                 self.server_model_warning_emitted.load(Ordering::Relaxed),
             ),
@@ -437,7 +439,7 @@ impl TurnContext {
             personality: self.personality,
             collaboration_mode: Some(self.collaboration_mode.clone()),
             multi_agent_version: Some(self.multi_agent_version),
-            multi_agent_mode: self.model_info.multi_agent_mode,
+            multi_agent_mode: crate::session::multi_agents::effective_multi_agent_mode(self),
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort.clone(),
             summary: ReasoningSummaryConfig::Auto,
@@ -632,7 +634,7 @@ impl Session {
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
-            user_instructions: user_instructions.map(|instructions| instructions.text),
+            user_instructions: None,
             collaboration_mode: session_configuration.collaboration_mode.clone(),
             multi_agent_version,
             personality: session_configuration.personality,

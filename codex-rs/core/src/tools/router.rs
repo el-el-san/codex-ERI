@@ -63,7 +63,11 @@ impl ToolRouter {
         params: ToolRouterParams<'_>,
         tool_search_handler_cache: &ToolSearchHandlerCache,
     ) -> Self {
-        build_tool_router(step_context, params, tool_search_handler_cache)
+        build_tool_router(
+            step_context.turn.as_ref(),
+            params,
+            tool_search_handler_cache,
+        )
     }
 
     pub(crate) fn from_parts(registry: ToolRegistry, model_visible_specs: Vec<ToolSpec>) -> Self {
