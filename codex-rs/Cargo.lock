@@ -4071,6 +4071,7 @@ version = "0.143.0"
 dependencies = [
  "codex-app-server-protocol",
  "codex-code-mode",
+ "codex-connectors",
  "codex-features",
  "codex-file-system",
  "codex-protocol",
