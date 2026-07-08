@@ -492,7 +492,7 @@ impl Session {
         skills_service: Arc<SkillsService>,
         plugins_manager: Arc<PluginsManager>,
         mcp_manager: Arc<McpManager>,
-        code_mode_session_provider: Arc<dyn codex_code_mode::CodeModeSessionProvider>,
+        code_mode_session_provider: Arc<dyn CodeModeSessionProvider>,
         extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         mut thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
+use crate::session::step_context::StepContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
@@ -18,15 +18,27 @@ pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = 10_000;
 
 const CODE_MODE_UNSUPPORTED_MESSAGE: &str = "code mode is disabled in Android builds";
 
+pub(crate) trait CodeModeSessionProvider: Send + Sync {}
+
+pub(crate) struct InProcessCodeModeSessionProvider;
+
+impl CodeModeSessionProvider for InProcessCodeModeSessionProvider {}
+
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none() && tool_name.name == PUBLIC_TOOL_NAME
 }
 
-pub(crate) struct CodeModeService;
+pub(crate) struct CodeModeService {
+    session_provider: Arc<dyn CodeModeSessionProvider>,
+}
 
 impl CodeModeService {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(session_provider: Arc<dyn CodeModeSessionProvider>) -> Self {
+        Self { session_provider }
+    }
+
+    pub(crate) fn session_provider(&self) -> Arc<dyn CodeModeSessionProvider> {
+        Arc::clone(&self.session_provider)
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), String> {
@@ -36,7 +48,7 @@ impl CodeModeService {
     pub(crate) fn start_turn_worker(
         &self,
         _session: &Arc<Session>,
-        _turn: &Arc<TurnContext>,
+        _step_context: Arc<StepContext>,
         _router: Arc<ToolRouter>,
         _tracker: SharedTurnDiffTracker,
     ) -> Option<()> {

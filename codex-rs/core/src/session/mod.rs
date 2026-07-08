@@ -172,6 +172,11 @@ use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
 use tracing::warn;
+
+#[cfg(target_os = "android")]
+use crate::tools::code_mode::CodeModeSessionProvider;
+#[cfg(not(target_os = "android"))]
+use codex_code_mode::CodeModeSessionProvider;
 use uuid::Uuid;
 
 use crate::client::ModelClient;
@@ -415,7 +420,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) skills_service: Arc<SkillsService>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
-    pub(crate) code_mode_session_provider: Arc<dyn codex_code_mode::CodeModeSessionProvider>,
+    pub(crate) code_mode_session_provider: Arc<dyn CodeModeSessionProvider>,
     pub(crate) extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
     pub(crate) conversation_history: InitialHistory,
     pub(crate) requested_history_mode: Option<ThreadHistoryMode>,

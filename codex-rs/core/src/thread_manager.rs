@@ -21,8 +21,11 @@ use codex_agent_graph_store::LocalAgentGraphStore;
 use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::TurnStatus;
+#[cfg(not(target_os = "android"))]
 use codex_code_mode::CodeModeSessionProvider;
+#[cfg(not(target_os = "android"))]
 use codex_code_mode::InProcessCodeModeSessionProvider;
+#[cfg(not(target_os = "android"))]
 use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
@@ -87,6 +90,11 @@ use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::instrument;
 use tracing::warn;
+
+#[cfg(target_os = "android")]
+use crate::tools::code_mode::CodeModeSessionProvider;
+#[cfg(target_os = "android")]
+use crate::tools::code_mode::InProcessCodeModeSessionProvider;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
 /// Test-only override for enabling thread-manager behaviors used by integration
@@ -300,6 +308,20 @@ pub fn local_agent_graph_store_from_state_db(
     })
 }
 
+#[cfg(not(target_os = "android"))]
+fn code_mode_session_provider_from_config(config: &Config) -> Arc<dyn CodeModeSessionProvider> {
+    if config.features.enabled(Feature::CodeModeHost) {
+        Arc::new(ProcessOwnedCodeModeSessionProvider::default())
+    } else {
+        Arc::new(InProcessCodeModeSessionProvider)
+    }
+}
+
+#[cfg(target_os = "android")]
+fn code_mode_session_provider_from_config(_config: &Config) -> Arc<dyn CodeModeSessionProvider> {
+    Arc::new(InProcessCodeModeSessionProvider)
+}
+
 impl ThreadManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -342,11 +364,7 @@ impl ThreadManager {
                 skills_service,
                 plugins_manager,
                 mcp_manager,
-                code_mode_session_provider: if config.features.enabled(Feature::CodeModeHost) {
-                    Arc::new(ProcessOwnedCodeModeSessionProvider::default())
-                } else {
-                    Arc::new(InProcessCodeModeSessionProvider)
-                },
+                code_mode_session_provider: code_mode_session_provider_from_config(config),
                 extensions,
                 user_instructions_provider,
                 thread_store,
