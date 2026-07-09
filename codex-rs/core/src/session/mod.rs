@@ -223,7 +223,6 @@ mod token_budget;
 pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod world_state;
-use self::code_mode_warning::unsupported_code_mode_warning;
 use self::config_lock::export_config_lock_if_configured;
 use self::config_lock::validate_config_lock_if_configured;
 #[cfg(test)]

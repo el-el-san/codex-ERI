@@ -393,6 +393,11 @@ impl ThreadManager {
         self
     }
 
+    #[cfg(target_os = "android")]
+    pub(crate) fn with_code_mode_host_program_for_tests(self, _host_program: PathBuf) -> Self {
+        self
+    }
+
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
     /// Used for integration tests: should not be used by ordinary business logic.
     pub(crate) fn with_models_provider_for_tests(

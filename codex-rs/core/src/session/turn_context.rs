@@ -625,7 +625,7 @@ impl Session {
             sub_id,
             trace_id: current_span_trace_id(),
             realtime_active: false,
-            config: per_turn_config,
+            config: per_turn_config.clone(),
             auth_manager: auth_manager_for_context,
             model_info: model_info.clone(),
             comp_hash: model_info.comp_hash.clone(),
