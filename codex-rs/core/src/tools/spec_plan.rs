@@ -536,19 +536,16 @@ fn code_mode_namespace_descriptions(
 
 #[instrument(level = "trace", skip_all)]
 fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
-    if crate::guardian::is_guardian_reviewer_source(&context.step_context.turn.session_source) {
-        let turn_context = context.step_context.turn.as_ref();
-        let environment_mode = tool_environment_mode(context.step_context);
+    if crate::guardian::is_guardian_reviewer_source(&context.turn_context.session_source) {
+        let turn_context = context.turn_context;
+        let environment_mode = turn_context.tool_environment_mode();
         if environment_mode.has_environment() {
             let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
             planned_tools.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
                 allow_login_shell: turn_context.config.permissions.allow_login_shell,
                 exec_permission_approvals_enabled: false,
                 include_environment_id,
-                include_shell_parameter: unified_exec_should_include_shell_parameter(
-                    turn_context,
-                    context.step_context,
-                ),
+                include_shell_parameter: unified_exec_should_include_shell_parameter(turn_context),
             }));
             planned_tools.add(WriteStdinHandler);
             planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
