@@ -78,7 +78,7 @@ impl ShellSnapshot {
         let shell = environment.shell.clone()?;
         // TODO(anp): Migrate shell snapshot creation to accept PathUri and defer native
         // conversion to the spawned shell process.
-        let cwd = environment.cwd().clone();
+        let cwd = environment.cwd().to_abs_path().ok()?;
         Self::build_for_cwd(Arc::clone(config), cwd, shell).await
     }
 
@@ -342,6 +342,13 @@ export_lines=$(export -p | awk '
   line=$0
   name=line
   sub(/^(export|declare -x|typeset -x) /, "", name)
+  if (name ~ /^-[A-Za-z]*r[A-Za-z]* /) {
+    next
+  }
+  if (name ~ /^-[A-Za-z]*T[A-Za-z]* /) {
+    sub(/^-[A-Za-z]*T[A-Za-z]* /, "", name)
+    sub(/ [A-Za-z_][A-Za-z0-9_]*=.*/, "", name)
+  }
   sub(/=.*/, "", name)
   if (name ~ /^(EXCLUDED_EXPORTS)$/) {
     next

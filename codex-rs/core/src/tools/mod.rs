@@ -1,3 +1,4 @@
+mod approvals;
 #[cfg(not(target_os = "android"))]
 pub(crate) mod code_mode;
 #[cfg(target_os = "android")]
@@ -68,10 +69,6 @@ fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
     #[cfg(target_os = "android")]
     {
         let _ = turn_context;
-        return ToolMode::Direct;
-    }
-
-    if crate::guardian::is_guardian_reviewer_source(&turn_context.session_source) {
         return ToolMode::Direct;
     }
 

@@ -120,7 +120,7 @@ pub(crate) async fn execute_user_shell_command(
             trace_id: turn_context.trace_id.clone(),
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
-            collaboration_mode_kind: turn_context.collaboration_mode.mode,
+            collaboration_mode_kind: turn_context.mode,
         });
         session.send_event(turn_context.as_ref(), event).await;
     }
@@ -146,7 +146,15 @@ pub(crate) async fn execute_user_shell_command(
     let display_command = environment_shell.derive_exec_args(&command, use_login_shell);
     // TODO(anp): Migrate user-shell events and execution plumbing to PathUri so this local-only
     // feature does not need to project the selected environment cwd onto the Codex host.
-    let cwd = turn_environment.cwd().clone();
+    let Ok(cwd) = turn_environment.cwd().to_abs_path() else {
+        send_user_shell_error(
+            &session,
+            turn_context.as_ref(),
+            "shell working directory is not native to the Codex host",
+        )
+        .await;
+        return;
+    };
     let shell_snapshot_location = turn_environment.shell_snapshot(&cwd);
     let mut exec_env_map = create_env(
         &turn_context.config.permissions.shell_environment_policy,
@@ -223,6 +231,7 @@ pub(crate) async fn execute_user_shell_command(
         exec_server_sandbox: None,
         exec_server_enforce_managed_network: false,
         exec_server_managed_network: None,
+        exec_server_network_proxy: None,
     };
 
     let stdout_stream = Some(StdoutStream {

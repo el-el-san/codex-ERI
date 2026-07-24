@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::function_tool::FunctionCallError;
@@ -9,6 +10,11 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_features::Features;
+use codex_tools::FreeformTool;
+use codex_tools::FreeformToolFormat;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
@@ -24,6 +30,10 @@ pub(crate) struct InProcessCodeModeSessionProvider;
 
 impl CodeModeSessionProvider for InProcessCodeModeSessionProvider {}
 
+pub(crate) fn default_exec_yield_time_override_ms(_features: &Features) -> Option<u64> {
+    None
+}
+
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
     tool_name.namespace.is_none() && tool_name.name == PUBLIC_TOOL_NAME
 }
@@ -33,7 +43,10 @@ pub(crate) struct CodeModeService {
 }
 
 impl CodeModeService {
-    pub(crate) fn new(session_provider: Arc<dyn CodeModeSessionProvider>) -> Self {
+    pub(crate) fn new(
+        session_provider: Arc<dyn CodeModeSessionProvider>,
+        _features: &Features,
+    ) -> Self {
         Self { session_provider }
     }
 
@@ -98,7 +111,7 @@ impl ToolExecutor<ToolInvocation> for CodeModeWaitHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        execute_spec::create_wait_tool()
+        wait_spec::create_wait_tool()
     }
 
     fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
@@ -114,23 +127,77 @@ impl CoreToolRuntime for CodeModeWaitHandler {}
 
 pub(crate) mod execute_spec {
     use super::*;
-    use std::collections::BTreeMap;
 
     pub(crate) fn create_code_mode_tool(
-        enabled_tools: &[codex_tools::CodeModeToolDefinition],
-        namespace_descriptions: &BTreeMap<String, codex_tools::ToolNamespaceDescription>,
-        code_mode_only_enabled: bool,
-        deferred_tools_available: bool,
+        _enabled_tools: &[codex_tools::CodeModeToolDefinition],
+        _deferred_tools: &[codex_tools::CodeModeToolDefinition],
+        _namespace_descriptions: &BTreeMap<String, codex_tools::ToolNamespaceDescription>,
+        _default_exec_yield_time_ms: u64,
+        _code_mode_only: bool,
     ) -> ToolSpec {
-        codex_tools::create_code_mode_tool(
-            enabled_tools,
-            namespace_descriptions,
-            code_mode_only_enabled,
-            deferred_tools_available,
-        )
+        const CODE_MODE_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+pragma_source: PRAGMA_LINE NEWLINE SOURCE
+plain_source: SOURCE
+
+PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
+NEWLINE: /\r?\n/
+SOURCE: /[\s\S]+/
+"#;
+
+        ToolSpec::Freeform(FreeformTool {
+            name: PUBLIC_TOOL_NAME.to_string(),
+            description: CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            format: FreeformToolFormat {
+                r#type: "grammar".to_string(),
+                syntax: "lark".to_string(),
+                definition: CODE_MODE_FREEFORM_GRAMMAR.to_string(),
+            },
+        })
     }
+}
+
+pub(crate) mod wait_spec {
+    use super::*;
 
     pub(crate) fn create_wait_tool() -> ToolSpec {
-        codex_tools::create_wait_tool()
+        let properties = BTreeMap::from([
+            (
+                "cell_id".to_string(),
+                JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
+            ),
+            (
+                "yield_time_ms".to_string(),
+                JsonSchema::number(Some(
+                    "Wait before yielding more output. Defaults to 10000 ms.".to_string(),
+                )),
+            ),
+            (
+                "max_tokens".to_string(),
+                JsonSchema::number(Some(
+                    "Output token budget for this wait call. Defaults to 10000 tokens.".to_string(),
+                )),
+            ),
+            (
+                "terminate".to_string(),
+                JsonSchema::boolean(Some(
+                    "True stops the running exec cell; false or omitted waits for output."
+                        .to_string(),
+                )),
+            ),
+        ]);
+
+        ToolSpec::Function(ResponsesApiTool {
+            name: WAIT_TOOL_NAME.to_string(),
+            description: CODE_MODE_UNSUPPORTED_MESSAGE.to_string(),
+            strict: false,
+            parameters: JsonSchema::object(
+                properties,
+                Some(vec!["cell_id".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+            defer_loading: None,
+        })
     }
 }

@@ -122,7 +122,6 @@ async fn thread_settings_update(
 ) -> SessionSettingsUpdate {
     let ThreadSettingsOverrides {
         environments,
-        workspace_roots,
         profile_workspace_roots,
         approval_policy,
         approvals_reviewer,
@@ -151,7 +150,6 @@ async fn thread_settings_update(
     };
     SessionSettingsUpdate {
         environments,
-        workspace_roots,
         profile_workspace_roots,
         approval_policy,
         approvals_reviewer,
@@ -226,7 +224,7 @@ pub(super) async fn user_input_or_turn_inner(
         })
         .await;
     }
-    sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
+    sess.maybe_emit_model_warnings_for_turn(current_context.as_ref())
         .await;
     match sess
         .steer_input(
@@ -609,12 +607,10 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
     if let Err(err) = sess.services.code_mode_service.shutdown().await {
         warn!("failed to shutdown code mode session: {err}");
     }
-    sess.services
-        .latest_mcp_runtime()
-        .manager_arc()
-        .shutdown()
-        .await;
+    sess.services.mcp_runtime.shutdown().await;
     sess.guardian_review_session.shutdown().await;
+
+    crate::hook_runtime::run_session_end_hooks(sess).await;
 }
 
 async fn emit_thread_stop_lifecycle(sess: &Session) {
@@ -682,7 +678,7 @@ pub async fn review(
     review_request: ReviewRequest,
 ) {
     let turn_context = sess.new_default_turn_with_sub_id(sub_id.clone()).await;
-    sess.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+    sess.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
     sess.refresh_mcp_servers_if_requested(&turn_context, Some(sess.mcp_elicitation_reviewer()))
         .await;

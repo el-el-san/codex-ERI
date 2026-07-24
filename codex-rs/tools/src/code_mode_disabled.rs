@@ -1,13 +1,16 @@
-use crate::FreeformTool;
-use crate::FreeformToolFormat;
 use crate::JsonSchema;
-use crate::ResponsesApiTool;
 use crate::ToolName;
 use crate::ToolSpec;
 use serde::Serialize;
 
 pub const PUBLIC_TOOL_NAME: &str = "exec";
 pub const WAIT_TOOL_NAME: &str = "wait";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum CodeModeToolKind {
+    Function,
+    Freeform,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ToolNamespaceDescription {
@@ -20,6 +23,7 @@ pub struct CodeModeToolDefinition {
     pub tool_name: ToolName,
     pub name: String,
     pub description: String,
+    pub kind: CodeModeToolKind,
     pub input_schema: Option<serde_json::Value>,
     pub output_schema: Option<JsonSchema>,
 }
@@ -56,71 +60,4 @@ pub fn code_mode_name_for_tool_name(tool_name: &ToolName) -> String {
 
 pub fn is_code_mode_nested_tool(_name: &str) -> bool {
     false
-}
-
-pub fn create_wait_tool() -> ToolSpec {
-    let properties = std::collections::BTreeMap::from([
-        (
-            "cell_id".to_string(),
-            JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
-        ),
-        (
-            "yield_time_ms".to_string(),
-            JsonSchema::number(Some(
-                "Wait before yielding more output. Defaults to 10000 ms.".to_string(),
-            )),
-        ),
-        (
-            "max_tokens".to_string(),
-            JsonSchema::number(Some(
-                "Output token budget for this wait call. Defaults to 10000 tokens.".to_string(),
-            )),
-        ),
-        (
-            "terminate".to_string(),
-            JsonSchema::boolean(Some(
-                "True stops the running exec cell; false or omitted waits for output.".to_string(),
-            )),
-        ),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: WAIT_TOOL_NAME.to_string(),
-        description: "Waits on a yielded exec cell.".to_string(),
-        strict: false,
-        parameters: JsonSchema::object(
-            properties,
-            Some(vec!["cell_id".to_string()]),
-            Some(false.into()),
-        ),
-        output_schema: None,
-        defer_loading: None,
-    })
-}
-
-pub fn create_code_mode_tool(
-    _enabled_tools: &[CodeModeToolDefinition],
-    _namespace_descriptions: &std::collections::BTreeMap<String, ToolNamespaceDescription>,
-    _code_mode_only_enabled: bool,
-    _deferred_tools_available: bool,
-) -> ToolSpec {
-    const CODE_MODE_FREEFORM_GRAMMAR: &str = r#"
-start: pragma_source | plain_source
-pragma_source: PRAGMA_LINE NEWLINE SOURCE
-plain_source: SOURCE
-
-PRAGMA_LINE: /[ \t]*\/\/ @exec:[^\r\n]*/
-NEWLINE: /\r?\n/
-SOURCE: /[\s\S]+/
-"#;
-
-    ToolSpec::Freeform(FreeformTool {
-        name: PUBLIC_TOOL_NAME.to_string(),
-        description: "Execute JavaScript source in code mode.".to_string(),
-        format: FreeformToolFormat {
-            r#type: "grammar".to_string(),
-            syntax: "lark".to_string(),
-            definition: CODE_MODE_FREEFORM_GRAMMAR.to_string(),
-        },
-    })
 }

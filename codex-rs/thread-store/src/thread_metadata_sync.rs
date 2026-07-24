@@ -11,6 +11,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::strip_user_message_prefix;
@@ -20,6 +21,7 @@ use crate::CreateThreadParams;
 use crate::GitInfoPatch;
 use crate::ResumeThreadParams;
 use crate::ThreadMetadataPatch;
+use crate::types::canonical_history_mode_from_rollout_items;
 
 const THREAD_UPDATED_AT_TOUCH_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -193,7 +195,17 @@ impl ThreadMetadataSync {
     }
 
     fn observe_resume_history(&mut self, items: &[RolloutItem]) -> Option<ThreadMetadataPatch> {
-        self.observe_items_with_update(items, ThreadMetadataPatch::default())
+        let mut update = self.observe_items_with_update(items, ThreadMetadataPatch::default())?;
+        if matches!(
+            canonical_history_mode_from_rollout_items(items),
+            ThreadHistoryMode::Paginated
+        ) {
+            // Paginated rollouts never append metadata-only SessionMeta updates. Do not reapply
+            // initial metadata when resume history is flushed after the first append.
+            update.git_info = None;
+            update.memory_mode = None;
+        }
+        Some(update)
     }
 
     fn observe_items_with_update(
@@ -240,7 +252,7 @@ impl ThreadMetadataSync {
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
                     update.model = Some(turn_ctx.model.clone());
-                    update.reasoning_effort = turn_ctx.effort.clone();
+                    update.reasoning_effort = Some(turn_ctx.effort.clone());
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
@@ -268,6 +280,16 @@ impl ThreadMetadataSync {
                             update.preview = Some(objective.to_string());
                         }
                     }
+                }
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    let settings = &event.thread_settings;
+                    self.cwd_seen = true;
+                    update.model = Some(settings.model.clone());
+                    update.model_provider = Some(settings.model_provider_id.clone());
+                    update.reasoning_effort = Some(settings.reasoning_effort.clone());
+                    update.cwd = Some(settings.cwd.clone().into_path_buf());
+                    update.approval_mode = Some(settings.approval_policy);
+                    update.permission_profile = Some(settings.permission_profile.clone());
                 }
                 RolloutItem::SessionMeta(_)
                 | RolloutItem::EventMsg(_)
@@ -374,7 +396,15 @@ fn git_info_patch_from_observation(git_info: GitInfo) -> GitInfoPatch {
 mod tests {
     use std::sync::Arc;
 
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::ReasoningSummary;
+    use codex_protocol::config_types::Settings;
     use codex_protocol::items::UserMessageItem;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::SessionMeta;
@@ -383,6 +413,8 @@ mod tests {
     use codex_protocol::protocol::ThreadGoal;
     use codex_protocol::protocol::ThreadGoalStatus;
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::user_input::UserInput;
@@ -552,6 +584,74 @@ mod tests {
     }
 
     #[test]
+    fn thread_settings_applied_updates_live_metadata() {
+        let thread_id = ThreadId::new();
+        let mut sync = ThreadMetadataSync::for_resume(&resume_params(thread_id, Vec::new()));
+        let permission_profile = PermissionProfile::workspace_write();
+        let cwd = std::env::current_dir()
+            .expect("current directory")
+            .join("updated/workspace");
+
+        let mut item = RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: "gpt-5.2-codex".to_string(),
+                    model_provider_id: "updated-provider".to_string(),
+                    service_tier: None,
+                    approval_policy: AskForApproval::Never,
+                    approvals_reviewer: ApprovalsReviewer::User,
+                    permission_profile: permission_profile.clone(),
+                    active_permission_profile: None,
+                    cwd: cwd.clone().try_into().expect("absolute settings cwd"),
+                    reasoning_effort: Some(ReasoningEffort::Ultra),
+                    reasoning_summary: Some(ReasoningSummary::Auto),
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: "gpt-5.2-codex".to_string(),
+                            reasoning_effort: Some(ReasoningEffort::Ultra),
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ));
+
+        let update = sync
+            .observe_appended_items(&[item.clone()])
+            .expect("thread settings metadata update");
+
+        assert_eq!(update.patch.model.as_deref(), Some("gpt-5.2-codex"));
+        assert_eq!(
+            update.patch.model_provider.as_deref(),
+            Some("updated-provider")
+        );
+        assert_eq!(
+            update.patch.reasoning_effort,
+            Some(Some(ReasoningEffort::Ultra))
+        );
+        assert_eq!(update.patch.cwd, Some(cwd));
+        assert_eq!(update.patch.approval_mode, Some(AskForApproval::Never));
+        assert_eq!(update.patch.permission_profile, Some(permission_profile));
+
+        let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut item else {
+            panic!("thread settings applied item");
+        };
+        event.thread_settings.reasoning_effort = None;
+        event
+            .thread_settings
+            .collaboration_mode
+            .settings
+            .reasoning_effort = None;
+
+        let update = sync
+            .observe_appended_items(&[item])
+            .expect("thread settings clear metadata update");
+        assert_eq!(update.patch.reasoning_effort, Some(None));
+    }
+
+    #[test]
     fn resume_history_waits_for_append_before_flushing_metadata() {
         let thread_id = ThreadId::new();
         let mut sync = ThreadMetadataSync::for_resume(&resume_params(
@@ -573,6 +673,31 @@ mod tests {
             .is_some(),
             "the first append should flush resume metadata together with append metadata"
         );
+    }
+
+    #[test]
+    fn paginated_resume_history_does_not_reapply_initial_metadata() {
+        let thread_id = ThreadId::new();
+        let mut meta = session_meta(thread_id);
+        meta.meta.history_mode = ThreadHistoryMode::Paginated;
+        meta.meta.memory_mode = Some("disabled".to_string());
+        meta.git = Some(GitInfo {
+            commit_hash: None,
+            branch: Some("stale-branch".to_string()),
+            repository_url: None,
+        });
+        let sync = ThreadMetadataSync::for_resume(&resume_params(
+            thread_id,
+            vec![
+                RolloutItem::SessionMeta(meta),
+                RolloutItem::EventMsg(EventMsg::UserMessage(user_message("hello metadata"))),
+            ],
+        ));
+
+        let update = sync.take_pending_update().expect("pending metadata update");
+        assert_eq!(update.patch.git_info, None);
+        assert_eq!(update.patch.memory_mode, None);
+        assert_eq!(update.patch.preview.as_deref(), Some("hello metadata"));
     }
 
     fn resume_params(thread_id: ThreadId, history: Vec<RolloutItem>) -> ResumeThreadParams {

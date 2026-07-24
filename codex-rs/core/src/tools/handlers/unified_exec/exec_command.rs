@@ -29,11 +29,14 @@ use crate::unified_exec::generate_chunk_id;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
+use codex_sandboxing::SandboxManager;
+use codex_sandboxing::SandboxType;
+use codex_sandboxing::SandboxablePreference;
 use codex_shell_command::shell_detect::detect_shell_type;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
-use codex_utils_path_uri::PathUri;
+use codex_utils_path_uri::PathConvention;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
@@ -141,13 +144,39 @@ impl ExecCommandHandler {
             .as_deref()
             .filter(|workdir| !workdir.is_empty())
             .map_or_else(
-                || native_environment_cwd.clone(),
+                || Ok(native_environment_cwd.clone()),
                 |workdir| native_environment_cwd.join(workdir),
-            );
-        let cwd_uri = PathUri::from_abs_path(&cwd);
+            )
+            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
         let environment = Arc::clone(&turn_environment.environment);
         let fs = environment.get_filesystem();
-        let native_cwd = Some(cwd.clone());
+
+        // A foreign cwd cannot seed the AbsolutePathBufGuard used to resolve relative paths in the
+        // permissions config below. Consult the configured platform-sandbox requirement before
+        // deciding whether parsing may continue without that base path.
+        let sandbox = SandboxManager::new().select_initial(
+            &turn.file_system_sandbox_policy(),
+            turn.network_sandbox_policy(),
+            SandboxablePreference::Auto,
+            turn.windows_sandbox_level,
+            turn.network.is_some(),
+        );
+        // `to_abs_path()` alone cannot identify foreign drive paths: `file:///C:/repo` is
+        // representable as `/C:/repo` on POSIX. Require the inferred convention to match too.
+        let cwd_uses_native_convention =
+            cwd.infer_path_convention() == Some(PathConvention::native());
+        // TODO(anp): Remove this parsing split once sandboxing supports foreign paths.
+        let native_cwd = match cwd.to_abs_path() {
+            Ok(cwd) if cwd_uses_native_convention => Some(cwd),
+            _ if sandbox == SandboxType::None => None,
+            Err(err) => return Err(FunctionCallError::RespondToModel(err.to_string())),
+            Ok(_) => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "path URI `{cwd}` does not use the host's native {} path convention",
+                    PathConvention::native()
+                )));
+            }
+        };
         let mut args: ExecCommandArgs = match native_cwd.as_ref() {
             Some(native_cwd) => {
                 // The base path only resolves paths nested in the permissions config types.
@@ -284,7 +313,7 @@ impl ExecCommandHandler {
 
         if let Some(output) = intercept_apply_patch(
             &command,
-            &cwd_uri,
+            &cwd,
             fs.as_ref(),
             turn_environment.clone(),
             context.session.clone(),
@@ -306,6 +335,7 @@ impl ExecCommandHandler {
                 process_id: None,
                 exit_code: None,
                 original_token_count: None,
+                output_omitted_bytes: None,
                 hook_command: None,
             }));
         }
@@ -320,8 +350,8 @@ impl ExecCommandHandler {
                     process_id,
                     yield_time_ms,
                     max_output_tokens,
-                    cwd: cwd_uri,
-                    sandbox_cwd: native_environment_cwd.into(),
+                    cwd,
+                    sandbox_cwd: native_environment_cwd,
                     turn_environment: turn_environment.clone(),
                     shell_mode,
                     network: context.turn.network.clone(),
@@ -338,9 +368,15 @@ impl ExecCommandHandler {
             .await
         {
             Ok(response) => Ok(boxed_tool_output(response)),
-            Err(UnifiedExecError::SandboxDenied { output, .. }) => {
+            Err(UnifiedExecError::SandboxDenied {
+                output,
+                original_token_count,
+                output_omitted_bytes,
+                ..
+            }) => {
                 let output_text = output.aggregated_output.text;
-                let original_token_count = approx_token_count(&output_text);
+                let original_token_count =
+                    original_token_count.unwrap_or_else(|| approx_token_count(&output_text));
                 Ok(boxed_tool_output(ExecCommandToolOutput {
                     event_call_id: context.call_id.clone(),
                     chunk_id: generate_chunk_id(),
@@ -353,6 +389,7 @@ impl ExecCommandHandler {
                     process_id: None,
                     exit_code: Some(output.exit_code),
                     original_token_count: Some(original_token_count),
+                    output_omitted_bytes,
                     hook_command: Some(hook_command),
                 }))
             }
