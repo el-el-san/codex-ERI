@@ -110,6 +110,11 @@
   - `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
   - これにより `thread/start failed during TUI bootstrap` エラーが解消される
 
+- `thread-store/src/local/writer_lock.rs`（0.147.0 で新設）の `file.lock()` / `file.try_lock()` も同様にAndroidで非対応
+  - `lock_coordination` 内の `file.lock()` と `acquire` 内の `file.try_lock()` を `#[cfg(not(target_os = "android"))]` で除外
+  - Android では `remove_stale_thread_locks` は stale 判定ができないため no-op とする
+  - 未対策だと `thread/start failed during TUI bootstrap: ... .coordination.lock: lock() not supported` で起動不可になる
+
 ### 3.7 Androidビルドでの警告抑止（clipboard_paste）
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
   - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
@@ -250,6 +255,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `quinn-proto` / `event-listener` / `memmap2` を監査済み修正版へ更新し、
     `serial_test` が `scc` 2 系を要求する `RUSTSEC-2026-0205` は理由を明記して一時除外
 - GitHub Actions の Android aarch64 release build、Cargo audit、CodeQL が成功
+- リリース後に発覚した不具合の修正（hotfix）:
+  - `thread-store/src/local/writer_lock.rs`（0.147.0 新設）の `file.lock()` / `file.try_lock()` が
+    Android で `lock() not supported` となり `thread/start failed during TUI bootstrap` で起動不可だったため、
+    `arg0` / `installation_id` と同じ `#[cfg(not(target_os = "android"))]` パターンで回避
+    （Android では stale クリーンアップも no-op）
 
 ### 2026-07-24 更新内容（rust-v0.145.0）
 - 上流 `rust-v0.145.0` を取り込み、`codex-rs` を同期
@@ -459,6 +469,8 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 症状: `codex` 起動時に `Error: thread/start failed during TUI bootstrap` で即終了
 - 原因: `core/src/installation_id.rs` の `file.lock()` (Rust 1.87+ の `std::fs::File::lock`) がAndroidで非対応
 - 対処: `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
+- 補足: エラーメッセージに `thread-writer-locks/.coordination.lock` が含まれる場合は
+  `thread-store/src/local/writer_lock.rs`（0.147.0 で新設）のロックが原因。§3.6 の対処を適用する
 
 ### 8.5 Androidビルドで unused/dead_code 警告が出る
 - 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る

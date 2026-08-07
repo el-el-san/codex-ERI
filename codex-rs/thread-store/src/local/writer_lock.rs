@@ -61,6 +61,9 @@ impl WriterLockCoordinator {
                 ),
             })?;
 
+        // Android (Termux) では OS のファイルロックがサポートされず
+        // `try_lock()` がエラーになるため、排他制御は行わず取得済みとして扱う。
+        #[cfg(not(target_os = "android"))]
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -106,6 +109,9 @@ impl WriterLockCoordinator {
                     path.display()
                 ),
             })?;
+        // Android (Termux) では `File::lock()` が `lock() not supported` で
+        // 失敗するため、ファイルの作成・オープンのみ行いロックは取得しない。
+        #[cfg(not(target_os = "android"))]
         file.lock().map_err(|err| ThreadStoreError::Internal {
             message: format!(
                 "failed to acquire thread writer coordination lock {}: {err}",
@@ -116,52 +122,61 @@ impl WriterLockCoordinator {
     }
 
     fn remove_stale_thread_locks(&self) -> io::Result<()> {
-        for entry in fs::read_dir(&self.directory)? {
-            let entry = entry?;
-            let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            let Some(thread_id) = file_name.strip_suffix(".lock") else {
-                continue;
-            };
-            if ThreadId::from_string(thread_id).is_err() {
-                continue;
-            }
-
-            let path = entry.path();
-            let file = match OpenOptions::new().read(true).write(true).open(&path) {
-                Ok(file) => file,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-                Err(err) => {
-                    warn!(
-                        "failed to inspect thread writer lock {}: {err}",
-                        path.display()
-                    );
+        // Android ではファイルロックが使えず stale 判定ができないため、
+        // 排他制御自体を行わないのに合わせてクリーンアップも行わない。
+        #[cfg(target_os = "android")]
+        {
+            Ok(())
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            for entry in fs::read_dir(&self.directory)? {
+                let entry = entry?;
+                let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let Some(thread_id) = file_name.strip_suffix(".lock") else {
+                    continue;
+                };
+                if ThreadId::from_string(thread_id).is_err() {
                     continue;
                 }
-            };
-            match file.try_lock() {
-                Ok(()) => {
-                    drop(file);
-                    if let Err(err) = fs::remove_file(&path)
-                        && err.kind() != io::ErrorKind::NotFound
-                    {
+
+                let path = entry.path();
+                let file = match OpenOptions::new().read(true).write(true).open(&path) {
+                    Ok(file) => file,
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                    Err(err) => {
                         warn!(
-                            "failed to remove stale thread writer lock {}: {err}",
+                            "failed to inspect thread writer lock {}: {err}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                };
+                match file.try_lock() {
+                    Ok(()) => {
+                        drop(file);
+                        if let Err(err) = fs::remove_file(&path)
+                            && err.kind() != io::ErrorKind::NotFound
+                        {
+                            warn!(
+                                "failed to remove stale thread writer lock {}: {err}",
+                                path.display()
+                            );
+                        }
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(err)) => {
+                        warn!(
+                            "failed to inspect thread writer lock {}: {err}",
                             path.display()
                         );
                     }
                 }
-                Err(std::fs::TryLockError::WouldBlock) => {}
-                Err(std::fs::TryLockError::Error(err)) => {
-                    warn!(
-                        "failed to inspect thread writer lock {}: {err}",
-                        path.display()
-                    );
-                }
             }
+            Ok(())
         }
-        Ok(())
     }
 }
 
