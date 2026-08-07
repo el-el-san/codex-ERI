@@ -11,6 +11,7 @@ use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::RolloutBudgetConfigToml;
 use codex_features::TokenBudgetConfigToml;
+use codex_features::ToolRegistryConfigToml;
 use codex_protocol::ThreadId;
 
 use crate::config::Config;
@@ -93,13 +94,17 @@ fn session_configuration_to_lock_config_toml(
         .effective_config()
         .try_into()
         .context("failed to deserialize effective config for config lock")?;
-
     if config.config_lock_save_fields_resolved_from_model_catalog {
         save_session_resolved_fields(sc, &mut lock_config);
     }
 
     save_config_resolved_fields(config, &mut lock_config)?;
     drop_lockfile_inputs(&mut lock_config);
+    // Apply exact managed values last so cleanup cannot discard their runtime-effective values.
+    config
+        .config_layer_stack
+        .requirements_toml()
+        .apply_exact_to_config(&mut lock_config);
 
     Ok(lock_config)
 }
@@ -149,11 +154,18 @@ fn save_config_resolved_fields(
         .features
         .get_or_insert_with(FeaturesToml::default);
     features.materialize_resolved_enabled(config.features.get());
+    if config.tool_registry.error_on_tool_collisions || features.tool_registry.is_some() {
+        features.tool_registry = Some(ToolRegistryConfigToml {
+            error_on_tool_collisions: Some(config.tool_registry.error_on_tool_collisions),
+        });
+    }
     let mut multi_agent_v2: MultiAgentV2ConfigToml =
         resolved_config_to_toml(&config.multi_agent_v2, "features.multi_agent_v2")?;
     multi_agent_v2.enabled = Some(config.features.enabled(Feature::MultiAgentV2));
     features.multi_agent_v2 = Some(FeatureToml::Config(multi_agent_v2));
-    if let Some(token_budget) = config.token_budget.as_ref() {
+    if let Some(token_budget) = config.token_budget.as_ref()
+        && super::token_budget::has_explicit_settings(config)
+    {
         let mut token_budget: TokenBudgetConfigToml =
             resolved_config_to_toml(token_budget, "features.token_budget")?;
         token_budget.enabled = Some(config.features.enabled(Feature::TokenBudget));
@@ -235,14 +247,32 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_config::test_support::CloudConfigBundleFixture;
+    use codex_models_manager::bundled_models_response;
     use pretty_assertions::assert_eq;
+    use std::path::Path;
     use std::sync::Arc;
+
+    fn write_model_catalog(path: &Path) {
+        let mut catalog = bundled_models_response()
+            .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+        catalog.models = catalog.models.into_iter().take(1).collect();
+        std::fs::write(
+            path,
+            serde_json::to_string(&catalog).expect("serialize model catalog"),
+        )
+        .expect("write model catalog");
+    }
 
     #[tokio::test]
     async fn lock_contains_prompts_and_materializes_features() {
         let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
         let mut config = (*sc.original_config_do_not_use).clone();
+        config.tool_registry.error_on_tool_collisions = true;
+        config.multi_agent_v2.subagent_developer_instructions =
+            Some("Locked subagent developer instructions.".to_string());
         config.token_budget = Some(crate::config::TokenBudgetConfig {
+            mode: codex_features::TokenBudgetMode::Thread,
             reminder_threshold_tokens: Some(16_000),
             reminder_message_template: "Locked reminder: {n_remaining} tokens.".to_string(),
             guidance_message: Some("Locked context-window guidance.".to_string()),
@@ -296,6 +326,12 @@ mod tests {
             .features
             .as_ref()
             .expect("lock should materialize feature states");
+        assert_eq!(
+            features.tool_registry,
+            Some(ToolRegistryConfigToml {
+                error_on_tool_collisions: Some(true),
+            })
+        );
         let feature_entries = features.entries();
         for spec in codex_features::FEATURES {
             assert_eq!(
@@ -326,15 +362,17 @@ mod tests {
                 min_wait_timeout_ms: Some(_),
                 max_wait_timeout_ms: Some(_),
                 default_wait_timeout_ms: Some(_),
+                subagent_developer_instructions: Some(instructions),
                 hide_spawn_agent_metadata: Some(_),
                 ..
-            })
+            }) if instructions == "Locked subagent developer instructions."
         ));
 
         assert_eq!(
             features.token_budget,
             Some(FeatureToml::Config(TokenBudgetConfigToml {
                 enabled: Some(true),
+                mode: Some(codex_features::TokenBudgetMode::Thread),
                 reminder_threshold_tokens: Some(16_000),
                 reminder_message_template: Some(
                     "Locked reminder: {n_remaining} tokens.".to_string()
@@ -370,6 +408,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lock_preserves_model_owned_token_budget_defaults() {
+        let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
+        let mut config = (*sc.original_config_do_not_use).clone();
+        config.token_budget = Some(crate::config::TokenBudgetConfig::default());
+        config
+            .features
+            .enable(Feature::TokenBudget)
+            .expect("token_budget should be enableable in tests");
+        sc.original_config_do_not_use = Arc::new(config);
+
+        let lockfile = sc.to_config_lockfile_toml().expect("lock should serialize");
+        let features = lockfile
+            .config
+            .features
+            .as_ref()
+            .expect("lock should materialize feature states");
+
+        assert_eq!(
+            features.token_budget.as_ref(),
+            Some(&FeatureToml::Enabled(true))
+        );
+        assert_eq!(features.tool_registry, None);
+    }
+
+    #[tokio::test]
     async fn lock_skips_session_values_when_model_catalog_fields_are_not_saved() {
         let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
         let mut config = (*sc.original_config_do_not_use).clone();
@@ -393,6 +456,90 @@ mod tests {
         assert_eq!(lock.personality, None);
         assert_eq!(lock.approval_policy, None);
         assert_eq!(lock.approvals_reviewer, None);
+    }
+
+    #[tokio::test]
+    async fn lock_contains_exact_managed_requirements() {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let sqlite_home = codex_home.path().join("managed-state");
+        let log_dir = codex_home.path().join("managed-logs");
+        let catalog_path = codex_home.path().join("managed-models.json");
+        write_model_catalog(&catalog_path);
+        let requirements = format!(
+            r#"
+sqlite_home = {:?}
+log_dir = {:?}
+model_catalog_json = {:?}
+check_for_update_on_startup = false
+allow_login_shell = false
+
+[feedback]
+enabled = false
+
+[windows]
+sandbox_private_desktop = false
+"#,
+            sqlite_home.display(),
+            log_dir.display(),
+            catalog_path.display(),
+        );
+        let mut config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .cloud_config_bundle(
+                CloudConfigBundleFixture::loader_with_enterprise_requirement(requirements),
+            )
+            .build()
+            .await
+            .expect("config should load");
+        config.config_lock_save_fields_resolved_from_model_catalog = false;
+        let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
+        sc.original_config_do_not_use = Arc::new(config);
+
+        let lockfile = sc.to_config_lockfile_toml().expect("lock should serialize");
+        let lock = &lockfile.config;
+
+        assert_eq!(lock.sqlite_home.as_deref(), Some(sqlite_home.as_path()));
+        assert_eq!(lock.log_dir.as_deref(), Some(log_dir.as_path()));
+        assert_eq!(
+            lock.model_catalog_json.as_deref(),
+            Some(catalog_path.as_path())
+        );
+        assert_eq!(lock.check_for_update_on_startup, Some(false));
+        assert_eq!(lock.allow_login_shell, Some(false));
+        assert_eq!(
+            lock.feedback.as_ref().and_then(|feedback| feedback.enabled),
+            Some(false)
+        );
+        assert_eq!(
+            lock.windows
+                .as_ref()
+                .and_then(|windows| windows.sandbox_private_desktop),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn lock_drops_unmanaged_model_catalog_input() {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let catalog_path = codex_home.path().join("user-models.json");
+        write_model_catalog(&catalog_path);
+        let config = crate::config::ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .cli_overrides(vec![(
+                "model_catalog_json".to_string(),
+                toml::Value::String(catalog_path.display().to_string()),
+            )])
+            .build()
+            .await
+            .expect("config should load");
+        let mut sc = crate::session::tests::make_session_configuration_for_tests().await;
+        sc.original_config_do_not_use = Arc::new(config);
+
+        let lockfile = sc.to_config_lockfile_toml().expect("lock should serialize");
+
+        assert_eq!(lockfile.config.model_catalog_json, None);
     }
 
     #[tokio::test]

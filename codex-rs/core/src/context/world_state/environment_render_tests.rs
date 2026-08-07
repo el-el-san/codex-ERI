@@ -35,6 +35,7 @@ fn environment(id: &str, cwd: PathUri, shell: impl Into<String>) -> (String, Env
             cwd,
             status: EnvironmentStatus::Available,
             shell: Some(shell.into()),
+            is_primary: false,
         },
     )
 }
@@ -46,8 +47,16 @@ fn environment_state(
     network: Option<NetworkContext>,
     subagents: Option<String>,
 ) -> EnvironmentsState {
+    let environments = environments
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, mut environment))| {
+            environment.is_primary = index == 0;
+            (id, environment)
+        })
+        .collect();
     EnvironmentsState {
-        environments: environments.into_iter().collect(),
+        environments,
         current_date,
         timezone,
         network,
@@ -152,18 +161,21 @@ fn workspace_write_permission_profile_with_private_denials() -> PermissionProfil
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
                     value: FileSystemSpecialPath::project_roots(Some("private".to_string())),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::GlobPattern {
                     pattern: project_roots_glob_pattern(Path::new("private/**")),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
         ]),
         NetworkSandboxPolicy::Restricted,
@@ -284,11 +296,11 @@ fn serialize_environment_context_with_multiple_selected_environments() {
     let expected = format!(
         r#"<environment_context>
   <environments>
-    <environment id="local">
+    <environment id="local" primary="true">
       <cwd>{}</cwd>
       <shell>bash</shell>
     </environment>
-    <environment id="remote">
+    <environment id="remote" primary="false">
       <cwd>{}</cwd>
       <shell>bash</shell>
     </environment>
@@ -325,11 +337,11 @@ fn serialize_environment_context_prefers_environment_shell_when_present() {
     let expected = format!(
         r#"<environment_context>
   <environments>
-    <environment id="local">
+    <environment id="local" primary="true">
       <cwd>{}</cwd>
       <shell>powershell</shell>
     </environment>
-    <environment id="remote">
+    <environment id="remote" primary="false">
       <cwd>{}</cwd>
       <shell>cmd</shell>
     </environment>

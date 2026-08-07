@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -15,9 +16,11 @@ use std::time::Instant;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use tokio::sync::Semaphore;
 
+use http::HeaderValue;
+
+use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
-use crate::default_client::HttpClient;
 use sha2::Digest;
 use sha2::Sha256;
 use thiserror::Error;
@@ -139,9 +142,34 @@ impl fmt::Debug for OutboundProxyRoute {
 /// Construct this once from the effective application configuration and carry it with the
 /// session or component that owns outbound requests. Individual request paths should supply only
 /// their destination and route class rather than resolving feature state themselves.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct HttpClientFactory {
     outbound_proxy_policy: OutboundProxyPolicy,
+    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+}
+
+impl PartialEq for HttpClientFactory {
+    fn eq(&self, other: &Self) -> bool {
+        self.outbound_proxy_policy == other.outbound_proxy_policy
+            && self
+                .chatgpt_cookie_store
+                .as_ref()
+                .map(|store| store.configured_cookies())
+                == other
+                    .chatgpt_cookie_store
+                    .as_ref()
+                    .map(|store| store.configured_cookies())
+    }
+}
+
+impl Eq for HttpClientFactory {}
+
+impl fmt::Debug for HttpClientFactory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpClientFactory")
+            .field("outbound_proxy_policy", &self.outbound_proxy_policy)
+            .finish()
+    }
 }
 
 impl HttpClientFactory {
@@ -149,7 +177,25 @@ impl HttpClientFactory {
     pub const fn new(outbound_proxy_policy: OutboundProxyPolicy) -> Self {
         Self {
             outbound_proxy_policy,
+            chatgpt_cookie_store: None,
         }
+    }
+
+    /// Adds process-scoped cookies to requests made by ChatGPT cookie-store clients.
+    pub fn with_chatgpt_cookies(mut self, cookies: impl IntoIterator<Item = HeaderValue>) -> Self {
+        let cookies = cookies.into_iter().collect::<Vec<_>>();
+        self.chatgpt_cookie_store =
+            (!cookies.is_empty()).then(|| Arc::new(ChatGptCookieStore::new(cookies)));
+        self
+    }
+
+    /// Returns whether ChatGPT cookie-store clients have additional configured cookies.
+    pub fn has_chatgpt_cookies(&self) -> bool {
+        self.chatgpt_cookie_store.is_some()
+    }
+
+    pub(crate) fn chatgpt_cookie_store(&self) -> Option<Arc<ChatGptCookieStore>> {
+        self.chatgpt_cookie_store.clone()
     }
 
     /// Returns the outbound proxy policy used for clients built by this factory.
@@ -219,26 +265,6 @@ impl HttpClientFactory {
             .map(|decision| route_from_system_decision(&ProcessEnv, env_proxy_kind, decision))
     }
 
-    /// Builds an HTTP client for a concrete outbound route.
-    pub fn build_client(
-        &self,
-        request_url: &str,
-        route_class: ClientRouteClass,
-    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
-            .map(HttpClient::new)
-    }
-
-    /// Builds a route-aware client without request URL or response-header diagnostics.
-    pub fn build_client_without_request_logging(
-        &self,
-        request_url: &str,
-        route_class: ClientRouteClass,
-    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
-        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
-            .map(HttpClient::new_without_request_logging)
-    }
-
     /// Builds a reqwest client for a concrete outbound route.
     pub fn build_reqwest_client(
         &self,
@@ -252,6 +278,16 @@ impl HttpClientFactory {
             route_class,
             self.outbound_proxy_policy,
         )
+    }
+
+    pub(crate) fn build_reqwest_client_for_resolved_route(
+        &self,
+        builder: reqwest::ClientBuilder,
+        route_class: ClientRouteClass,
+        route: &OutboundProxyRoute,
+    ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
+        let builder = configure_builder_for_resolved_route(builder, route_class, route)?;
+        build_reqwest_client_with_custom_ca(builder).map_err(Into::into)
     }
 }
 
@@ -555,13 +591,20 @@ fn cached_system_proxy_decision_from_cache(
     None
 }
 
-#[cfg(test)]
 fn cache_system_proxy_decision(request_url: &str, decision: SystemProxyDecision) {
     let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut cache) = cache.lock() {
         let cache_key = system_proxy_cache_key(request_url);
         insert_system_proxy_cache_entry(&mut cache, &cache_key, decision, Instant::now());
     }
+}
+
+/// Primes one proxy decision for cross-crate integration tests.
+///
+/// This is public only so tests in HTTP-client consumers can exercise system-proxy routing
+/// deterministically on every supported platform.
+pub fn cache_system_proxy_route_for_test(request_url: &str, proxy_url: String) {
+    cache_system_proxy_decision(request_url, SystemProxyDecision::Proxy { url: proxy_url });
 }
 
 fn insert_system_proxy_cache_entry(
@@ -808,6 +851,10 @@ fn proxy_env_value(env: &dyn EnvSource, upper: &str) -> Option<String> {
         .or_else(|| env.var(&lower))
         .filter(|value| !value.is_empty())
 }
+
+#[cfg(test)]
+#[path = "route_aware_redirect_integration_tests.rs"]
+mod redirect_integration_tests;
 
 #[cfg(test)]
 #[path = "outbound_proxy_tests.rs"]

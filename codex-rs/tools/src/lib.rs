@@ -1,12 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
-#[cfg(not(target_os = "android"))]
 mod code_mode;
-#[cfg(target_os = "android")]
-mod code_mode_disabled;
-#[cfg(target_os = "android")]
-use code_mode_disabled as code_mode;
 mod dynamic_tool;
 mod function_call_error;
 mod image_detail;
@@ -25,15 +20,10 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
-pub use code_mode::CodeModeToolDefinition;
-pub use code_mode::PUBLIC_TOOL_NAME as CODE_MODE_PUBLIC_TOOL_NAME;
-pub use code_mode::ToolNamespaceDescription;
-pub use code_mode::WAIT_TOOL_NAME as CODE_MODE_WAIT_TOOL_NAME;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
 pub use code_mode::collect_code_mode_tool_definitions;
-pub use code_mode::is_code_mode_nested_tool;
 pub use code_mode::tool_spec_to_code_mode_tool_definition;
 pub use codex_protocol::ToolName;
 pub use dynamic_tool::parse_dynamic_tool;
@@ -48,6 +38,7 @@ pub use json_schema::JsonSchemaType;
 pub use json_schema::parse_tool_input_schema;
 pub use json_schema::parse_tool_input_schema_without_compaction;
 pub use mcp_tool::mcp_call_tool_result_output_schema;
+pub use mcp_tool::parse_agent_plugin_mcp_tool;
 pub use mcp_tool::parse_mcp_tool;
 pub use request_plugin_install::REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE;
 pub use request_plugin_install::REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE;
@@ -66,6 +57,7 @@ pub use responses_api::LoadableToolSpec;
 pub use responses_api::ResponsesApiNamespace;
 pub use responses_api::ResponsesApiNamespaceTool;
 pub use responses_api::ResponsesApiTool;
+pub use responses_api::agent_plugin_mcp_tool_to_responses_api_tool;
 pub use responses_api::coalesce_loadable_tool_specs;
 pub use responses_api::default_namespace_description;
 pub use responses_api::dynamic_tool_to_responses_api_tool;
@@ -106,6 +98,7 @@ pub use tool_discovery::filter_request_plugin_install_discoverable_tools_for_cli
 pub use tool_executor::ToolExecutor;
 pub use tool_executor::ToolExecutorFuture;
 pub use tool_executor::ToolExposure;
+pub use tool_executor::ToolExposures;
 pub use tool_output::JsonToolOutput;
 pub use tool_output::ToolOutput;
 pub use tool_payload::ToolPayload;
@@ -115,3 +108,5 @@ pub use tool_spec::ResponsesApiWebSearchFilters;
 pub use tool_spec::ResponsesApiWebSearchUserLocation;
 pub use tool_spec::ToolSpec;
 pub use tool_spec::create_tools_json_for_responses_api;
+pub use tool_spec::create_tools_json_for_responses_lite;
+pub use tool_spec::create_tools_raw_json_for_responses_api;

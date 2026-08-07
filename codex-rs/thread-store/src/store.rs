@@ -6,21 +6,32 @@ use std::pin::Pin;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
+use crate::ArchiveThreadsParams;
 use crate::CreateThreadParams;
+use crate::CreateThreadSectionParams;
 use crate::DeleteThreadParams;
+use crate::DeleteThreadSectionParams;
+use crate::DeleteThreadsParams;
 use crate::ItemPage;
 use crate::ListItemsParams;
+use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
+use crate::MoveThreadToSectionParams;
+use crate::PrepareForkParams;
+use crate::PreparedFork;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
+use crate::RenameThreadSectionParams;
 use crate::ResumeThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
 use crate::StoredModelContext;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::StoredThreadSection;
+use crate::StoredThreadSectionsPage;
 use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
@@ -93,6 +104,17 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Freezes source history and model context used to initialize a referenced fork.
+    ///
+    /// Stores without reference-backed fork support can retain this default implementation.
+    fn prepare_fork(&self, _params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "prepare_fork",
+            })
+        })
+    }
+
     /// Reads a thread summary and optionally its persisted history.
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
@@ -106,6 +128,59 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Lists stored threads matching the supplied filters.
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage>;
+
+    /// Whether this store can discover and manage independently persisted thread sections.
+    fn supports_thread_sections(&self) -> bool {
+        false
+    }
+
+    /// Lists independently persisted thread sections.
+    fn list_thread_sections(
+        &self,
+        _params: ListThreadSectionsParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadSectionsPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/list",
+            })
+        })
+    }
+
+    /// Creates a custom thread section with a stable, server-assigned identity.
+    fn create_thread_section(
+        &self,
+        _params: CreateThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadSection> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/create",
+            })
+        })
+    }
+
+    /// Renames a custom thread section, returning `None` when it does not exist.
+    fn rename_thread_section(
+        &self,
+        _params: RenameThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, Option<StoredThreadSection>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/update",
+            })
+        })
+    }
+
+    /// Deletes a custom thread section and reports whether it existed.
+    fn delete_thread_section(
+        &self,
+        _params: DeleteThreadSectionParams,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "threadSection/delete",
+            })
+        })
+    }
 
     /// Whether paginated threads can hydrate durable history through turn and item lists.
     fn supports_paginated_history_lists(&self) -> bool {
@@ -163,12 +238,60 @@ pub trait ThreadStore: Any + Send + Sync {
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread>;
 
+    /// Moves a thread to, within, or out of a server-ordered section.
+    fn move_thread_to_section(
+        &self,
+        _params: MoveThreadToSectionParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/section/move",
+            })
+        })
+    }
+
     /// Archives a thread.
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()>;
+
+    /// Archives threads in order, returning the successfully archived thread ids.
+    ///
+    /// The first thread must archive successfully; later failures are best effort.
+    fn archive_threads(
+        &self,
+        params: ArchiveThreadsParams,
+    ) -> ThreadStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
+            let mut archived_thread_ids = Vec::new();
+            for thread_id in params.thread_ids {
+                match self.archive_thread(ArchiveThreadParams { thread_id }).await {
+                    Ok(()) => archived_thread_ids.push(thread_id),
+                    Err(err) if archived_thread_ids.is_empty() => return Err(err),
+                    Err(err) => tracing::warn!("failed to archive thread {thread_id}: {err}"),
+                }
+            }
+            Ok(archived_thread_ids)
+        })
+    }
 
     /// Unarchives a thread and returns its updated metadata.
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
     /// Deletes a thread's persisted rollout data and associated metadata.
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()>;
+
+    /// Deletes threads in order, treating already-missing members as deleted.
+    ///
+    /// Stores with request-scoped delete preflight should override this instead of repeating
+    /// that work through [`ThreadStore::delete_thread`].
+    fn delete_threads(&self, params: DeleteThreadsParams) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            for thread_id in params.thread_ids {
+                match self.delete_thread(DeleteThreadParams { thread_id }).await {
+                    Ok(()) | Err(ThreadStoreError::ThreadNotFound { .. }) => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(())
+        })
+    }
 }

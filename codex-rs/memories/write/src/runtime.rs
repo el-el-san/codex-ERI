@@ -25,7 +25,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
@@ -260,7 +259,6 @@ impl MemoryStartupContext {
             config.features.enabled(Feature::EnableRequestCompression),
             config.features.enabled(Feature::RuntimeMetrics),
             /*beta_features_header*/ None,
-            config.features.enabled(Feature::ItemIds),
             /*concurrent_reasoning_summaries_enabled*/ false,
             /*attestation_provider*/ None,
             config.http_client_factory(),
@@ -322,28 +320,16 @@ impl MemoryStartupContext {
         config: Config,
         prompt: Vec<UserInput>,
     ) -> anyhow::Result<SpawnedConsolidationAgent> {
-        let environments = self
-            .thread_manager
-            .default_environment_selections(&config.cwd, &config.workspace_roots);
         let NewThread {
             thread_id, thread, ..
         } = self
             .thread_manager
-            .start_thread_with_options(StartThreadOptions {
-                config,
-                allow_provider_model_fallback: false,
-                initial_history: InitialHistory::New,
-                history_mode: None,
+            .start_thread(StartThreadOptions {
                 session_source: Some(SessionSource::Internal(
                     InternalSessionSource::MemoryConsolidation,
                 )),
                 thread_source: Some(ThreadSource::MemoryConsolidation),
-                dynamic_tools: Vec::new(),
-                metrics_service_name: None,
-                parent_trace: None,
-                environments,
-                thread_extension_init: Default::default(),
-                supports_openai_form_elicitation: false,
+                ..StartThreadOptions::new(config)
             })
             .await?;
 
@@ -375,17 +361,13 @@ impl MemoryStartupContext {
         agent: SpawnedConsolidationAgent,
     ) -> anyhow::Result<()> {
         let SpawnedConsolidationAgent { thread_id, thread } = agent;
-        let thread = self
-            .thread_manager
-            .remove_thread(&thread_id)
-            .await
-            .unwrap_or(thread);
-
         tokio::time::timeout(Duration::from_secs(10), thread.shutdown_and_wait())
             .await
             .map_err(|_| {
                 anyhow::anyhow!("memory consolidation agent {thread_id} shutdown timed out")
             })??;
+
+        self.thread_manager.remove_thread(&thread_id).await;
 
         Ok(())
     }

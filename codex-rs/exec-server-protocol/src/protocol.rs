@@ -105,6 +105,9 @@ pub struct EnvironmentCapabilities {
     /// Whether `exec` accepts instructions for launching an executor-local network proxy.
     #[serde(default)]
     pub network_proxy_launch: bool,
+    /// Whether capability discovery applies the filesystem sandbox sent with each root.
+    #[serde(default)]
+    pub capability_discovery_sandbox: bool,
 }
 
 /// Status returned by an initialized exec-server connection.
@@ -136,6 +139,7 @@ impl EnvironmentInfo {
                 .and_then(|cwd| PathUri::from_host_native_path(cwd).ok()),
             capabilities: EnvironmentCapabilities {
                 network_proxy_launch: true,
+                capability_discovery_sandbox: true,
             },
         }
     }
@@ -211,6 +215,20 @@ pub struct ExecEnvPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct ExecResponse {
     pub process_id: ProcessId,
+    /// `None` means the peer did not report its sandbox type. Current peers
+    /// report [`ProcessSandboxType::None`] when the process was not sandboxed.
+    #[serde(default)]
+    pub sandbox_type: Option<ProcessSandboxType>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProcessSandboxType {
+    /// The process was explicitly started without a platform sandbox.
+    None,
+    MacosSeatbelt,
+    LinuxSeccomp,
+    WindowsRestrictedToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +493,9 @@ pub struct CapabilityRootDiscoverRequest {
     pub id: String,
     /// Absolute root URI interpreted using the exec-server host's path rules.
     pub path: PathUri,
+    /// Filesystem permissions for this root and its symlink targets.
+    #[serde(default)]
+    pub sandbox: Option<FileSystemSandboxContext>,
 }
 
 /// Executor-local discovery results in request order.
@@ -539,6 +560,7 @@ pub struct CapabilityRootDiscovery {
 #[derive(Clone, Debug)]
 pub struct ExecutorCapabilityDiscoverySnapshot {
     roots: Arc<[ExecutorCapabilityDiscoverySnapshotEntry]>,
+    sandbox_contexts: Arc<HashMap<String, FileSystemSandboxContext>>,
 }
 
 #[derive(Clone, Debug)]
@@ -551,6 +573,7 @@ impl ExecutorCapabilityDiscoverySnapshot {
     pub fn new(
         selected_roots: &[SelectedCapabilityRoot],
         discoveries: Vec<Result<Arc<CapabilityRootDiscovery>, String>>,
+        sandbox_contexts: HashMap<String, FileSystemSandboxContext>,
     ) -> Self {
         debug_assert_eq!(selected_roots.len(), discoveries.len());
         Self {
@@ -565,11 +588,16 @@ impl ExecutorCapabilityDiscoverySnapshot {
                     },
                 )
                 .collect(),
+            sandbox_contexts: Arc::new(sandbox_contexts),
         }
     }
 
     pub fn roots(&self) -> &[ExecutorCapabilityDiscoverySnapshotEntry] {
         &self.roots
+    }
+
+    pub fn sandbox_contexts(&self) -> &HashMap<String, FileSystemSandboxContext> {
+        self.sandbox_contexts.as_ref()
     }
 }
 
@@ -733,9 +761,11 @@ mod tests {
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
     use super::ExecParams;
+    use super::ExecResponse;
     use super::FsReadFileParams;
     use super::HttpRequestParams;
     use super::ProcessId;
+    use super::ProcessSandboxType;
     use super::ShellInfo;
     use codex_file_system::FileSystemSandboxContext;
     use codex_network_proxy::ManagedNetworkSandboxContext;
@@ -743,11 +773,14 @@ mod tests {
     use codex_network_proxy::NetworkProxyConfig;
     use codex_network_proxy::RemoteNetworkProxyConfig;
     use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
+    use codex_protocol::config_types::WindowsSandboxProxySettingsMode;
+    use codex_protocol::models::ManagedFileSystemPermissions;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::FileSystemSpecialPath;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
@@ -871,7 +904,86 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_protocol_round_trips_permission_paths_as_uris() {
+    fn filesystem_protocol_round_trips_permission_entries() {
+        let native_cwd = std::env::current_dir().expect("current directory");
+        let cwd = PathUri::from_host_native_path(&native_cwd).expect("cwd URI");
+        let file_system = ManagedFileSystemPermissions::Restricted {
+            entries: vec![
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: native_cwd.clone().try_into().expect("absolute cwd"),
+                    },
+                    access: FileSystemAccessMode::Read,
+                    missing_path_behavior: None,
+                },
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Path {
+                        path: native_cwd.join(".git").try_into().expect("absolute path"),
+                    },
+                    FileSystemAccessMode::Read,
+                ),
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::ProjectRoots {
+                            subpath: Some(".codex".into()),
+                        },
+                    },
+                    FileSystemAccessMode::Read,
+                ),
+            ],
+            glob_scan_max_depth: Some(2.try_into().expect("non-zero depth")),
+        };
+        let permissions = PermissionProfile::Managed {
+            file_system,
+            network: NetworkSandboxPolicy::Restricted,
+        };
+        let sandbox =
+            FileSystemSandboxContext::from_permission_profile_with_cwd(permissions, cwd.clone());
+
+        let serialized = serde_json::to_value(&sandbox).expect("serialize sandbox");
+
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][0]["path"]["path"],
+            serde_json::json!(cwd.to_string())
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][1]["path"]["type"],
+            serde_json::json!("path")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][1]["missing_path_behavior"],
+            serde_json::json!("skip")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][2]["path"]["type"],
+            serde_json::json!("special")
+        );
+        assert_eq!(
+            serialized["permissions"]["file_system"]["entries"][2]["missing_path_behavior"],
+            serde_json::json!("skip")
+        );
+        assert!(!serialized.to_string().contains("generated_default_path"));
+        assert!(!serialized.to_string().contains("generated_default_special"));
+        assert_eq!(
+            serde_json::from_value::<FileSystemSandboxContext>(serialized)
+                .expect("deserialize sandbox"),
+            sandbox
+        );
+        let preserve = FileSystemSandboxContext {
+            windows_sandbox_proxy_settings_mode: Some(WindowsSandboxProxySettingsMode::Preserve),
+            ..sandbox
+        };
+        let serialized = serde_json::to_value(&preserve).expect("serialize preserve mode");
+        assert_eq!(serialized["windowsSandboxProxySettingsMode"], "preserve");
+        assert_eq!(
+            serde_json::from_value::<FileSystemSandboxContext>(serialized)
+                .expect("deserialize preserve mode"),
+            preserve
+        );
+    }
+
+    #[test]
+    fn filesystem_protocol_round_trips_legacy_policy_paths_as_uris() {
         let native_cwd = std::env::current_dir().expect("current directory");
         let cwd = PathUri::from_host_native_path(&native_cwd).expect("cwd URI");
         let mut file_system_policy =
@@ -880,6 +992,7 @@ mod tests {
                     path: native_cwd.try_into().expect("absolute cwd"),
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             }]);
         file_system_policy.glob_scan_max_depth = Some(2);
         let permissions = PermissionProfile::from_runtime_permissions(
@@ -952,5 +1065,23 @@ mod tests {
         .expect("legacy exited notification should deserialize");
 
         assert_eq!(notification.sandbox_denied, None);
+    }
+
+    #[test]
+    fn exec_response_distinguishes_unknown_from_explicitly_unsandboxed() {
+        let unknown: ExecResponse = serde_json::from_value(serde_json::json!({
+            "processId": "legacy",
+        }))
+        .expect("legacy response should deserialize");
+        let unsandboxed: ExecResponse = serde_json::from_value(serde_json::json!({
+            "processId": "current",
+            "sandboxType": "none",
+        }))
+        .expect("explicitly unsandboxed response should deserialize");
+
+        assert_eq!(
+            (unknown.sandbox_type, unsandboxed.sandbox_type),
+            (None, Some(ProcessSandboxType::None))
+        );
     }
 }

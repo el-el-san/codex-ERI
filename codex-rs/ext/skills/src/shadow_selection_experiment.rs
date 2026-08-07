@@ -6,16 +6,21 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::HostSkillsSnapshot;
 use codex_otel::MetricsClient;
 use codex_protocol::user_input::UserInput;
 
 use crate::catalog::SkillCatalog;
+use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillSourceKind;
 use crate::dynamic_skill_selector::CharacterNgramSkillSelector;
+use crate::dynamic_skill_selector::CharacterRoutingCardSkillSelector;
 use crate::dynamic_skill_selector::CheapSkillSelection;
 use crate::dynamic_skill_selector::CheapSkillSelector;
 use crate::dynamic_skill_selector::FieldedBm25SkillSelector;
 use crate::dynamic_skill_selector::MultiQueryLexicalSkillSelector;
+use crate::dynamic_skill_selector::RoutingCardLexicalSkillSelector;
+use crate::dynamic_skill_selector::RrfLexicalCharSkillSelector;
 use crate::dynamic_skill_selector::SkillSelectionDocument;
 use crate::dynamic_skill_selector::WeightedLexicalSkillSelector;
 
@@ -43,6 +48,8 @@ impl ShadowSelectionExperiment {
                 Box::new(FieldedBm25SkillSelector),
                 Box::new(CharacterNgramSkillSelector),
                 Box::new(MultiQueryLexicalSkillSelector),
+                Box::new(RrfLexicalCharSkillSelector),
+                Box::new(RoutingCardLexicalSkillSelector),
             ],
             metrics_client,
         }
@@ -52,37 +59,59 @@ impl ShadowSelectionExperiment {
         &self,
         inputs: &[UserInput],
         catalog: &SkillCatalog,
+        explicitly_selected: &[SkillCatalogEntry],
+        host_snapshot: Option<&HostSkillsSnapshot>,
     ) -> ShadowSelectionTurnState {
         let query = build_shadow_query(inputs);
         let query_script = query_script_tag(&query.text);
+        let explicitly_selected_skill_resources = explicitly_selected
+            .iter()
+            .map(|entry| normalize_skill_resource(entry.main_prompt.as_str()))
+            .collect::<HashSet<_>>();
         let documents = catalog
             .entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
-                entry.enabled
-                    && entry.prompt_visible
+                entry.is_model_visible()
                     // Invocation observation currently exists only for host shell use and
                     // orchestrator reads. Keep the candidate set aligned with that universe.
                     && matches!(
                         &entry.authority.kind,
                         SkillSourceKind::Host | SkillSourceKind::Orchestrator
                     )
+                    && !explicitly_selected_skill_resources
+                        .contains(&normalize_skill_resource(entry.main_prompt.as_str()))
             })
             .map(|(id, entry)| SkillSelectionDocument {
                 id,
                 name: entry.name.as_str(),
                 short_description: entry.short_description.as_deref(),
                 description: entry.description.as_str(),
+                dependencies: entry.dependencies.as_ref(),
             })
             .collect::<Vec<_>>();
         let eligible_ids = documents
             .iter()
             .map(|document| document.id)
             .collect::<HashSet<_>>();
-        let mut ranked_selections = Vec::with_capacity(self.selectors.len());
+        let eligible_skill_resources = documents
+            .iter()
+            .map(|document| {
+                normalize_skill_resource(catalog.entries[document.id].main_prompt.as_str())
+            })
+            .collect::<HashSet<_>>();
+        let routing_selector = CharacterRoutingCardSkillSelector::new(catalog, host_snapshot);
+        let mut ranked_selections = Vec::with_capacity(self.selectors.len() + 1);
 
-        for selector in &self.selectors {
+        for selector in self
+            .selectors
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .chain(std::iter::once(
+                &routing_selector as &dyn CheapSkillSelector,
+            ))
+        {
             let start = Instant::now();
             let selection =
                 selector.select(&query.text, &documents, /*limit*/ MAX_SHADOW_RESULTS);
@@ -119,12 +148,16 @@ impl ShadowSelectionExperiment {
         ShadowSelectionTurnState {
             ranked_selections,
             query_script,
+            eligible_skill_resources,
             seen_skill_resources: Mutex::new(HashSet::new()),
         }
     }
 
     pub(crate) fn record_invocation(&self, state: &ShadowSelectionTurnState, skill_resource: &str) {
         let skill_resource = normalize_skill_resource(skill_resource);
+        if !state.eligible_skill_resources.contains(&skill_resource) {
+            return;
+        }
         if !state
             .seen_skill_resources
             .lock()
@@ -204,6 +237,7 @@ impl ShadowSelectionExperiment {
 pub(crate) struct ShadowSelectionTurnState {
     ranked_selections: Vec<RankedSelection>,
     query_script: &'static str,
+    eligible_skill_resources: HashSet<String>,
     seen_skill_resources: Mutex<HashSet<String>>,
 }
 
@@ -237,12 +271,12 @@ fn sanitize_selected_ids(
 }
 
 fn selection_status(selection: &CheapSkillSelection, selected_entry_count: usize) -> &'static str {
-    if selection.query_term_count == 0 {
-        "no_query_terms"
-    } else if selected_entry_count == 0 {
-        "no_matches"
-    } else {
+    if selected_entry_count > 0 {
         "selected"
+    } else if selection.query_term_count == 0 {
+        "no_query_terms"
+    } else {
+        "no_matches"
     }
 }
 

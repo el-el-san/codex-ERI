@@ -5,7 +5,7 @@ use std::io::SeekFrom;
 
 use serde::de::DeserializeOwned;
 
-const READ_CHUNK_SIZE: usize = 8 * 1024;
+const READ_CHUNK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub enum ScanOutcome<T> {
@@ -31,9 +31,24 @@ where
 {
     pub fn new(mut reader: R) -> io::Result<Self> {
         let next_chunk_end = reader.seek(SeekFrom::End(0))?;
+        Self::new_at(reader, next_chunk_end)
+    }
+
+    /// Creates a reverse scanner whose logical end is the given byte offset.
+    ///
+    /// This lets callers scan a frozen JSONL prefix without reading records appended after that
+    /// prefix was captured.
+    pub fn new_at(mut reader: R, end_byte_offset: u64) -> io::Result<Self> {
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        if end_byte_offset > file_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reverse JSONL scan end is past the file",
+            ));
+        }
         Ok(Self {
             reader,
-            next_chunk_end,
+            next_chunk_end: end_byte_offset,
             chunk_position: 0,
             chunk: vec![0; READ_CHUNK_SIZE],
             record_reversed: Vec::new(),
@@ -49,37 +64,32 @@ where
         T: DeserializeOwned,
     {
         loop {
-            let Some(byte) = self.read_previous_byte()? else {
-                return Ok(self.finish_record());
-            };
+            if self.chunk_position == 0 {
+                if self.next_chunk_end == 0 {
+                    return Ok(self.finish_record());
+                }
 
-            if byte != b'\n' {
-                self.record_reversed.push(byte);
-                continue;
+                let read_size = usize::try_from(self.next_chunk_end.min(READ_CHUNK_SIZE as u64))
+                    .map_err(io::Error::other)?;
+                self.next_chunk_end -= read_size as u64;
+                self.reader.seek(SeekFrom::Start(self.next_chunk_end))?;
+                self.reader.read_exact(&mut self.chunk[..read_size])?;
+                self.chunk_position = read_size;
             }
 
-            if let Some(outcome) = self.finish_record() {
-                return Ok(Some(outcome));
+            let chunk = &self.chunk[..self.chunk_position];
+            if let Some(newline_position) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                self.record_reversed
+                    .extend(chunk[newline_position + 1..].iter().rev().copied());
+                self.chunk_position = newline_position;
+                if let Some(outcome) = self.finish_record() {
+                    return Ok(Some(outcome));
+                }
+            } else {
+                self.record_reversed.extend(chunk.iter().rev().copied());
+                self.chunk_position = 0;
             }
         }
-    }
-
-    fn read_previous_byte(&mut self) -> io::Result<Option<u8>> {
-        if self.chunk_position == 0 {
-            if self.next_chunk_end == 0 {
-                return Ok(None);
-            }
-
-            let read_size = usize::try_from(self.next_chunk_end.min(READ_CHUNK_SIZE as u64))
-                .map_err(io::Error::other)?;
-            self.next_chunk_end -= read_size as u64;
-            self.reader.seek(SeekFrom::Start(self.next_chunk_end))?;
-            self.reader.read_exact(&mut self.chunk[..read_size])?;
-            self.chunk_position = read_size;
-        }
-
-        self.chunk_position -= 1;
-        Ok(Some(self.chunk[self.chunk_position]))
     }
 
     fn finish_record<T>(&mut self) -> Option<ScanOutcome<T>>

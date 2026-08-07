@@ -15,8 +15,10 @@ use crate::responses_metadata::CompactionTurnMetadata;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
+use crate::state::AutoCompactWindowIds;
 use crate::util::backoff;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
@@ -27,14 +29,15 @@ use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
 use codex_analytics::now_unix_seconds;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -46,8 +49,6 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
 use tracing::error;
-
-use codex_model_provider_info::ModelProviderInfo;
 
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
@@ -62,31 +63,44 @@ const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
 /// Mid-turn compaction must use `BeforeLastUserMessage` because the model is trained to see the
 /// compaction summary as the last item in history after mid-turn compaction; we therefore inject
 /// initial context into the replacement history just above the last real user message.
-#[derive(Debug)]
 pub(crate) enum InitialContextInjection {
-    BeforeLastUserMessage(Arc<WorldState>),
+    BeforeLastUserMessage {
+        world_state: Arc<WorldState>,
+        step_context: Arc<StepContext>,
+    },
     DoNotInject,
+}
+
+/// Metadata for a new compaction checkpoint, kept separate from its replacement history.
+///
+/// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted
+/// `CompactedItem`, ensuring the live and persisted histories remain identical.
+pub(crate) struct CompactedHistoryMetadata {
+    pub(crate) message: String,
+    pub(crate) window_number: u64,
+    pub(crate) window_ids: AutoCompactWindowIds,
 }
 
 pub(crate) async fn build_compaction_initial_context(
     sess: &Session,
-    turn_context: &TurnContext,
     initial_context_injection: &InitialContextInjection,
 ) -> (Vec<ResponseItem>, Option<Arc<WorldState>>) {
     // Return the rendered state with its items so history and its baseline stay identical.
     match initial_context_injection {
-        InitialContextInjection::BeforeLastUserMessage(world_state) => {
+        InitialContextInjection::BeforeLastUserMessage {
+            world_state,
+            step_context,
+        } => {
             let items = sess
-                .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+                .build_initial_context_with_world_state(
+                    step_context.turn.as_ref(),
+                    world_state.as_ref(),
+                )
                 .await;
             (items, Some(Arc::clone(world_state)))
         }
         InitialContextInjection::DoNotInject => (Vec::new(), None),
     }
-}
-
-pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bool {
-    provider.supports_remote_compaction()
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
@@ -273,16 +287,21 @@ async fn run_compact_task_inner_impl(
             Ok(()) => {
                 break;
             }
-            Err(err @ (CodexErr::Interrupted | CodexErr::TurnAborted)) => {
+            Err(err)
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
+                ) =>
+            {
                 return Err(err);
             }
-            Err(e @ CodexErr::SessionBudgetExceeded) => {
+            Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                 sess.send_event(&turn_context, event).await;
                 return Err(e);
             }
-            Err(e @ CodexErr::ContextWindowExceeded) => {
+            Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if turn_input_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
                     error!(
@@ -334,36 +353,27 @@ async fn run_compact_task_inner_impl(
     }
     let (window_number, window_ids) = sess.advance_auto_compact_window().await;
 
-    let (initial_context, world_state_baseline) = build_compaction_initial_context(
-        sess.as_ref(),
-        turn_context.as_ref(),
-        &initial_context_injection,
-    )
-    .await;
+    let (initial_context, world_state_baseline) =
+        build_compaction_initial_context(sess.as_ref(), &initial_context_injection).await;
     if !initial_context.is_empty() {
         new_history =
             insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
     }
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
-        InitialContextInjection::BeforeLastUserMessage(_) => {
+        InitialContextInjection::BeforeLastUserMessage { .. } => {
             Some(turn_context.to_turn_context_item())
         }
     };
-    let compacted_item = CompactedItem {
-        message: summary_text.clone(),
-        replacement_history: Some(new_history.clone()),
-        window_number: Some(window_number),
-        first_window_id: Some(window_ids.first_window_id.to_string()),
-        previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
-        window_id: Some(window_ids.window_id.to_string()),
-    };
     sess.replace_compacted_history(
-        turn_context.as_ref(),
         new_history,
         reference_context_item,
         world_state_baseline,
-        compacted_item,
+        CompactedHistoryMetadata {
+            message: summary_text,
+            window_number,
+            window_ids,
+        },
     )
     .await;
     sess.recompute_token_usage(&turn_context).await;
@@ -470,7 +480,14 @@ impl CompactionAnalyticsAttempt {
 pub(crate) fn compaction_status_from_result<T>(result: &CodexResult<T>) -> CompactionStatus {
     match result {
         Ok(_) => CompactionStatus::Completed,
-        Err(CodexErr::Interrupted | CodexErr::TurnAborted) => CompactionStatus::Interrupted,
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::Interrupted | CodexErrorDetails::TurnAborted
+            ) =>
+        {
+            CompactionStatus::Interrupted
+        }
         Err(_) => CompactionStatus::Failed,
     }
 }
@@ -533,7 +550,7 @@ pub(crate) fn is_summary_message(message: &str) -> bool {
 /// model-expected boundary.
 ///
 /// Placement rules:
-/// - Prefer immediately before the last real user message.
+/// - Prefer immediately before the last real user or agent message.
 /// - If no real user messages remain, insert before the compaction summary so
 ///   the summary stays last.
 /// - If there are no user messages, insert before the last compaction item so
@@ -546,6 +563,16 @@ pub(crate) fn insert_initial_context_before_last_real_user_or_summary(
     let mut last_user_or_summary_index = None;
     let mut last_real_user_index = None;
     for (i, item) in compacted_history.iter().enumerate().rev() {
+        if let ResponseItem::AgentMessage { content, .. } = item
+            && !matches!(
+                content.first(),
+                Some(AgentMessageInputContent::InputText { text })
+                    if text.starts_with("Message Type: FINAL_ANSWER\n")
+            )
+        {
+            last_real_user_index = Some(i);
+            break;
+        }
         let Some(TurnItem::UserMessage(user)) = crate::event_mapping::parse_turn_item(item) else {
             continue;
         };
@@ -688,7 +715,6 @@ async fn drain_to_completed(
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
-                None,
             ));
         };
         match event {

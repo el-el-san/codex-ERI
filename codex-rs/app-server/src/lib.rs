@@ -2,7 +2,8 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use codex_arg0::Arg0DispatchPaths;
-use codex_config::ConfigLayerStackOrdering;
+use codex_code_mode::CodeModeSessionProvider;
+use codex_code_mode::WebSocketCodeModeSessionProvider;
 use codex_config::LoaderOverrides;
 use codex_config::NoopThreadConfigLoader;
 use codex_config::RemoteThreadConfigLoader;
@@ -32,6 +33,7 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::QueuedOutgoingMessage;
 use crate::transport::CHANNEL_CAPACITY;
+use crate::transport::ConnectionOrigin;
 use crate::transport::ConnectionState;
 use crate::transport::OutboundConnectionState;
 use crate::transport::RemoteControlPolicy;
@@ -60,6 +62,7 @@ use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::find_codex_home;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimePaths;
+use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db as rollout_state_db;
@@ -85,6 +88,7 @@ mod app_server_tracing;
 mod attestation;
 mod auth_mode;
 mod bespoke_event_handling;
+mod code_mode_host;
 mod command_exec;
 mod config_layer;
 mod config_manager;
@@ -116,6 +120,8 @@ mod thread_state;
 mod thread_status;
 mod transport;
 
+pub use crate::code_mode_host::AppServerCodeModeHostArgs;
+pub use crate::code_mode_host::CodeModeHostTransport;
 pub use crate::error_code::INPUT_TOO_LARGE_ERROR_CODE;
 pub use crate::error_code::INVALID_PARAMS_ERROR_CODE;
 pub use crate::transport::AppServerTransport;
@@ -348,10 +354,7 @@ fn app_text_range(range: &CoreTextRange) -> AppTextRange {
 fn project_config_warning(config: &Config) -> Option<ConfigWarningNotification> {
     let mut disabled_folders = Vec::new();
 
-    for layer in config.config_layer_stack.get_layers(
-        ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ true,
-    ) {
+    for layer in config.config_layer_stack.all_layers_low_to_high() {
         let ConfigLayerSource::Project { dot_codex_folder } = &layer.name else {
             continue;
         };
@@ -428,19 +431,23 @@ pub enum PluginStartupTasks {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
+    pub code_mode_host_transport: CodeModeHostTransport,
     pub plugin_startup_tasks: PluginStartupTasks,
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
+    pub psp: bool,
 }
 
 impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
+            code_mode_host_transport: CodeModeHostTransport::Local,
             plugin_startup_tasks: PluginStartupTasks::Start,
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
+            psp: false,
         }
     }
 }
@@ -480,14 +487,8 @@ pub async fn run_main_with_transport_options(
         arg0_paths.codex_self_exe.clone(),
         arg0_paths.codex_linux_sandbox_exe.clone(),
     )?;
-    let environment_manager = if loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await
-    } else {
-        EnvironmentManager::from_codex_home(codex_home.clone(), Some(local_runtime_paths)).await
-    }
-    .map(Arc::new)
-    .map_err(std::io::Error::other)?;
-    let config_manager = ConfigManager::new(
+    let ignore_user_config = loader_overrides.ignore_user_config;
+    let mut config_manager = ConfigManager::new(
         codex_home.to_path_buf(),
         cli_kv_overrides.clone(),
         loader_overrides,
@@ -496,6 +497,7 @@ pub async fn run_main_with_transport_options(
         arg0_paths.clone(),
         Arc::new(NoopThreadConfigLoader),
     );
+    config_manager.psp = runtime_options.psp;
     match config_manager
         .load_latest_config(/*fallback_cwd*/ None)
         .await
@@ -506,8 +508,11 @@ pub async fn run_main_with_transport_options(
                 .replace_thread_config_loader(Arc::clone(&discovered_thread_config_loader));
             let auth_manager =
                 AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
-            config_manager
-                .replace_cloud_config_bundle_loader(auth_manager, config.chatgpt_base_url);
+            config_manager.replace_cloud_config_bundle_loader(
+                auth_manager,
+                config.chatgpt_base_url.clone(),
+                config.http_client_factory(),
+            );
         }
         Err(err) => {
             warn!(error = %err, "Failed to preload config for cloud config bundle");
@@ -537,6 +542,37 @@ pub async fn run_main_with_transport_options(
             })?
         }
     };
+    config.auth_config().validate()?;
+    let code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>> =
+        match &runtime_options.code_mode_host_transport {
+            CodeModeHostTransport::Local => None,
+            CodeModeHostTransport::WebSocket(url) => {
+                if !config.features.enabled(Feature::CodeModeHost) {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidInput,
+                        "remote code-mode host requires the code_mode_host feature to be enabled",
+                    ));
+                }
+                Some(Arc::new(
+                    WebSocketCodeModeSessionProvider::with_http_client_factory(
+                        url.to_string(),
+                        config.http_client_factory(),
+                    ),
+                ))
+            }
+        };
+    let environment_manager = if ignore_user_config {
+        EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory()).await
+    } else {
+        EnvironmentManager::from_codex_home(
+            codex_home.clone(),
+            Some(local_runtime_paths),
+            config.http_client_factory(),
+        )
+        .await
+    }
+    .map(Arc::new)
+    .map_err(std::io::Error::other)?;
 
     let otel = codex_core::otel_init::build_provider(
         &config,
@@ -566,7 +602,7 @@ pub async fn run_main_with_transport_options(
         Err(err) => {
             return Err(std::io::Error::other(format!(
                 "failed to initialize sqlite state runtime under {}: {err}",
-                config.sqlite_home.display()
+                config.sqlite_config().home().display()
             )));
         }
     };
@@ -674,7 +710,6 @@ pub async fn run_main_with_transport_options(
     let mut transport_accept_handles = Vec::<JoinHandle<()>>::new();
 
     let single_client_mode = matches!(&transport, AppServerTransport::Stdio);
-    let shutdown_when_no_connections = single_client_mode;
     let graceful_signal_restart_enabled =
         runtime_options.install_shutdown_signal_handler && !single_client_mode;
     let mut app_server_client_name_rx = None;
@@ -860,6 +895,7 @@ pub async fn run_main_with_transport_options(
             session_source,
             auth_manager,
             installation_id,
+            code_mode_session_provider,
             rpc_transport: analytics_rpc_transport(&transport),
             remote_control_handle: Some(remote_control_handle.clone()),
             plugin_startup_tasks: runtime_options.plugin_startup_tasks,
@@ -955,6 +991,7 @@ pub async fn run_main_with_transport_options(
                                 let Some(connection_state) = connections.remove(&connection_id) else {
                                     continue;
                                 };
+                                let stdio_closed = connection_state.origin == ConnectionOrigin::Stdio;
                                 connection_state.session.rpc_gate.close().await;
                                 let outbound_closed = outbound_control_tx
                                     .send(OutboundControlEvent::Closed { connection_id })
@@ -969,8 +1006,8 @@ pub async fn run_main_with_transport_options(
                                 if !outbound_closed {
                                     break "outbound_router_closed";
                                 }
-                                if shutdown_when_no_connections && connections.is_empty() {
-                                    break "last_connection_closed";
+                                if single_client_mode && stdio_closed {
+                                    break "stdio_connection_closed";
                                 }
                             }
                             TransportEvent::IncomingMessage { connection_id, message } => {
@@ -1194,7 +1231,7 @@ async fn init_sqlite_state_db_with_fresh_start_on_corruption(
             Err(err) => err,
         };
         let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
-            .unwrap_or_else(|| codex_state::state_db_path(config.sqlite_home.as_path()));
+            .unwrap_or_else(|| config.sqlite_config().state_db_path());
         if !codex_state::is_sqlite_corruption_error(&err)
             && !sqlite_home_is_blocking_file(database_path.as_path())
         {

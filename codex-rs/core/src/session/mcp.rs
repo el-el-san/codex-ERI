@@ -1,12 +1,15 @@
+use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
-use crate::mcp::McpRuntimeProjection;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
+use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::MAX_SELECTED_CAPABILITY_ROOTS;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ElicitationReviewRequest;
 use codex_mcp::ElicitationReviewer;
 use codex_mcp::ElicitationReviewerHandle;
+use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -17,15 +20,17 @@ use codex_protocol::mcp_approval_meta::APPROVALS_REVIEWER_KEY as MCP_ELICITATION
 use codex_protocol::mcp_approval_meta::CONNECTOR_DESCRIPTION_KEY as MCP_ELICITATION_CONNECTOR_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::CONNECTOR_ID_KEY as MCP_ELICITATION_CONNECTOR_ID_KEY;
 use codex_protocol::mcp_approval_meta::CONNECTOR_NAME_KEY as MCP_ELICITATION_CONNECTOR_NAME_KEY;
+use codex_protocol::mcp_approval_meta::PERSIST_KEY as MCP_ELICITATION_PERSIST_KEY;
 use codex_protocol::mcp_approval_meta::REQUEST_TYPE_APPROVAL_REQUEST as MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST;
 use codex_protocol::mcp_approval_meta::REQUEST_TYPE_KEY as MCP_ELICITATION_REQUEST_TYPE_KEY;
+use codex_protocol::mcp_approval_meta::STRICT_AUTO_REVIEW_KEY as MCP_ELICITATION_STRICT_AUTO_REVIEW_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_DESCRIPTION_KEY as MCP_ELICITATION_TOOL_DESCRIPTION_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_NAME_KEY as MCP_ELICITATION_TOOL_NAME_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_PARAMS_KEY as MCP_ELICITATION_TOOL_PARAMS_KEY;
 use codex_protocol::mcp_approval_meta::TOOL_TITLE_KEY as MCP_ELICITATION_TOOL_TITLE_KEY;
 use codex_rmcp_client::Elicitation;
 use rmcp::model::ElicitationAction;
-use rmcp::model::Meta;
+use rmcp::model::RequestMetaObject;
 use serde_json::Map;
 
 const MCP_ELICITATION_DECLINE_MESSAGE_KEY: &str = "message";
@@ -82,7 +87,21 @@ impl ElicitationReviewer for GuardianMcpElicitationReviewer {
 
 impl Session {
     pub(crate) async fn runtime_mcp_config(&self, config: &Config) -> McpConfig {
+        self.runtime_mcp_config_and_context(config).await.0
+    }
+
+    pub(crate) async fn runtime_mcp_config_and_context(
+        &self,
+        config: &Config,
+    ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
+        let (windows_sandbox_level, session_source) = {
+            let state = self.state.lock().await;
+            (
+                state.session_configuration.windows_sandbox_level,
+                state.session_configuration.session_source.clone(),
+            )
+        };
         let environments = self.services.turn_environments.snapshot().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
@@ -90,20 +109,39 @@ impl Session {
         let ready_selected_capability_roots =
             Self::ready_selected_capability_roots(&selected_capability_roots);
         let executor_capability_discovery = self
-            .executor_capability_discovery_for_step(config, &ready_selected_capability_roots)
+            .executor_capability_discovery_for_step(
+                config,
+                &ready_selected_capability_roots,
+                &environments,
+                windows_sandbox_level,
+            )
             .await;
-        self.services
+        let mcp_config = self
+            .services
             .mcp_manager
             .runtime_config_for_step(
                 config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &originator,
+                McpThreadIdentity {
+                    session_source: &session_source,
+                    originator: &originator,
+                },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
             .await
-            .config
+            .config;
+        let local_stdio_fallback_cwd = environments
+            .primary()
+            .and_then(|environment| environment.cwd().to_abs_path().ok())
+            .map(|cwd| cwd.to_path_buf())
+            .unwrap_or_else(|| config.cwd.to_path_buf());
+        let runtime_context = McpRuntimeContext::new(
+            self.services.turn_environments.environment_manager(),
+            local_stdio_fallback_cwd,
+        );
+        (mcp_config, runtime_context)
     }
 
     pub(crate) async fn runtime_mcp_servers(
@@ -113,91 +151,168 @@ impl Session {
         codex_mcp::configured_mcp_servers(&self.runtime_mcp_config(config).await)
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP runtime comparison and publication must remain serialized"
-    )]
-    #[tracing::instrument(name = "mcp.runtime.resolve_for_step", skip_all)]
-    pub(crate) async fn mcp_runtime_for_step(
-        self: &Arc<Self>,
-        turn_context: &TurnContext,
-        environments: &TurnEnvironmentSnapshot,
-        selected_capability_roots: &[ResolvedSelectedCapabilityRoot],
-        executor_capability_discovery: Option<&ExecutorCapabilityDiscoverySnapshot>,
-    ) -> Arc<McpRuntimeSnapshot> {
-        let ready_selected_capability_roots =
-            Self::ready_selected_capability_roots(selected_capability_roots);
-        let available_environment_ids =
-            Self::available_selected_environment_ids(selected_capability_roots);
-        let current = self.services.latest_mcp_runtime();
-        if current.ready_selected_capability_roots() == ready_selected_capability_roots {
-            return current;
-        }
+    /// Publishes changed MCP state, waiting for any refresh already in progress.
+    pub(crate) async fn refresh_mcp_if_dirty(self: &Arc<Self>) {
+        let Ok(_refresh) = self.mcp_refresh.acquire().await else {
+            error!("MCP runtime refresh semaphore closed");
+            return;
+        };
+        loop {
+            let auth = self.services.auth_manager.auth_cached();
+            if self
+                .services
+                .plugins_manager
+                .set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode))
+                || !self
+                    .services
+                    .mcp_runtime
+                    .current_auth_matches(auth.as_ref())
+            {
+                self.mark_mcp_runtime_dirty();
+            }
 
-        let _guard = self.services.mcp_projection_lock.lock().await;
-        let current = self.services.latest_mcp_runtime();
-        if current.ready_selected_capability_roots() == ready_selected_capability_roots {
-            return current;
+            if !self.mcp_refresh.claim() {
+                return;
+            }
+            let mut refresh_invalidation = McpRefreshInvalidationGuard {
+                refresh: &self.mcp_refresh,
+                published: false,
+            };
+            let auth = self.services.auth_manager.auth().await;
+            self.services
+                .plugins_manager
+                .set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode));
+            let desired = self.latest_mcp_desired_state(auth).await;
+            let selected_capability_roots = self
+                .resolve_selected_capability_roots_for_step(&desired.environments)
+                .await;
+            let ready_selected_capability_roots =
+                Self::ready_selected_capability_roots(&selected_capability_roots);
+            let executor_capability_discovery = self
+                .executor_capability_discovery_for_step(
+                    &desired.config,
+                    &ready_selected_capability_roots,
+                    &desired.environments,
+                    desired.windows_sandbox_level,
+                )
+                .await;
+            let mcp_projection = self
+                .services
+                .mcp_manager
+                .runtime_config_for_step(
+                    &desired.config,
+                    &self.services.mcp_thread_init,
+                    &self.services.thread_extension_data,
+                    McpThreadIdentity {
+                        session_source: &desired.session_source,
+                        originator: &desired.originator,
+                    },
+                    &ready_selected_capability_roots,
+                    executor_capability_discovery.as_deref(),
+                )
+                .await;
+            self.publish_mcp_runtime(
+                &desired,
+                mcp_projection,
+                &ready_selected_capability_roots,
+                Some(self.mcp_elicitation_reviewer()),
+            )
+            .await;
+            refresh_invalidation.published = true;
+            if !self.mcp_refresh.is_pending() {
+                return;
+            }
         }
+    }
+
+    /// Reconnects the runtime so refreshed Apps tools belong to their new exact client.
+    pub(crate) async fn hard_refresh_latest_codex_apps_tools(
+        self: &Arc<Self>,
+    ) -> anyhow::Result<Vec<codex_mcp::ToolInfo>> {
+        self.refresh_mcp_if_dirty().await;
+        let _refresh = self
+            .mcp_refresh
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("MCP runtime refresh semaphore closed"))?;
+        let auth = self.services.auth_manager.auth().await;
+        self.services
+            .plugins_manager
+            .set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode));
+        let desired = self.latest_mcp_desired_state(auth).await;
+        let selected_capability_roots = self
+            .resolve_selected_capability_roots_for_step(&desired.environments)
+            .await;
+        let ready_selected_capability_roots =
+            Self::ready_selected_capability_roots(&selected_capability_roots);
+        let executor_capability_discovery = self
+            .executor_capability_discovery_for_step(
+                &desired.config,
+                &ready_selected_capability_roots,
+                &desired.environments,
+                desired.windows_sandbox_level,
+            )
+            .await;
         let mcp_projection = self
             .services
             .mcp_manager
             .runtime_config_for_step(
-                &turn_context.config,
+                &desired.config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &turn_context.originator,
+                McpThreadIdentity {
+                    session_source: &desired.session_source,
+                    originator: &desired.originator,
+                },
                 &ready_selected_capability_roots,
-                executor_capability_discovery,
+                executor_capability_discovery.as_deref(),
             )
             .await;
-        let mcp_config = &mcp_projection.config;
-        let changed_environment_is_used_by_mcp = mcp_config
-            .mcp_server_catalog
-            .configured_servers()
-            .values()
-            .any(|server| {
-                let was_available = current
-                    .ready_selected_capability_roots()
-                    .iter()
-                    .any(|root| {
-                        let CapabilityRootLocation::Environment { environment_id, .. } =
-                            &root.location;
-                        environment_id == &server.environment_id
-                    });
-                let is_available = available_environment_ids.contains(&server.environment_id);
-                server.enabled && was_available != is_available
-            });
-        if !changed_environment_is_used_by_mcp
-            && current
-                .config()
-                .mcp_server_catalog
-                .has_same_servers(&mcp_config.mcp_server_catalog)
-            && current.config().connector_snapshot == mcp_config.connector_snapshot
-        {
-            // Selected roots are only an input to the MCP projection. When they change but the
-            // projected servers and connectors do not, advance the input key without
-            // replacing the live manager and restarting its processes.
-            let runtime = Arc::new(McpRuntimeSnapshot::new(
-                Arc::new(current.config().clone()),
-                mcp_projection.plugins_available,
-                current.manager_arc(),
-                current.runtime_context().clone(),
-                ready_selected_capability_roots,
-            ));
-            self.services
-                .mcp_runtime_snapshot
-                .store(Some(Arc::clone(&runtime)));
-            return runtime;
-        }
-        self.refresh_mcp_servers_inner(
-            turn_context,
+        let input = self.build_mcp_runtime_input(
+            &desired,
             mcp_projection,
-            environments,
             &ready_selected_capability_roots,
             Some(self.mcp_elicitation_reviewer()),
-        )
-        .await
+        );
+        anyhow::ensure!(
+            input.mcp_servers.contains_key(CODEX_APPS_MCP_SERVER_NAME),
+            "unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"
+        );
+        self.services.mcp_runtime.replace_fresh(input).await
+    }
+
+    pub(super) fn mark_mcp_runtime_dirty(&self) {
+        self.mcp_refresh.invalidate();
+    }
+
+    #[tracing::instrument(name = "mcp.runtime.resolve_for_step", skip_all)]
+    pub(crate) async fn mcp_runtime_for_step(
+        self: &Arc<Self>,
+        turn_context: &TurnContext,
+        selected_capability_roots: &[ResolvedSelectedCapabilityRoot],
+        required_servers: &[String],
+    ) -> Arc<codex_mcp::McpBinding> {
+        let ready_selected_capability_roots =
+            Self::ready_selected_capability_roots(selected_capability_roots);
+        if self
+            .services
+            .mcp_runtime
+            .current_ready_selected_capability_roots()
+            != ready_selected_capability_roots
+        {
+            self.mark_mcp_runtime_dirty();
+        }
+        self.refresh_mcp_if_dirty().await;
+        if let Some(binding) = self
+            .services
+            .mcp_runtime
+            .current_binding_with_required_servers(required_servers)
+            .await
+        {
+            return binding;
+        }
+        let config = Arc::new(self.runtime_mcp_config(&turn_context.config).await);
+        Arc::new(codex_mcp::McpBinding::empty(config))
     }
 
     #[tracing::instrument(
@@ -209,20 +324,85 @@ impl Session {
         &self,
         config: &Config,
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
+        environments: &TurnEnvironmentSnapshot,
+        windows_sandbox_level: WindowsSandboxLevel,
     ) -> Option<Arc<ExecutorCapabilityDiscoverySnapshot>> {
-        if !config
-            .features
-            .enabled(Feature::ExecutorCapabilityDiscovery)
+        // Capability roots can currently be selected independently of turn environments, so a
+        // root may be ready when there is no primary `TurnEnvironment`. Keep using the thread
+        // policy in that case so restricted discovery fails closed below. Once every selected
+        // root belongs to a thread/environment attachment whose `EnvironmentConfig` is installed
+        // before the root becomes ready, discovery can use the root owner's policy and this
+        // fallback can be removed.
+        let restricted_file_system = environments.primary().map_or_else(
+            || {
+                !config
+                    .permissions
+                    .file_system_sandbox_policy()
+                    .has_full_disk_read_access()
+            },
+            |_| {
+                environments.turn_environments().any(|environment| {
+                    !environment
+                        .permission_profile()
+                        .file_system_sandbox_policy()
+                        .has_full_disk_read_access()
+                })
+            },
+        );
+        if !restricted_file_system
+            && !config
+                .features
+                .enabled(Feature::ExecutorCapabilityDiscovery)
         {
             return None;
         }
+        let sandbox_contexts = if restricted_file_system {
+            environments
+                .turn_environments()
+                .map(|environment| {
+                    let mut sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
+                        environment.permission_profile().clone(),
+                        environment.cwd().clone(),
+                    );
+                    sandbox.workspace_roots = environment.workspace_roots().to_vec();
+                    sandbox.windows_sandbox_level = windows_sandbox_level;
+                    sandbox.windows_sandbox_private_desktop =
+                        config.permissions.windows_sandbox_private_desktop;
+                    sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
+                    (environment.environment_id.clone(), sandbox)
+                })
+                .collect::<HashMap<_, _>>()
+        } else {
+            HashMap::new()
+        };
         let environment_manager = self.services.turn_environments.environment_manager();
         let cache = self
             .services
             .thread_extension_data
             .get_or_init(|| ExecutorCapabilityDiscoveryCache::new(environment_manager));
+        let selected_capability_roots = ready_selected_capability_roots
+            .iter()
+            .filter(|selected_root| {
+                if !restricted_file_system {
+                    return true;
+                }
+                let CapabilityRootLocation::Environment { environment_id, .. } =
+                    &selected_root.location;
+                if sandbox_contexts.contains_key(environment_id) {
+                    return true;
+                }
+                warn!(
+                    selected_root = selected_root.id,
+                    environment_id, "skipping capability root without a filesystem sandbox context"
+                );
+                false
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         Some(Arc::new(
-            cache.snapshot(ready_selected_capability_roots).await,
+            cache
+                .snapshot(&selected_capability_roots, &sandbox_contexts)
+                .await,
         ))
     }
 
@@ -238,6 +418,7 @@ impl Session {
             .services
             .selected_capability_roots
             .iter()
+            .cloned()
             .chain(
                 environments
                     .turn_environments()
@@ -267,7 +448,7 @@ impl Session {
                 ready_environment_root_count += 1;
             }
             root_locations_by_id.insert(root.id.clone(), root.location.clone());
-            selected_capability_roots.push(root.clone());
+            selected_capability_roots.push(root);
         }
         self.services
             .turn_environments
@@ -280,12 +461,19 @@ impl Session {
     }
 
     pub(crate) fn mcp_elicitation_reviewer(self: &Arc<Self>) -> ElicitationReviewerHandle {
-        Arc::new(GuardianMcpElicitationReviewer::new(self))
+        Arc::clone(
+            self.mcp_elicitation_reviewer_handle
+                .get_or_init(|| Arc::new(GuardianMcpElicitationReviewer::new(self))),
+        )
     }
 
     pub(crate) fn mcp_elicitation_lifecycle(&self) -> codex_mcp::ElicitationLifecycle {
-        let elicitations = self.services.elicitations.clone();
-        codex_mcp::ElicitationLifecycle::new(move || elicitations.register())
+        self.mcp_elicitation_lifecycle_handle
+            .get_or_init(|| {
+                let elicitations = self.services.elicitations.clone();
+                codex_mcp::ElicitationLifecycle::new(move || elicitations.register())
+            })
+            .clone()
     }
 
     #[expect(
@@ -299,12 +487,7 @@ impl Session {
         request_id: RequestId,
         request: ElicitationRequest,
     ) -> McpServerElicitationOutcome {
-        if self
-            .services
-            .latest_mcp_runtime()
-            .manager()
-            .elicitations_auto_deny()
-        {
+        if self.services.mcp_runtime.elicitations_auto_deny() {
             return McpServerElicitationOutcome {
                 response: Some(ElicitationResponse {
                     action: codex_rmcp_client::ElicitationAction::Accept,
@@ -398,233 +581,42 @@ impl Session {
         }
 
         self.services
-            .latest_mcp_runtime()
-            .manager_arc()
+            .mcp_runtime
             .resolve_elicitation(server_name, id, response)
             .await
     }
 
-    #[tracing::instrument(name = "mcp.runtime.refresh", skip_all)]
-    async fn refresh_mcp_servers_inner(
-        &self,
-        turn_context: &TurnContext,
-        mcp_projection: McpRuntimeProjection,
-        environments: &TurnEnvironmentSnapshot,
-        ready_selected_capability_roots: &[SelectedCapabilityRoot],
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
-    ) -> Arc<McpRuntimeSnapshot> {
-        let auth = self.services.auth_manager.auth().await;
-        let McpRuntimeProjection {
-            config: mcp_config,
-            plugins_available,
-        } = mcp_projection;
-        let mcp_config = Arc::new(mcp_config);
-        let tool_plugin_provenance = codex_mcp::tool_plugin_provenance(&mcp_config);
-        let mcp_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
-        let environment_manager = self.services.turn_environments.environment_manager();
-        // TODO(anp): Migrate MCP runtime cwd plumbing to PathUri so foreign environment cwd
-        // values can be used without falling back to the legacy host cwd.
-        let cwd = environments
-            .primary()
-            .and_then(|turn_environment| turn_environment.cwd().to_abs_path().ok())
-            .map(|cwd| cwd.to_path_buf())
-            .unwrap_or_else(|| {
-                #[allow(deprecated)]
-                turn_context.cwd.to_path_buf()
-            });
-        let mcp_runtime_context = McpRuntimeContext::new(environment_manager, cwd);
-        let mcp_startup_cancellation_token = {
-            let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
-            // The previous runtime owns the old token and may still be serving an in-flight step.
-            // Its manager cancels that token when the last runtime handle is dropped.
-            let cancellation_token = CancellationToken::new();
-            *guard = cancellation_token.clone();
-            cancellation_token
-        };
-        let current_runtime = self.services.latest_mcp_runtime();
-        let codex_apps_auth_manager =
-            codex_mcp::host_owned_codex_apps_enabled(&mcp_config, auth.as_ref())
-                .then(|| Arc::clone(&self.services.auth_manager));
-        let refreshed_manager = McpConnectionManager::new(
-            &mcp_servers,
-            mcp_config.mcp_oauth_credentials_store_mode,
-            mcp_config.auth_keyring_backend_kind,
-            &turn_context.approval_policy,
-            turn_context.sub_id.clone(),
-            Some(self.get_tx_event()),
-            mcp_startup_cancellation_token,
-            turn_context.permission_profile(),
-            mcp_runtime_context.clone(),
-            mcp_config.codex_home.clone(),
-            self.services.mcp_manager.codex_apps_tools_cache(),
-            self.services.mcp_manager.tool_catalog_cache(),
-            connector_runtime_context_key(auth.as_ref()),
-            mcp_config.prefix_mcp_tool_names,
-            mcp_config.client_elicitation_capability.clone(),
-            self.services
-                .supports_openai_form_elicitation
-                .load(std::sync::atomic::Ordering::Relaxed),
-            tool_plugin_provenance,
-            auth.as_ref(),
-            codex_apps_auth_manager,
-            elicitation_reviewer,
-            Some(self.mcp_elicitation_lifecycle()),
-            current_runtime.manager().elicitation_router(),
-        )
-        .await;
-        refreshed_manager
-            .set_elicitations_auto_deny(current_runtime.manager().elicitations_auto_deny());
-        self.services.publish_mcp_runtime(
-            mcp_config,
-            plugins_available,
-            mcp_runtime_context,
-            ready_selected_capability_roots.to_vec(),
-            refreshed_manager,
-        )
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP runtime refresh and publication must remain serialized"
-    )]
-    pub(crate) async fn refresh_mcp_servers_if_requested(
-        &self,
-        turn_context: &TurnContext,
-        elicitation_reviewer: Option<ElicitationReviewerHandle>,
-    ) {
-        let refresh_config = { self.pending_mcp_server_refresh_config.lock().await.take() };
-        let Some(refresh_config) = refresh_config else {
-            return;
-        };
-
-        let McpServerRefreshConfig {
-            mcp_servers,
-            mcp_oauth_credentials_store_mode,
-            auth_keyring_backend_kind,
-        } = refresh_config;
-
-        let mcp_servers =
-            match serde_json::from_value::<HashMap<String, McpServerConfig>>(mcp_servers) {
-                Ok(servers) => servers,
-                Err(err) => {
-                    warn!("failed to parse MCP server refresh config: {err}");
-                    return;
-                }
-            };
-        let store_mode = match serde_json::from_value::<OAuthCredentialsStoreMode>(
-            mcp_oauth_credentials_store_mode,
-        ) {
-            Ok(mode) => mode,
-            Err(err) => {
-                warn!("failed to parse MCP OAuth refresh config: {err}");
-                return;
-            }
-        };
-        let keyring_backend_kind =
-            match serde_json::from_value::<AuthKeyringBackendKind>(auth_keyring_backend_kind) {
-                Ok(kind) => kind,
-                Err(err) => {
-                    warn!("failed to parse MCP auth keyring backend refresh config: {err}");
-                    return;
-                }
-            };
-
-        let mut refresh_config = self.get_config().await.as_ref().clone();
-        refresh_config.mcp_oauth_credentials_store_mode = store_mode;
-        let secret_auth_storage_enabled = match keyring_backend_kind {
-            AuthKeyringBackendKind::Direct => false,
-            AuthKeyringBackendKind::Secrets => true,
-        };
-        if let Err(err) = refresh_config
-            .features
-            .set_enabled(Feature::SecretAuthStorage, secret_auth_storage_enabled)
-        {
-            warn!("failed to apply MCP auth keyring backend refresh config: {err}");
-            return;
-        }
-
-        let _guard = self.services.mcp_projection_lock.lock().await;
-        let current_runtime = self.services.latest_mcp_runtime();
-        let ready_selected_capability_roots =
-            current_runtime.ready_selected_capability_roots().to_vec();
-        let executor_capability_discovery = self
-            .executor_capability_discovery_for_step(
-                &refresh_config,
-                &ready_selected_capability_roots,
-            )
-            .await;
-        let mut mcp_projection = self
-            .services
-            .mcp_manager
-            .runtime_config_for_step(
-                &refresh_config,
-                &self.services.mcp_thread_init,
-                &self.services.thread_extension_data,
-                &turn_context.originator,
-                &ready_selected_capability_roots,
-                executor_capability_discovery.as_deref(),
-            )
-            .await;
-        mcp_projection.config.mcp_server_catalog = mcp_projection
-            .config
-            .mcp_server_catalog
-            .with_materialized_servers(mcp_servers);
-        self.refresh_mcp_servers_inner(
-            turn_context,
-            mcp_projection,
-            &turn_context.environments,
-            &ready_selected_capability_roots,
-            elicitation_reviewer,
-        )
-        .await;
-    }
-
-    pub(crate) async fn set_openai_form_elicitation_support(
-        &self,
-        supported: bool,
-    ) -> anyhow::Result<()> {
-        if self
-            .services
-            .supports_openai_form_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == supported
-        {
-            return Ok(());
-        }
-
-        let config = self.get_config().await;
-        let refresh_config = McpServerRefreshConfig {
-            mcp_servers: serde_json::to_value(config.mcp_servers.get())?,
-            mcp_oauth_credentials_store_mode: serde_json::to_value(
-                config.mcp_oauth_credentials_store_mode,
-            )?,
-            auth_keyring_backend_kind: serde_json::to_value(config.auth_keyring_backend_kind())?,
-        };
-        self.services
-            .supports_openai_form_elicitation
-            .store(supported, std::sync::atomic::Ordering::Relaxed);
-        *self.pending_mcp_server_refresh_config.lock().await = Some(refresh_config);
-        Ok(())
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "MCP runtime refresh and publication must remain serialized"
-    )]
     pub(crate) async fn refresh_mcp_servers_now(
         &self,
         turn_context: &TurnContext,
         refresh_config: &Config,
         elicitation_reviewer: Option<ElicitationReviewerHandle>,
     ) {
-        let _guard = self.services.mcp_projection_lock.lock().await;
-        let current_runtime = self.services.latest_mcp_runtime();
-        let ready_selected_capability_roots =
-            current_runtime.ready_selected_capability_roots().to_vec();
+        let Ok(_refresh) = self.mcp_refresh.acquire().await else {
+            error!("MCP runtime refresh semaphore closed");
+            return;
+        };
+        let auth = self.services.auth_manager.auth().await;
+        self.services
+            .plugins_manager
+            .set_auth_mode(auth.as_ref().map(CodexAuth::api_auth_mode));
+        {
+            let mut state = self.state.lock().await;
+            let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+            config.mcp_servers = refresh_config.mcp_servers.clone();
+            state.session_configuration.original_config_do_not_use = Arc::new(config);
+        }
+        let ready_selected_capability_roots = self
+            .services
+            .mcp_runtime
+            .current_ready_selected_capability_roots();
+        let environments = self.services.turn_environments.snapshot().await;
         let executor_capability_discovery = self
             .executor_capability_discovery_for_step(
                 refresh_config,
                 &ready_selected_capability_roots,
+                &environments,
+                turn_context.windows_sandbox_level,
             )
             .await;
         let mcp_projection = self
@@ -634,33 +626,23 @@ impl Session {
                 refresh_config,
                 &self.services.mcp_thread_init,
                 &self.services.thread_extension_data,
-                &turn_context.originator,
+                McpThreadIdentity {
+                    session_source: &turn_context.session_source,
+                    originator: &turn_context.originator,
+                },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
             .await;
-        self.refresh_mcp_servers_inner(
-            turn_context,
+        let mut desired = self.latest_mcp_desired_state(auth).await;
+        desired.config = Arc::new(refresh_config.clone());
+        self.publish_mcp_runtime(
+            &desired,
             mcp_projection,
-            &turn_context.environments,
             &ready_selected_capability_roots,
             elicitation_reviewer,
         )
         .await;
-    }
-
-    fn available_selected_environment_ids(
-        selected_capability_roots: &[ResolvedSelectedCapabilityRoot],
-    ) -> Vec<String> {
-        let mut available = Vec::new();
-        for root in selected_capability_roots {
-            let CapabilityRootLocation::Environment { environment_id, .. } =
-                &root.selected_root().location;
-            if !available.contains(environment_id) {
-                available.push(environment_id.clone());
-            }
-        }
-        available
     }
 
     pub(crate) fn ready_selected_capability_roots(
@@ -672,21 +654,8 @@ impl Session {
             .collect()
     }
 
-    #[cfg(test)]
-    pub(crate) async fn mcp_startup_cancellation_token(&self) -> CancellationToken {
-        self.services
-            .mcp_startup_cancellation_token
-            .lock()
-            .await
-            .clone()
-    }
-
-    pub(crate) async fn cancel_mcp_startup(&self) {
-        self.services
-            .mcp_startup_cancellation_token
-            .lock()
-            .await
-            .cancel();
+    pub(crate) fn cancel_mcp_startup(&self) {
+        self.services.mcp_runtime.cancel_startup();
     }
 }
 
@@ -694,21 +663,147 @@ async fn review_guardian_mcp_elicitation(
     session: Arc<Session>,
     request: ElicitationReviewRequest,
 ) -> anyhow::Result<Option<ElicitationResponse>> {
-    let Some((turn_context, _cancellation_token)) =
+    let Some((turn_context, cancellation_token)) =
         session.active_turn_context_and_cancellation_token().await
     else {
         return Ok(None);
     };
 
-    let approvals_reviewer = crate::connectors::mcp_approvals_reviewer(
-        turn_context.config.as_ref(),
+    let Some(mcp_config) = session.services.mcp_runtime.current_config() else {
+        return Ok(None);
+    };
+
+    if matches!(
+        request
+            .elicitation
+            .meta()
+            .and_then(|meta| meta.get(MCP_ELICITATION_STRICT_AUTO_REVIEW_KEY)),
+        Some(Value::Bool(true))
+    ) {
+        let connector_id = elicitation_connector_id(&request.elicitation);
+        let trusted_guardian_request = if request.server_name == CODEX_APPS_MCP_SERVER_NAME {
+            let Some(call_id) = request
+                .elicitation
+                .meta()
+                .and_then(|meta| meta.get(MCP_TOOL_CODEX_APPS_META_KEY))
+                .and_then(Value::as_object)
+                .and_then(|meta| meta.get("call_id"))
+                .and_then(Value::as_str)
+            else {
+                return Ok(None);
+            };
+            let Some((Some(invocation), metadata)) = session
+                .mcp_tool_approval_metadata(&turn_context.sub_id, call_id)
+                .await
+            else {
+                return Ok(None);
+            };
+            if invocation.server != request.server_name
+                || connector_id != metadata.connector_id.as_deref()
+                || request
+                    .elicitation
+                    .meta()
+                    .and_then(|meta| metadata_str(meta, MCP_ELICITATION_TOOL_NAME_KEY))
+                    != Some(invocation.tool.as_str())
+            {
+                return Ok(None);
+            }
+            Some(
+                crate::mcp_tool_call::build_guardian_mcp_tool_review_request(
+                    call_id,
+                    &invocation,
+                    Some(&metadata),
+                ),
+            )
+        } else {
+            None
+        };
+        if !turn_context
+            .config
+            .features
+            .enabled(Feature::GuardianApproval)
+            || mcp_config
+                .config_layer_stack
+                .requirements()
+                .approvals_reviewer
+                .can_set(&ApprovalsReviewer::AutoReview)
+                .is_err()
+            || crate::connectors::mcp_approvals_reviewer_from_layers(
+                &mcp_config.config_layer_stack,
+                ApprovalsReviewer::AutoReview,
+                request.server_name.as_str(),
+                connector_id,
+            ) != ApprovalsReviewer::AutoReview
+            || request
+                .elicitation
+                .meta()
+                .is_some_and(|meta| meta.contains_key(MCP_ELICITATION_PERSIST_KEY))
+        {
+            return Ok(None);
+        }
+
+        let GuardianElicitationReview::ApprovalRequest(guardian_request) =
+            guardian_elicitation_review_request(&request)
+        else {
+            return Ok(None);
+        };
+        let guardian_request = trusted_guardian_request.unwrap_or(*guardian_request);
+        let decision = crate::guardian::review_approval_request_with_cancel(
+            &session,
+            &turn_context,
+            crate::guardian::new_guardian_review_id(),
+            guardian_request,
+            /*retry_reason*/ None,
+            crate::guardian::GuardianReviewOptions {
+                plugin_attribution_override: None,
+                approval_request_source: codex_analytics::GuardianApprovalRequestSource::MainTurn,
+                external_cancel: Some(cancellation_token),
+            },
+        )
+        .await;
+
+        return Ok(matches!(decision, ReviewDecision::Approved)
+            .then(|| mcp_elicitation_response_from_guardian_decision(decision)));
+    }
+
+    let approval_policy = mcp_config.approval_policy.value();
+    match approval_policy {
+        AskForApproval::Never => {
+            if codex_mcp::mcp_permission_prompt_is_auto_approved(
+                approval_policy,
+                &mcp_config.permission_profile,
+                codex_mcp::McpPermissionPromptAutoApproveContext::default(),
+            ) && matches!(
+                &request.elicitation,
+                Elicitation::Mcp(
+                    rmcp::model::ElicitRequestParams::FormElicitationParams {
+                        requested_schema,
+                        ..
+                    }
+                ) if requested_schema.properties.is_empty()
+            ) {
+                return Ok(Some(ElicitationResponse {
+                    action: ElicitationAction::Accept,
+                    content: Some(serde_json::json!({})),
+                    meta: None,
+                }));
+            }
+            return Ok(Some(mcp_elicitation_decline_without_message()));
+        }
+        AskForApproval::Granular(config) if !config.allows_mcp_elicitations() => {
+            return Ok(Some(mcp_elicitation_decline_without_message()));
+        }
+        AskForApproval::OnRequest | AskForApproval::UnlessTrusted | AskForApproval::Granular(_) => {
+        }
+    }
+
+    let approvals_reviewer = crate::connectors::mcp_approvals_reviewer_from_layers(
+        &mcp_config.config_layer_stack,
+        mcp_config.approvals_reviewer,
         request.server_name.as_str(),
         elicitation_connector_id(&request.elicitation),
     );
-    if !crate::guardian::routes_approval_to_guardian_with_reviewer(
-        turn_context.as_ref(),
-        approvals_reviewer,
-    ) {
+    if !crate::guardian::routes_approval_policy_to_guardian(approval_policy, approvals_reviewer) {
         return Ok(None);
     }
 
@@ -732,7 +827,7 @@ async fn review_guardian_mcp_elicitation(
         &turn_context,
         review_id.clone(),
         guardian_request,
-        /*retry_reason*/ None,
+        Default::default(),
     )
     .await;
     Ok(Some(mcp_elicitation_response_from_guardian_decision(
@@ -744,14 +839,13 @@ fn guardian_elicitation_review_request(
     request: &ElicitationReviewRequest,
 ) -> GuardianElicitationReview {
     let (meta, requested_schema) = match &request.elicitation {
-        Elicitation::Mcp(rmcp::model::CreateElicitationRequestParams::FormElicitationParams {
+        Elicitation::Mcp(rmcp::model::ElicitRequestParams::FormElicitationParams {
             meta,
             requested_schema,
             ..
         }) => (meta, Some(requested_schema)),
-        Elicitation::Mcp(rmcp::model::CreateElicitationRequestParams::UrlElicitationParams {
-            meta,
-            ..
+        Elicitation::Mcp(rmcp::model::ElicitRequestParams::UrlElicitationParams {
+            meta, ..
         }) => {
             return if meta_requests_approval_request(meta) {
                 GuardianElicitationReview::Decline(
@@ -761,10 +855,15 @@ fn guardian_elicitation_review_request(
                 GuardianElicitationReview::NotRequested
             };
         }
+        Elicitation::Mcp(_) => {
+            return GuardianElicitationReview::Decline(
+                "guardian MCP elicitation review does not support this elicitation mode",
+            );
+        }
         Elicitation::OpenAiForm { .. } => return GuardianElicitationReview::NotRequested,
     };
 
-    let Some(meta) = meta.as_ref().map(|meta| &meta.0) else {
+    let Some(meta) = meta.as_ref().map(|meta| &meta.0.0) else {
         return GuardianElicitationReview::NotRequested;
     };
     if metadata_str(meta, MCP_ELICITATION_REQUEST_TYPE_KEY)
@@ -830,7 +929,7 @@ fn elicitation_connector_id(elicitation: &Elicitation) -> Option<&str> {
         .and_then(|meta| metadata_str(meta, MCP_ELICITATION_CONNECTOR_ID_KEY))
 }
 
-fn meta_requests_approval_request(meta: &Option<Meta>) -> bool {
+fn meta_requests_approval_request(meta: &Option<RequestMetaObject>) -> bool {
     meta.as_ref()
         .and_then(|meta| metadata_str(&meta.0, MCP_ELICITATION_REQUEST_TYPE_KEY))
         == Some(MCP_ELICITATION_REQUEST_TYPE_APPROVAL_REQUEST)

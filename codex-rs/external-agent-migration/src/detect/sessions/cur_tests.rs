@@ -35,6 +35,43 @@ fn detects_cur_transcript_with_project_cwd() {
 }
 
 #[test]
+fn detects_projectless_cur_transcript_without_embedded_metadata() {
+    let root = TempDir::new().expect("tempdir");
+    let external_agent_home = root.path().join(".cursor");
+    let transcript = write_transcript(
+        &external_agent_home,
+        "empty-window",
+        "projectless-session",
+        "first request",
+    );
+
+    let sessions =
+        detect_recent_cur_sessions(&external_agent_home, root.path()).expect("detect sessions");
+
+    assert_eq!(
+        sessions,
+        vec![ExternalAgentSessionMigration {
+            path: transcript,
+            cwd: root.path().to_path_buf(),
+            title: Some("first request".to_string()),
+        }]
+    );
+}
+
+#[test]
+fn resolves_projectless_cur_cwd_from_relative_home() {
+    let current_dir = std::env::current_dir().expect("current dir");
+
+    assert_eq!(
+        cur_project_cwd(
+            Path::new(".cursor/projects/empty-window"),
+            Path::new(".cursor"),
+        ),
+        Some(current_dir)
+    );
+}
+
+#[test]
 fn detects_cur_transcript_with_embedded_unc_cwd() {
     let root = TempDir::new().expect("tempdir");
     let external_agent_home = root.path().join(".external");
@@ -171,7 +208,8 @@ fn detects_cur_sessions_in_batches_and_redetects_modified_imports() {
     let encoded_project = encode_project_path(&project_root);
     let modified_at = SystemTime::now();
     let mut expected = Vec::new();
-    for index in 0..=SESSION_IMPORT_MAX_COUNT {
+    let default_limits = ExternalAgentSessionImportLimits::default();
+    for index in 0..=default_limits.max_sessions {
         let session_id = format!("session-{index:02}");
         let title = format!("request {index}");
         let path = write_transcript(&external_agent_home, &encoded_project, &session_id, &title);

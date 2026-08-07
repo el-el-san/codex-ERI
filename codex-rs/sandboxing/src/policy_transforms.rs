@@ -49,6 +49,7 @@ pub fn normalize_additional_permissions(
                 let normalized_entry = FileSystemSandboxEntry {
                     path,
                     access: entry.access,
+                    missing_path_behavior: entry.missing_path_behavior,
                 };
                 if !entries.contains(&normalized_entry) {
                     entries.push(normalized_entry);
@@ -243,7 +244,14 @@ fn granted_file_system_entry_within_request(
     granted_entry: &FileSystemSandboxEntry,
     cwd: &Path,
 ) -> bool {
-    if !granted_entry.access.can_read() {
+    if !granted_entry.access.can_read()
+        || matches!(
+            &granted_entry.path,
+            FileSystemPath::Special {
+                value: FileSystemSpecialPath::SlashTmp,
+            } if !cfg!(unix)
+        )
+    {
         return false;
     }
 
@@ -355,6 +363,7 @@ fn materialize_cwd_dependent_entry(
             .map(|path| FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path },
                 access: entry.access,
+                missing_path_behavior: entry.missing_path_behavior,
             })
             .unwrap_or_else(|| entry.clone()),
         FileSystemPath::GlobPattern { pattern } => FileSystemSandboxEntry {
@@ -364,6 +373,7 @@ fn materialize_cwd_dependent_entry(
                     .into_owned(),
             },
             access: entry.access,
+            missing_path_behavior: entry.missing_path_behavior,
         },
         FileSystemPath::Path { .. } | FileSystemPath::Special { .. } => entry.clone(),
     }
@@ -395,10 +405,14 @@ fn resolve_permission_path(path: &FileSystemPath, cwd: &Path) -> Option<Absolute
                     AbsolutePathBuf::from_absolute_path(PathBuf::from(tmpdir)).ok()
                 }
             }
-            FileSystemSpecialPath::SlashTmp => AbsolutePathBuf::from_absolute_path("/tmp")
-                .ok()
-                .filter(|path| path.as_path().is_dir()),
-            FileSystemSpecialPath::Minimal | FileSystemSpecialPath::Unknown { .. } => None,
+            FileSystemSpecialPath::SlashTmp if cfg!(unix) => {
+                AbsolutePathBuf::from_absolute_path("/tmp")
+                    .ok()
+                    .filter(|path| path.as_path().is_dir())
+            }
+            FileSystemSpecialPath::SlashTmp
+            | FileSystemSpecialPath::Minimal
+            | FileSystemSpecialPath::Unknown { .. } => None,
         },
     }
 }

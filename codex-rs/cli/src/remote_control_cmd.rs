@@ -65,6 +65,7 @@ pub(crate) async fn run(
     command: RemoteControlCommand,
     arg0_paths: Arg0DispatchPaths,
     root_config_overrides: CliConfigOverrides,
+    psp: bool,
 ) -> anyhow::Result<()> {
     match command.subcommand {
         None => {
@@ -72,7 +73,8 @@ pub(crate) async fn run(
                 command.json,
                 "Starting app-server with remote control enabled...",
             )?;
-            run_foreground_remote_control(command.json, arg0_paths, root_config_overrides).await?;
+            run_foreground_remote_control(command.json, arg0_paths, root_config_overrides, psp)
+                .await?;
         }
         Some(RemoteControlSubcommand::Start) => {
             print_remote_control_progress(
@@ -111,6 +113,7 @@ async fn run_foreground_remote_control(
     json: bool,
     arg0_paths: Arg0DispatchPaths,
     root_config_overrides: CliConfigOverrides,
+    psp: bool,
 ) -> anyhow::Result<()> {
     let socket_dir = tempfile::Builder::new()
         .prefix("codex-rc-")
@@ -126,6 +129,7 @@ async fn run_foreground_remote_control(
     let runtime_options = AppServerRuntimeOptions {
         remote_control_startup_mode: codex_app_server::RemoteControlStartupMode::EnabledEphemeral,
         install_shutdown_signal_handler: false,
+        psp,
         ..Default::default()
     };
     let (stop_rx, stop_signal_task) = foreground_stop_signal();
@@ -673,17 +677,22 @@ mod tests {
     #[test]
     fn remote_control_pairing_human_output_labels_the_manual_code() {
         assert_eq!(
-            format_remote_control_pairing_output(&pairing_response(Some("ABCD-EFGH")), false)
-                .expect("manual pairing output"),
+            format_remote_control_pairing_output(
+                &pairing_response(Some("ABCD-EFGH")),
+                /*json*/ false,
+            )
+            .expect("manual pairing output"),
             "Pairing code: ABCD-EFGH"
         );
     }
 
     #[test]
     fn remote_control_pairing_json_output_preserves_pairing_artifacts() {
-        let output =
-            format_remote_control_pairing_output(&pairing_response(Some("ABCD-EFGH")), true)
-                .expect("pairing JSON output");
+        let output = format_remote_control_pairing_output(
+            &pairing_response(Some("ABCD-EFGH")),
+            /*json*/ true,
+        )
+        .expect("pairing JSON output");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&output).expect("valid JSON"),
             json!({
@@ -698,9 +707,12 @@ mod tests {
     #[test]
     fn remote_control_pairing_human_output_requires_manual_code() {
         assert_eq!(
-            format_remote_control_pairing_output(&pairing_response(None), false)
-                .expect_err("missing manual pairing code should fail")
-                .to_string(),
+            format_remote_control_pairing_output(
+                &pairing_response(/*manual_pairing_code*/ None),
+                /*json*/ false,
+            )
+            .expect_err("missing manual pairing code should fail")
+            .to_string(),
             "remote-control pairing response did not include a manual pairing code"
         );
     }

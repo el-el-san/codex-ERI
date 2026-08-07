@@ -127,6 +127,34 @@ pub(crate) fn oauth_token_status(
     })
 }
 
+/// Returns stored OAuth credentials without their derived expiration interval.
+pub fn stored_oauth_credentials(
+    server_name: &str,
+    url: &str,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<Option<StoredOAuthTokens>> {
+    let Some(resolved) = resolve_oauth_tokens_from_store_policy(
+        &DefaultKeyringStore,
+        server_name,
+        url,
+        store_mode,
+        keyring_backend_kind,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(normalized_oauth_credentials(Some(&resolved.tokens)))
+}
+
+fn normalized_oauth_credentials(tokens: Option<&StoredOAuthTokens>) -> Option<StoredOAuthTokens> {
+    tokens.map(|tokens| {
+        let mut tokens = tokens.clone();
+        tokens.token_response.0.set_expires_in(None);
+        tokens
+    })
+}
+
 fn oauth_tokens_are_usable(tokens: &StoredOAuthTokens) -> bool {
     if tokens.client_id.trim().is_empty() {
         return false;
@@ -510,6 +538,11 @@ impl OAuthPersistor {
         }
     }
 
+    pub(crate) async fn stored_credentials(&self) -> Option<StoredOAuthTokens> {
+        let credentials = self.inner.last_credentials.lock().await;
+        normalized_oauth_credentials(credentials.as_ref())
+    }
+
     /// Persists RMCP-managed credential changes back to this client's resolved authority.
     #[expect(
         clippy::await_holding_invalid_type,
@@ -592,6 +625,9 @@ struct FallbackTokenEntry {
     refresh_token: Option<String>,
     #[serde(default)]
     scopes: Vec<String>,
+    // Legacy host entries omit this marker, so executor lookups fail closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executor_owned: bool,
 }
 
 fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
@@ -601,10 +637,22 @@ fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<St
     };
 
     let key = compute_store_key(server_name, url)?;
+    let local_server_name = server_name.strip_prefix("local:").unwrap_or(server_name);
 
-    for entry in store.values() {
-        let entry_key = compute_store_key(&entry.server_name, &entry.server_url)?;
-        if entry_key != key {
+    for (stored_key, entry) in &store {
+        let matches_credential = if server_name.starts_with("executor:") {
+            stored_key == &key
+                && entry.executor_owned
+                && entry.server_name == server_name
+                && entry.server_url == url
+        } else if entry.executor_owned {
+            false
+        } else {
+            entry.server_url == url
+                && (entry.server_name == local_server_name
+                    || (stored_key == &key && entry.server_name == server_name))
+        };
+        if !matches_credential {
             continue;
         }
 
@@ -649,6 +697,10 @@ fn save_oauth_tokens_to_file(tokens: &StoredOAuthTokens) -> Result<()> {
 fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Result<()> {
     let key = compute_store_key(&tokens.server_name, &tokens.url)?;
     let mut store = read_fallback_file_unlocked()?.unwrap_or_default();
+    let executor_owned = tokens.server_name.starts_with("executor:");
+    if executor_owned && store.get(&key).is_some_and(|entry| !entry.executor_owned) {
+        anyhow::bail!("executor OAuth credential key conflicts with a host-owned credential");
+    }
 
     let token_response = &tokens.token_response.0;
     let expires_at = tokens
@@ -669,6 +721,7 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
         expires_at,
         refresh_token,
         scopes,
+        executor_owned,
     };
 
     store.insert(key, entry);
@@ -681,6 +734,13 @@ fn delete_oauth_tokens_from_file(key: &str) -> Result<bool> {
         Some(store) => store,
         None => return Ok(false),
     };
+
+    if key.starts_with("executor:")
+        && !key.contains('|')
+        && store.get(key).is_some_and(|entry| !entry.executor_owned)
+    {
+        anyhow::bail!("executor OAuth credential key conflicts with a host-owned credential");
+    }
 
     let removed = store.remove(key).is_some();
 
@@ -732,6 +792,8 @@ fn token_needs_refresh(expires_at: Option<u64>) -> bool {
 }
 
 fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
+    let executor_owned = server_name.starts_with("executor:");
+    let server_name = server_name.strip_prefix("local:").unwrap_or(server_name);
     let mut payload = JsonMap::new();
     payload.insert(
         "type".to_string(),
@@ -741,13 +803,14 @@ fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
     payload.insert("headers".to_string(), Value::Object(JsonMap::new()));
 
     let truncated = sha_256_prefix(&Value::Object(payload))?;
-    Ok(format!("{server_name}|{truncated}"))
+    let separator = if executor_owned { ':' } else { '|' };
+    Ok(format!("{server_name}{separator}{truncated}"))
 }
 
 /// Derive a valid secret-store name from the MCP OAuth store key.
 ///
 /// `compute_store_key` intentionally includes readable identity components and
-/// a pipe separator, but `SecretName` only allows `A-Z`, `0-9`, and `_`.
+/// punctuation, but `SecretName` only allows `A-Z`, `0-9`, and `_`.
 /// Re-hashing keeps the secret key deterministic while satisfying that
 /// restricted alphabet.
 fn compute_secret_name(server_name: &str, server_url: &str) -> Result<SecretName> {
@@ -836,6 +899,47 @@ mod tests {
     mod persistor_tests;
 
     use super::test_support::TempCodexHome;
+
+    #[test]
+    fn stored_oauth_credentials_ignore_derived_expiration_and_track_token_changes() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let mut tokens = sample_tokens();
+        let credentials = super::normalized_oauth_credentials(Some(&tokens));
+        tokens
+            .token_response
+            .0
+            .set_expires_in(Some(&Duration::from_secs(1)));
+        assert_eq!(
+            credentials,
+            super::normalized_oauth_credentials(Some(&tokens))
+        );
+        super::save_oauth_tokens_to_file(&tokens)?;
+        assert_eq!(
+            credentials,
+            super::stored_oauth_credentials(
+                &tokens.server_name,
+                &tokens.url,
+                OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+            )?
+        );
+
+        tokens
+            .token_response
+            .0
+            .set_access_token(AccessToken::new("new-access-token".to_string()));
+        super::save_oauth_tokens_to_file(&tokens)?;
+        assert_ne!(
+            credentials,
+            super::stored_oauth_credentials(
+                &tokens.server_name,
+                &tokens.url,
+                OAuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::Direct,
+            )?
+        );
+        Ok(())
+    }
 
     #[test]
     fn resolve_oauth_tokens_from_store_policy_uses_keyring_when_available() -> Result<()> {

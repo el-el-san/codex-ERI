@@ -15,6 +15,7 @@ use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::LoginAccountResponse;
+use codex_login::AuthConfig;
 use codex_login::read_openai_api_key_from_env;
 use codex_protocol::auth::AuthMode;
 use crossterm::event::KeyCode;
@@ -52,6 +53,9 @@ use crate::motion::shimmer_text;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
+use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::terminal_hyperlinks::mark_buffer_hyperlinks;
+use crate::terminal_hyperlinks::visible_lines;
 use crate::tui::FrameRequester;
 
 /// Marks buffer cells that have cyan+underlined style as an OSC 8 hyperlink.
@@ -231,7 +235,7 @@ pub(crate) struct AuthModeWidget {
     pub sign_in_state: Arc<RwLock<SignInState>>,
     pub login_status: LoginStatus,
     pub app_server_request_handle: AppServerRequestHandle,
-    pub forced_login_method: Option<ForcedLoginMethod>,
+    pub auth_config: AuthConfig,
     pub animations_enabled: bool,
     pub animations_suppressed: Cell<bool>,
 }
@@ -305,11 +309,13 @@ impl AuthModeWidget {
     }
 
     fn is_api_login_allowed(&self) -> bool {
-        !matches!(self.forced_login_method, Some(ForcedLoginMethod::Chatgpt))
+        self.auth_config
+            .is_login_method_allowed(ForcedLoginMethod::Api)
     }
 
     fn is_chatgpt_login_allowed(&self) -> bool {
-        !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
+        self.auth_config
+            .is_login_method_allowed(ForcedLoginMethod::Chatgpt)
     }
 
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
@@ -544,50 +550,51 @@ impl AuthModeWidget {
     }
 
     fn render_chatgpt_success_message(&self, area: Rect, buf: &mut Buffer) {
+        let mut docs_line = HyperlinkLine::new(Line::from("  For more details see the ").dim());
+        docs_line.push_span(
+            "Codex docs".underlined(),
+            Some("https://developers.openai.com/codex/security"),
+        );
+        let mut preferences_line =
+            HyperlinkLine::new(Line::from("  Uses your plan's rate limits and ").dim());
+        preferences_line.push_span(
+            "training data preferences".underlined(),
+            Some("https://chatgpt.com/#settings"),
+        );
+
         let lines = vec![
-            "✓ Signed in with your ChatGPT account"
-                .fg(Color::Green)
-                .into(),
+            HyperlinkLine::new(
+                "✓ Signed in with your ChatGPT account"
+                    .fg(Color::Green)
+                    .into(),
+            ),
             "".into(),
             "  Before you start:".into(),
             "".into(),
             "  Decide how much autonomy you want to grant Codex".into(),
-            Line::from(vec![
-                "  For more details see the ".into(),
-                crate::terminal_hyperlinks::osc8_hyperlink(
-                    "https://developers.openai.com/codex/security",
-                    "Codex docs",
-                )
-                .underlined(),
-            ])
-            .dim(),
+            docs_line,
             "".into(),
             "  Codex can make mistakes".into(),
-            "  Review the code it writes and commands it runs"
-                .dim()
-                .into(),
+            HyperlinkLine::new(
+                "  Review the code it writes and commands it runs"
+                    .dim()
+                    .into(),
+            ),
             "".into(),
             "  Powered by your ChatGPT account".into(),
-            Line::from(vec![
-                "  Uses your plan's rate limits and ".into(),
-                crate::terminal_hyperlinks::osc8_hyperlink(
-                    "https://chatgpt.com/#settings",
-                    "training data preferences",
-                )
-                .underlined(),
-            ])
-            .dim(),
+            preferences_line,
             "".into(),
-            Line::from(vec![
+            HyperlinkLine::new(Line::from(vec![
                 "  Press ".fg(Color::Cyan),
                 self.confirm_binding().into(),
                 " to continue".fg(Color::Cyan),
-            ]),
+            ])),
         ];
 
-        Paragraph::new(lines)
+        Paragraph::new(visible_lines(lines.clone()))
             .wrap(Wrap { trim: false })
             .render(area, buf);
+        mark_buffer_hyperlinks(buf, area, &lines, /*scroll_rows*/ 0);
     }
 
     fn render_chatgpt_success(&self, area: Rect, buf: &mut Buffer) {
@@ -1025,12 +1032,24 @@ mod tests {
     use codex_app_server_client::InProcessClientStartArgs;
     use codex_arg0::Arg0DispatchPaths;
     use codex_cloud_config::cloud_config_bundle_loader_for_storage;
-    use codex_config::types::AuthCredentialsStoreMode;
-    use codex_login::AuthKeyringBackendKind;
-
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    const PRODUCTION_LENGTH_AUTH_URL: &str = concat!(
+        "https://auth.openai.com/oauth/authorize?",
+        "response_type=code&",
+        "client_id=app_EMoamEEZ73f0CkXaXp7hrann&",
+        "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&",
+        "scope=openid%20profile%20email%20offline_access%20",
+        "api.connectors.read%20api.connectors.invoke&",
+        "code_challenge=1YM3Z8QbrLbdt9C3eX3j7UQ4GmFRmKz4OeVYwD6s5xA&",
+        "code_challenge_method=S256&",
+        "id_token_add_organizations=true&",
+        "codex_cli_simplified_flow=true&",
+        "state=8cHjQ4nVx2Yp7Lm9Rk3Wf6Ta1Bs5Du0Ei4Go7Nz2PqM&",
+        "originator=codex_cli_rs"
+    );
 
     async fn widget_forced_chatgpt() -> (AuthModeWidget, TempDir) {
         let codex_home = TempDir::new().unwrap();
@@ -1040,6 +1059,7 @@ mod tests {
             .build()
             .await
             .unwrap();
+        let mut auth_config = config.auth_config();
         let client = InProcessAppServerClient::start(InProcessClientStartArgs {
             arg0_paths: Arg0DispatchPaths::default(),
             config: Arc::new(config),
@@ -1047,12 +1067,8 @@ mod tests {
             loader_overrides: Default::default(),
             strict_config: false,
             cloud_config_bundle: cloud_config_bundle_loader_for_storage(
-                codex_home_path.clone(),
+                auth_config.clone(),
                 /*enable_codex_api_key_env*/ false,
-                AuthCredentialsStoreMode::File,
-                AuthKeyringBackendKind::default(),
-                "https://chatgpt.com/backend-api/".to_string(),
-                /*auth_route_config*/ None,
             )
             .await,
             feedback: codex_feedback::CodexFeedback::new(),
@@ -1074,6 +1090,7 @@ mod tests {
         })
         .await
         .unwrap();
+        auth_config.forced_login_method = Some(ForcedLoginMethod::Chatgpt);
         let widget = AuthModeWidget {
             request_frame: FrameRequester::test_dummy(),
             highlighted_mode: SignInOption::ChatGpt,
@@ -1081,7 +1098,7 @@ mod tests {
             sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
             login_status: LoginStatus::NotAuthenticated,
             app_server_request_handle: AppServerRequestHandle::InProcess(client.request_handle()),
-            forced_login_method: Some(ForcedLoginMethod::Chatgpt),
+            auth_config,
             animations_enabled: true,
             animations_suppressed: std::cell::Cell::new(false),
         };
@@ -1197,24 +1214,105 @@ mod tests {
     }
 
     #[test]
-    fn continue_in_browser_renders_osc8_hyperlink() {
+    fn continue_in_browser_preserves_long_link_and_footer_at_narrow_width() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let (widget, _tmp) = runtime.block_on(widget_forced_chatgpt());
-        let url = "https://auth.example.com/login?state=abc123";
+        widget.set_animations_suppressed(/*suppressed*/ true);
         *widget.sign_in_state.write().unwrap() =
             SignInState::ChatGptContinueInBrowser(ContinueInBrowserState {
                 login_id: "login-1".to_string(),
-                auth_url: url.to_string(),
+                auth_url: PRODUCTION_LENGTH_AUTH_URL.to_string(),
             });
 
-        // Render into a narrow buffer so the URL wraps across multiple rows.
-        let area = Rect::new(0, 0, 30, 20);
+        let width = 44;
+        let height = 30;
+        let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         widget.render_continue_in_browser(area, &mut buf);
 
-        // Every character of the URL should be present as an OSC 8 cell.
-        let found = collect_osc8_chars(&buf, area, url);
-        assert_eq!(found, url, "OSC 8 hyperlink should cover the full URL");
+        let found = collect_osc8_chars(&buf, area, PRODUCTION_LENGTH_AUTH_URL);
+        assert_eq!(
+            found, PRODUCTION_LENGTH_AUTH_URL,
+            "OSC 8 hyperlink should cover the full URL"
+        );
+
+        let mut terminal = crate::custom_terminal::Terminal::with_options(
+            crate::test_backend::VT100Backend::new(width, height),
+        )
+        .expect("terminal");
+        terminal.set_viewport_area(area);
+
+        terminal
+            .draw(|frame| widget.render_continue_in_browser(area, frame.buffer_mut()))
+            .expect("draw");
+
+        let contents = terminal.backend().to_string();
+        insta::assert_snapshot!("continue_in_browser_narrow_long_url", contents);
+        assert!(contents.contains("On a remote or headless machine?"));
+        assert!(contents.contains("Press esc to cancel"));
+    }
+
+    #[test]
+    fn chatgpt_success_message_renders_osc8_hyperlinks() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (widget, _tmp) = runtime.block_on(widget_forced_chatgpt());
+        let area = Rect::new(0, 0, 80, 14);
+        let mut buf = Buffer::empty(area);
+
+        widget.render_chatgpt_success_message(area, &mut buf);
+
+        assert_eq!(
+            collect_osc8_chars(&buf, area, "https://developers.openai.com/codex/security"),
+            "Codex docs"
+        );
+        assert_eq!(
+            collect_osc8_chars(&buf, area, "https://chatgpt.com/#settings"),
+            "training data preferences"
+        );
+        assert_eq!(
+            (0..37).map(|x| buf[(x, 5)].modifier).collect::<Vec<_>>(),
+            [
+                vec![Modifier::DIM; 27],
+                vec![Modifier::DIM | Modifier::UNDERLINED; 10],
+            ]
+            .concat()
+        );
+        assert_eq!(
+            (0..60).map(|x| buf[(x, 11)].modifier).collect::<Vec<_>>(),
+            [
+                vec![Modifier::DIM; 35],
+                vec![Modifier::DIM | Modifier::UNDERLINED; 25],
+            ]
+            .concat()
+        );
+
+        let visible = (area.top()..area.bottom())
+            .map(|y| {
+                let row = (area.left()..area.right())
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>();
+                crate::terminal_hyperlinks::strip_osc8(&row)
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!(visible, @r###"
+        ✓ Signed in with your ChatGPT account
+
+          Before you start:
+
+          Decide how much autonomy you want to grant Codex
+          For more details see the Codex docs
+
+          Codex can make mistakes
+          Review the code it writes and commands it runs
+
+          Powered by your ChatGPT account
+          Uses your plan's rate limits and training data preferences
+
+          Press enter to continue
+        "###);
     }
 
     #[test]
@@ -1258,6 +1356,7 @@ mod tests {
             login_id: Some("login-1".to_string()),
             success: true,
             error: None,
+            onboarding_entrypoint: None,
         });
 
         assert!(matches!(

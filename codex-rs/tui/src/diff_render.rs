@@ -1324,7 +1324,6 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::text::Text;
     use ratatui::widgets::Paragraph;
-    use ratatui::widgets::WidgetRef;
     use ratatui::widgets::Wrap;
 
     #[test]
@@ -1377,7 +1376,7 @@ mod tests {
             .draw(|f| {
                 Paragraph::new(Text::from(lines))
                     .wrap(Wrap { trim: false })
-                    .render_ref(f.area(), f.buffer_mut())
+                    .render(f.area(), f.buffer_mut())
             })
             .expect("draw");
         assert!(
@@ -2222,34 +2221,37 @@ mod tests {
 
     #[test]
     fn cpp_module_extensions_use_cpp_highlighting() {
-        let highlighted_tokens = ["cpp", "cppm", "CPPM", "cxxm", "CxXm", "ixx", "IXX"]
-            .into_iter()
-            .map(|extension| {
-                let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
-                changes.insert(
-                    PathBuf::from(format!("math.{extension}")),
-                    FileChange::Add {
-                        content:
-                            "export module math;\nexport int sum(int a, int b) { return a + b; }\n"
-                                .to_string(),
-                    },
-                );
+        let highlighted_tokens = [
+            "cpp",
+            // CUDA source and header extensions use C++ highlighting as a fallback.
+            "cu", "cuh", "cppm", "CPPM", "cxxm", "CxXm", "ixx", "IXX",
+        ]
+        .into_iter()
+        .map(|extension| {
+            let mut changes: HashMap<PathBuf, FileChange> = HashMap::new();
+            changes.insert(
+                PathBuf::from(format!("math.{extension}")),
+                FileChange::Add {
+                    content:
+                        "export module math;\nexport int sum(int a, int b) { return a + b; }\n"
+                            .to_string(),
+                },
+            );
 
-                let lines =
-                    create_diff_summary(&changes, &PathBuf::from("/"), /*wrap_cols*/ 80);
-                let rgb_tokens = lines
-                    .iter()
-                    .flat_map(|line| &line.spans)
-                    .filter(|span| matches!(span.style.fg, Some(ratatui::style::Color::Rgb(..))))
-                    .map(|span| span.content.to_string())
-                    .collect::<Vec<_>>();
-                assert!(
-                    !rgb_tokens.is_empty(),
-                    "add diff for .{extension} file should produce syntax-highlighted (RGB) spans"
-                );
-                (extension, rgb_tokens.join("|"))
-            })
-            .collect::<Vec<_>>();
+            let lines = create_diff_summary(&changes, &PathBuf::from("/"), /*wrap_cols*/ 80);
+            let rgb_tokens = lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .filter(|span| matches!(span.style.fg, Some(ratatui::style::Color::Rgb(..))))
+                .map(|span| span.content.to_string())
+                .collect::<Vec<_>>();
+            assert!(
+                !rgb_tokens.is_empty(),
+                "add diff for .{extension} file should produce syntax-highlighted (RGB) spans"
+            );
+            (extension, rgb_tokens.join("|"))
+        })
+        .collect::<Vec<_>>();
 
         assert_debug_snapshot!("cpp_module_extension_highlighting", highlighted_tokens);
     }

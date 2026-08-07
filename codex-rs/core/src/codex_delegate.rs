@@ -5,7 +5,10 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_analytics::GuardianApprovalRequestSource;
 use codex_async_utils::OrCancelExt;
+use codex_core_plugins::PluginCommandAttribution;
 use codex_extension_api::LoadedUserInstructions;
+use codex_plugin::PluginId;
+use codex_protocol::items::is_safe_plugin_relative_path;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -34,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::GuardianReviewOptions;
 use crate::guardian::new_guardian_review_id;
 use crate::guardian::routes_approval_to_guardian;
 use crate::guardian::routes_approval_to_guardian_with_reviewer;
@@ -44,8 +48,9 @@ use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
 use crate::mcp_tool_call::McpToolApprovalMetadata;
 use crate::mcp_tool_call::build_guardian_mcp_tool_review_request;
 use crate::mcp_tool_call::is_mcp_tool_approval_question_id;
-use crate::mcp_tool_call::lookup_mcp_tool_metadata;
 use crate::mcp_tool_call::mcp_approvals_reviewer;
+use crate::session::ForkPersistence;
+use crate::session::GitEnrichmentPolicy;
 use crate::session::SUBMISSION_CHANNEL_CAPACITY;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
@@ -82,6 +87,8 @@ pub(crate) async fn run_codex_thread_interactive(
     cancel_token: CancellationToken,
     subagent_source: SubAgentSource,
     initial_history: Option<InitialHistory>,
+    git_enrichment_policy: GitEnrichmentPolicy,
+    windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
 ) -> Result<(Arc<Session>, SessionIo), CodexErr> {
     let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (tx_ops, rx_ops) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -109,6 +116,7 @@ pub(crate) async fn run_codex_thread_interactive(
         extensions: Arc::clone(&parent_session.services.extensions),
         conversation_history,
         requested_history_mode: None,
+        fork_persistence: ForkPersistence::Copied,
         session_source: SessionSource::SubAgent(subagent_source.clone()),
         forked_from_thread_id,
         parent_thread_id: Some(parent_session.thread_id),
@@ -124,15 +132,14 @@ pub(crate) async fn run_codex_thread_interactive(
         parent_trace: None,
         environment_selections: parent_ctx.environments.to_selections(),
         thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
-        supports_openai_form_elicitation: parent_session
-            .services
-            .supports_openai_form_elicitation
-            .load(std::sync::atomic::Ordering::Relaxed),
+        client_mcp_extensions: parent_session.services.client_mcp_extensions.clone(),
         analytics_events_client: Some(parent_session.services.analytics_events_client.clone()),
         thread_store: Arc::clone(&parent_session.services.thread_store),
         attestation_provider: parent_session.services.attestation_provider.clone(),
         external_time_provider: Some(Arc::clone(&parent_session.services.time_provider)),
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
+        git_enrichment_policy,
+        windows_sandbox_proxy_settings_mode,
     }))
     .or_cancel(&cancel_token)
     .await??;
@@ -208,6 +215,7 @@ pub(crate) async fn run_codex_thread_one_shot(
     // Use a child token so we can stop the delegate after completion without
     // requiring the caller to cancel the parent token.
     let child_cancel = cancel_token.child_token();
+    let parent_turn_id = parent_ctx.sub_id.clone();
     let (session, io) = Box::pin(run_codex_thread_interactive(
         config,
         auth_manager,
@@ -217,17 +225,23 @@ pub(crate) async fn run_codex_thread_one_shot(
         child_cancel.clone(),
         subagent_source,
         initial_history,
+        GitEnrichmentPolicy::Fresh,
+        codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
     ))
     .await?;
 
     // Send the initial input to kick off the one-shot turn.
-    io.submit(Op::UserInput {
-        items: input,
-        final_output_json_schema,
-        responsesapi_client_metadata: None,
-        additional_context: Default::default(),
-        thread_settings: Default::default(),
-    })
+    io.submit_with_trace(
+        Op::UserInput {
+            items: input,
+            final_output_json_schema,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        },
+        /*trace*/ None,
+        Some(parent_turn_id),
+    )
     .await?;
 
     // Bridge events so we can observe completion and shut down automatically.
@@ -250,6 +264,7 @@ pub(crate) async fn run_codex_thread_one_shot(
                         op: Op::Shutdown {},
                         client_user_message_id: None,
                         trace: None,
+                        parent_turn_id: None,
                     })
                     .await;
                 child_cancel.cancel();
@@ -368,24 +383,13 @@ async fn forward_events(
                         id,
                         msg: EventMsg::McpToolCallBegin(event),
                     } => {
-                        // Runtime refreshes are published before a request step is captured, so
-                        // the child runtime at call begin is the one executing this invocation.
-                        // Cache its metadata now; the later approval event has only a call ID.
-                        let metadata = if let Some(turn_context) =
-                            session.turn_context_for_sub_id(&id).await
-                        {
-                            let mcp = session.services.latest_mcp_runtime();
-                            lookup_mcp_tool_metadata(
-                                session.as_ref(),
-                                turn_context.as_ref(),
-                                mcp.manager(),
-                                &event.invocation.server,
-                                &event.invocation.tool,
-                            )
+                        // The later approval event has only a call ID. Retain the exact facts
+                        // captured before this begin event instead of consulting the latest
+                        // runtime after a refresh.
+                        let metadata = session
+                            .mcp_tool_approval_metadata(&id, &event.call_id)
                             .await
-                        } else {
-                            None
-                        };
+                            .map(|(_, metadata)| metadata);
                         pending_mcp_invocations
                             .lock()
                             .await
@@ -501,6 +505,8 @@ async fn handle_exec_approval(
     let approval_id_for_op = event.effective_approval_id();
     let ExecApprovalRequestEvent {
         call_id,
+        plugin_id,
+        script_path,
         approval_id,
         environment_id,
         command,
@@ -512,6 +518,15 @@ async fn handle_exec_approval(
         available_decisions,
         ..
     } = event;
+    let plugin_attribution = plugin_id
+        .zip(script_path)
+        .and_then(|(plugin_id, script_path)| {
+            let plugin_id = PluginId::parse(&plugin_id).ok()?;
+            is_safe_plugin_relative_path(&script_path).then_some(PluginCommandAttribution {
+                plugin_id,
+                normalized_relative_path: script_path,
+            })
+        });
     let decision = if routes_approval_to_guardian(parent_ctx) {
         let review_cancel = cancel_token.child_token();
         let review_rx = spawn_approval_request_review(
@@ -531,8 +546,11 @@ async fn handle_exec_approval(
                 justification: None,
             },
             reason,
-            GuardianApprovalRequestSource::DelegatedSubagent,
-            review_cancel.clone(),
+            GuardianReviewOptions {
+                plugin_attribution_override: plugin_attribution.clone(),
+                approval_request_source: GuardianApprovalRequestSource::DelegatedSubagent,
+                external_cancel: Some(review_cancel.clone()),
+            },
         );
         await_approval_with_cancel(
             receive_approval_review(review_rx),
@@ -556,6 +574,7 @@ async fn handle_exec_approval(
                 proposed_execpolicy_amendment,
                 additional_permissions,
                 available_decisions,
+                plugin_attribution,
             ),
             parent_session,
             &approval_id_for_op,
@@ -639,8 +658,11 @@ async fn handle_patch_approval(
                 patch,
             },
             reason.clone(),
-            GuardianApprovalRequestSource::DelegatedSubagent,
-            review_cancel.clone(),
+            GuardianReviewOptions {
+                plugin_attribution_override: None,
+                approval_request_source: GuardianApprovalRequestSource::DelegatedSubagent,
+                external_cancel: Some(review_cancel.clone()),
+            },
         );
         Some(
             await_approval_with_cancel(
@@ -701,6 +723,7 @@ async fn handle_request_user_input(
 
     let args = RequestUserInputArgs {
         questions: event.questions,
+        is_blocking: event.is_blocking,
         auto_resolution_ms: event.auto_resolution_ms,
     };
     let response_fut =
@@ -755,8 +778,11 @@ async fn maybe_auto_review_mcp_request_user_input(
         new_guardian_review_id(),
         build_guardian_mcp_tool_review_request(&event.call_id, &invocation, metadata.as_ref()),
         /*retry_reason*/ None,
-        GuardianApprovalRequestSource::DelegatedSubagent,
-        review_cancel.clone(),
+        GuardianReviewOptions {
+            plugin_attribution_override: None,
+            approval_request_source: GuardianApprovalRequestSource::DelegatedSubagent,
+            external_cancel: Some(review_cancel.clone()),
+        },
     );
     let decision = await_approval_with_cancel(
         receive_approval_review(review_rx),

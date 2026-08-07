@@ -14,6 +14,7 @@ use pretty_assertions::assert_eq;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
+use tempfile::tempdir;
 
 fn layer(id: &str, name: &str, contents: &str) -> RequirementsLayerEntry {
     RequirementsLayerEntry::from_toml(
@@ -54,6 +55,25 @@ fn expected_requirements(contents: impl AsRef<str>) -> ConfigRequirementsToml {
 fn empty_layers_compose_to_none() {
     let composed = compose(Vec::new()).expect("compose empty layers");
     assert_eq!(composed, None);
+}
+
+#[test]
+fn cloud_auth_requirements_do_not_override_local_or_discard_other_policy() {
+    let local = RequirementsLayerEntry::from_toml(
+        RequirementSource::Unknown,
+        "allowed_login_methods = [\"api\"]",
+    );
+    let cloud = layer(
+        "req_cloud",
+        "Cloud policy",
+        "allowed_login_methods = [\"saml\"]\nallowed_chatgpt_workspaces = \"invalid\"\nallow_login_shell = false",
+    );
+    assert_eq!(
+        compose(vec![local, cloud]).expect("cloud auth cannot invalidate enterprise policy"),
+        Some(expected_requirements(
+            "allowed_login_methods = [\"api\"]\nallow_login_shell = false"
+        ))
+    );
 }
 
 #[test]
@@ -146,6 +166,45 @@ model_reasoning_effort = "high"
 service_tier = "fast"
 "#
         )
+    );
+}
+
+#[test]
+fn relative_paths_resolve_against_their_own_layer_base() {
+    let low_dir = tempdir().expect("low-priority requirements directory");
+    let high_dir = tempdir().expect("high-priority requirements directory");
+    let low_base = AbsolutePathBuf::from_absolute_path(low_dir.path()).expect("absolute low base");
+    let high_base =
+        AbsolutePathBuf::from_absolute_path(high_dir.path()).expect("absolute high base");
+
+    let composed = compose(vec![
+        layer(
+            "req_low",
+            "Low",
+            "sqlite_home = \"state\"\nlog_dir = \"low-logs\"",
+        )
+        .with_base_dir(low_base),
+        layer(
+            "req_high",
+            "High",
+            "log_dir = \"high-logs\"\nmodel_catalog_json = \"models.json\"",
+        )
+        .with_base_dir(high_base),
+    ])
+    .expect("compose requirements")
+    .expect("requirements present");
+
+    assert_eq!(
+        composed.sqlite_home.as_deref(),
+        Some(low_dir.path().join("state").as_path())
+    );
+    assert_eq!(
+        composed.log_dir.as_deref(),
+        Some(high_dir.path().join("high-logs").as_path())
+    );
+    assert_eq!(
+        composed.model_catalog_json.as_deref(),
+        Some(high_dir.path().join("models.json").as_path())
     );
 }
 

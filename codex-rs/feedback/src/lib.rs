@@ -213,7 +213,8 @@ impl CodexFeedback {
             .with_filter(
                 Targets::new()
                     .with_default(Level::TRACE)
-                    .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF),
+                    .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
+                    .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF),
             )
     }
 
@@ -893,6 +894,7 @@ mod tests {
         tags.insert("reason".to_string(), "wrong-reason".to_string());
         tags.insert("account_id".to_string(), "actual-account".to_string());
         tags.insert("model".to_string(), "gpt-5".to_string());
+        tags.insert("effort".to_string(), "Some(High)".to_string());
         let snapshot = FeedbackSnapshot {
             bytes: Vec::new(),
             tags,
@@ -916,6 +918,8 @@ mod tests {
         );
         client_tags.insert("reason".to_string(), "wrong-client-reason".to_string());
         client_tags.insert("client_tag".to_string(), "from-client".to_string());
+        client_tags.insert("model".to_string(), "mewthree".to_string());
+        client_tags.insert("effort".to_string(), "Some(Ultra)".to_string());
 
         let upload_tags = snapshot.upload_tags(
             "bug",
@@ -949,9 +953,16 @@ mod tests {
             Some("actual-account")
         );
         assert_eq!(
+            upload_tags.get("model").map(String::as_str),
+            Some("mewthree")
+        );
+        assert_eq!(
+            upload_tags.get("effort").map(String::as_str),
+            Some("Some(Ultra)")
+        );
+        assert_eq!(
             upload_tags.get("client_tag").map(String::as_str),
             Some("from-client")
         );
-        assert_eq!(upload_tags.get("model").map(String::as_str), Some("gpt-5"));
     }
 }

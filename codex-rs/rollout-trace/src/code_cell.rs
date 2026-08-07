@@ -7,11 +7,9 @@
 
 use std::sync::Arc;
 
+use codex_code_mode::RuntimeResponse;
 use serde::Serialize;
 use tracing::warn;
-
-#[cfg(not(target_os = "android"))]
-use codex_code_mode::RuntimeResponse;
 
 use crate::model::AgentThreadId;
 use crate::model::CodeCellRuntimeStatus;
@@ -50,7 +48,6 @@ struct EnabledCodeCellTraceContext {
 /// Keeping the raw runtime payload here preserves stored-value and lifecycle
 /// evidence without duplicating the model-facing transcript.
 #[derive(Serialize)]
-#[cfg(not(target_os = "android"))]
 struct CodeCellResponseTracePayload<'a> {
     response: &'a RuntimeResponse,
 }
@@ -105,7 +102,6 @@ impl CodeCellTraceContext {
     /// running. Terminal initial responses should be followed by `record_ended`
     /// by the caller so the reducer can distinguish model-visible output from
     /// runtime completion.
-    #[cfg(not(target_os = "android"))]
     pub fn record_initial_response(&self, response: &RuntimeResponse) {
         let CodeCellTraceContextState::Enabled(context) = &self.state else {
             return;
@@ -121,7 +117,6 @@ impl CodeCellTraceContext {
     }
 
     /// Records the terminal lifecycle point for a code-mode runtime cell.
-    #[cfg(not(target_os = "android"))]
     pub fn record_ended(&self, response: &RuntimeResponse) {
         let CodeCellTraceContextState::Enabled(context) = &self.state else {
             return;
@@ -137,7 +132,6 @@ impl CodeCellTraceContext {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn code_cell_status_for_runtime_response(response: &RuntimeResponse) -> CodeCellRuntimeStatus {
     match response {
         RuntimeResponse::Yielded { .. } => CodeCellRuntimeStatus::Yielded,
@@ -152,7 +146,6 @@ fn code_cell_status_for_runtime_response(response: &RuntimeResponse) -> CodeCell
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn code_cell_response_payload(
     context: &EnabledCodeCellTraceContext,
     response: &RuntimeResponse,

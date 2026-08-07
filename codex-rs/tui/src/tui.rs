@@ -1,5 +1,6 @@
 use std::fmt;
 use std::future::Future;
+use std::io;
 use std::io::IsTerminal;
 use std::io::Result;
 use std::io::Stdout;
@@ -19,6 +20,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
+#[cfg(not(windows))]
 use crossterm::event::EnableFocusChange;
 use crossterm::event::KeyEvent;
 use crossterm::terminal::EnterAlternateScreen;
@@ -33,6 +35,7 @@ use ratatui::crossterm::terminal::enable_raw_mode;
 use ratatui::layout::Offset;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::text::Line;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
@@ -50,6 +53,7 @@ use crate::tui::event_stream::EventBroker;
 use crate::tui::event_stream::TuiEventStream;
 #[cfg(unix)]
 use crate::tui::job_control::SuspendContext;
+use crate::tui::screen_size::ScreenSizePolicy;
 use codex_config::types::NotificationCondition;
 use codex_config::types::NotificationMethod;
 
@@ -59,9 +63,12 @@ mod frame_requester;
 #[cfg(unix)]
 mod job_control;
 mod keyboard_modes;
+mod screen_size;
 mod terminal_stderr;
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(any(windows, test))]
+mod windows_console;
 
 /// Target frame interval for UI redraw scheduling.
 pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
@@ -121,6 +128,26 @@ mod tests {
             NotificationCondition::Always,
             /*terminal_focused*/ true
         ));
+    }
+
+    #[test]
+    fn windows_console_input_modes_preserve_original_vt_input_state() {
+        let input_record_mode = super::windows_console::input_record_mode(/*mode*/ 0x398);
+        assert_eq!(input_record_mode, 0x198);
+        assert_eq!(
+            super::windows_console::restored_input_mode(
+                input_record_mode,
+                super::windows_console::VirtualTerminalInput::Enabled,
+            ),
+            0x398
+        );
+        assert_eq!(
+            super::windows_console::restored_input_mode(
+                /*mode*/ 0x198,
+                super::windows_console::VirtualTerminalInput::Disabled,
+            ),
+            0x198
+        );
     }
 
     #[test]
@@ -193,6 +220,8 @@ pub fn set_modes() -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
     enable_raw_mode()?;
+    #[cfg(windows)]
+    windows_console::set_input_record_mode()?;
     // Enable keyboard enhancement flags so modifiers for keys like Enter are disambiguated.
     // chat_composer.rs is using a keyboard event listener to enter for any modified keys
     // to create a new line that require this.
@@ -201,7 +230,10 @@ pub fn set_modes() -> Result<()> {
     // gracefully if unsupported.
     keyboard_modes::enable_keyboard_enhancement();
 
+    #[cfg(not(windows))]
     let _ = execute!(stdout(), EnableFocusChange);
+    #[cfg(windows)]
+    let _ = execute!(stdout(), DisableFocusChange);
     Ok(())
 }
 
@@ -279,6 +311,10 @@ fn restore_common(
     {
         first_error.get_or_insert(err);
     }
+    #[cfg(windows)]
+    if let Err(err) = windows_console::restore_input_mode() {
+        first_error.get_or_insert(err);
+    }
     if let Err(err) = execute!(
         stdout(),
         SetCursorStyle::DefaultUserShape,
@@ -294,6 +330,7 @@ fn restore_common(
 
 /// Restore the terminal to its original state.
 /// Inverse of `set_modes`.
+#[cfg(unix)]
 pub fn restore() -> Result<()> {
     restore_common(RawModeRestore::Disable, KeyboardRestore::PopStack)
 }
@@ -312,7 +349,7 @@ pub(super) fn reapply_raw_mode_after_resume() -> Result<()> {
 
 /// Restore the terminal after Codex is exiting.
 ///
-/// Uses a stronger keyboard reset than [`restore`] so the parent shell recovers even if a
+/// Uses a stronger keyboard reset than `restore` so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
     let mut first_error =
@@ -330,22 +367,6 @@ pub fn restore_after_exit() -> Result<()> {
 /// Restore the terminal to its original state, but keep raw mode enabled.
 pub fn restore_keep_raw() -> Result<()> {
     restore_common(RawModeRestore::Keep, KeyboardRestore::PopStack)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestoreMode {
-    #[allow(dead_code)]
-    Full, // Fully restore the terminal (disables raw mode).
-    KeepRaw, // Restore the terminal but keep raw mode enabled.
-}
-
-impl RestoreMode {
-    fn restore(self) -> Result<()> {
-        match self {
-            RestoreMode::Full => restore(),
-            RestoreMode::KeepRaw => restore_keep_raw(),
-        }
-    }
 }
 
 /// Flush the underlying stdin buffer to clear any input that may be buffered at the terminal level.
@@ -530,13 +551,18 @@ pub enum TuiEvent {
     Key(KeyEvent),
     /// A bracketed paste payload normalized by the app layer before it reaches the composer.
     Paste(String),
-    /// A terminal size notification that should be handled as resize-sensitive draw work.
+    /// A terminal size notification and its reported dimensions.
     ///
     /// Resize is separate from `Draw` so the app can run feature-gated pre-render logic without
     /// changing the default draw path for scheduled frames.
-    Resize,
+    Resize(Size),
     /// A scheduled repaint that does not necessarily correspond to a terminal size change.
     Draw,
+    /// The first repaint after returning from process suspension.
+    ///
+    /// The app refreshes terminal geometry for this draw because resize events are not delivered
+    /// while the process is suspended.
+    Resume,
 }
 
 pub struct Tui {
@@ -545,6 +571,7 @@ pub struct Tui {
     event_broker: Arc<EventBroker>,
     pub(crate) terminal: Terminal,
     pending_history_lines: Vec<PendingHistoryLines>,
+    screen_size: ScreenSizePolicy,
     ambient_pet_image_state: crate::pets::PetImageRenderState,
     pet_picker_preview_image_state: crate::pets::PetImageRenderState,
     alt_saved_viewport: Option<ratatui::layout::Rect>,
@@ -572,7 +599,7 @@ struct PendingHistoryLines {
 
 fn clear_for_viewport_change<B>(terminal: &mut CustomTerminal<B>, new_area: Rect) -> Result<()>
 where
-    B: Backend + Write,
+    B: Backend<Error = io::Error> + Write,
 {
     let clear_position = if terminal.viewport_area.is_empty() {
         new_area.as_position()
@@ -602,6 +629,7 @@ impl Tui {
             event_broker: Arc::new(EventBroker::new()),
             terminal,
             pending_history_lines: vec![],
+            screen_size: ScreenSizePolicy::default(),
             ambient_pet_image_state: crate::pets::PetImageRenderState::default(),
             pet_picker_preview_image_state: crate::pets::PetImageRenderState::default(),
             alt_saved_viewport: None,
@@ -658,9 +686,9 @@ impl Tui {
     /// Temporarily restore terminal state to run an external interactive program `f`.
     ///
     /// This pauses crossterm's stdin polling by dropping the underlying event stream, restores
-    /// terminal modes and stderr (optionally keeping raw mode enabled), then re-applies Codex TUI
-    /// modes and stderr suppression before resuming events.
-    pub async fn with_restored<R, F, Fut>(&mut self, mode: RestoreMode, f: F) -> R
+    /// terminal modes and stderr while keeping raw mode enabled, then re-applies Codex TUI modes
+    /// and stderr suppression before resuming events.
+    pub async fn with_restored<R, F, Fut>(&mut self, f: F) -> R
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = R>,
@@ -674,7 +702,7 @@ impl Tui {
             let _ = self.leave_alt_screen();
         }
 
-        if let Err(err) = mode.restore() {
+        if let Err(err) = restore_keep_raw() {
             tracing::warn!("failed to restore terminal modes before external program: {err}");
         }
         if let Err(err) = terminal_stderr::pause() {
@@ -697,6 +725,7 @@ impl Tui {
         }
 
         self.resume_events();
+        self.schedule_screen_size_recheck(Duration::ZERO);
         output
     }
 
@@ -757,6 +786,7 @@ impl Tui {
         let _ = execute!(self.terminal.backend_mut(), EnableAlternateScroll);
         if let Ok(size) = self.terminal.size() {
             self.alt_saved_viewport = Some(self.terminal.viewport_area);
+            self.terminal.resize(size)?;
             self.terminal.set_viewport_area(ratatui::layout::Rect::new(
                 0,
                 0,
@@ -830,29 +860,29 @@ impl Tui {
     fn update_inline_viewport_for_resize_reflow(
         terminal: &mut Terminal,
         height: u16,
+        screen_size: Size,
     ) -> Result<bool> {
-        let size = terminal.size()?;
-        let terminal_height_shrank = size.height < terminal.last_known_screen_size.height;
-        let terminal_height_grew = size.height > terminal.last_known_screen_size.height;
+        let terminal_height_shrank = screen_size.height < terminal.last_known_screen_size.height;
+        let terminal_height_grew = screen_size.height > terminal.last_known_screen_size.height;
         let viewport_was_bottom_aligned =
             terminal.viewport_area.bottom() == terminal.last_known_screen_size.height;
         let previous_area = terminal.viewport_area;
 
         let mut area = terminal.viewport_area;
-        area.height = height.min(size.height);
-        area.width = size.width;
+        area.height = height.min(screen_size.height);
+        area.width = screen_size.width;
         let mut needs_full_repaint = false;
 
-        if area.bottom() > size.height {
-            let scroll_by = area.bottom() - size.height;
+        if area.bottom() > screen_size.height {
+            let scroll_by = area.bottom() - screen_size.height;
             if !terminal_height_shrank {
                 terminal
                     .backend_mut()
                     .scroll_region_up(0..area.top(), scroll_by)?;
             }
-            area.y = size.height - area.height;
+            area.y = screen_size.height - area.height;
         } else if terminal_height_grew && viewport_was_bottom_aligned {
-            area.y = size.height - area.height;
+            area.y = screen_size.height - area.height;
         }
 
         if area != terminal.viewport_area {
@@ -897,6 +927,7 @@ impl Tui {
         height: u16,
         draw_fn: impl FnOnce(&mut custom_terminal::Frame),
     ) -> Result<()> {
+        let screen_size = self.take_event_screen_size()?;
         // If we are resuming from ^Z, we need to prepare the resume action now so we can apply it
         // in the synchronized update.
         #[cfg(unix)]
@@ -906,14 +937,14 @@ impl Tui {
 
         // Precompute any viewport updates that need a cursor-position query before entering
         // the synchronized update, to avoid racing with the event reader.
-        let mut pending_viewport_area = self.pending_viewport_area()?;
+        let mut pending_viewport_area = self.pending_viewport_area(screen_size)?;
 
         ensure_virtual_terminal_processing()?;
 
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
-                prepared.apply(&mut self.terminal)?;
+                prepared.apply(&mut self.terminal, screen_size)?;
             }
 
             let terminal = &mut self.terminal;
@@ -922,17 +953,15 @@ impl Tui {
                 terminal.clear()?;
             }
 
-            let size = terminal.size()?;
-
             let mut area = terminal.viewport_area;
-            area.height = height.min(size.height);
-            area.width = size.width;
+            area.height = height.min(screen_size.height);
+            area.width = screen_size.width;
             // If the viewport has expanded, scroll everything else up to make room.
-            if area.bottom() > size.height {
+            if area.bottom() > screen_size.height {
                 terminal
                     .backend_mut()
-                    .scroll_region_up(0..area.top(), area.bottom() - size.height)?;
-                area.y = size.height - area.height;
+                    .scroll_region_up(0..area.top(), area.bottom() - screen_size.height)?;
+                area.y = screen_size.height - area.height;
             }
             if area != terminal.viewport_area {
                 // On startup, the old viewport can still be empty. Clear from the
@@ -961,7 +990,7 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
-            terminal.draw(|frame| {
+            terminal.draw_with_size(screen_size, |frame| {
                 draw_fn(frame);
             })
         })?
@@ -1031,6 +1060,7 @@ impl Tui {
     pub fn draw_with_resize_reflow(
         &mut self,
         height: u16,
+        screen_size: Size,
         draw_fn: impl FnOnce(&mut custom_terminal::Frame),
     ) -> Result<()> {
         // If we are resuming from ^Z, we need to prepare the resume action now so we can apply it
@@ -1045,12 +1075,12 @@ impl Tui {
         stdout().sync_update(|_| {
             #[cfg(unix)]
             if let Some(prepared) = prepared_resume.take() {
-                prepared.apply(&mut self.terminal)?;
+                prepared.apply(&mut self.terminal, screen_size)?;
             }
 
             let terminal = &mut self.terminal;
             let needs_full_repaint =
-                Self::update_inline_viewport_for_resize_reflow(terminal, height)?;
+                Self::update_inline_viewport_for_resize_reflow(terminal, height, screen_size)?;
             Self::flush_pending_history_lines(
                 terminal,
                 &mut self.pending_history_lines,
@@ -1075,15 +1105,14 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
-            terminal.draw(|frame| {
+            terminal.draw_with_size(screen_size, |frame| {
                 draw_fn(frame);
             })
         })?
     }
 
-    fn pending_viewport_area(&mut self) -> Result<Option<Rect>> {
+    fn pending_viewport_area(&mut self, screen_size: Size) -> Result<Option<Rect>> {
         let terminal = &mut self.terminal;
-        let screen_size = terminal.size()?;
         let last_known_screen_size = terminal.last_known_screen_size;
         if screen_size != last_known_screen_size
             && let Ok(cursor_pos) = terminal.get_cursor_position()

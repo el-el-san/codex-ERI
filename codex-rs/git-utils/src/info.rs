@@ -15,10 +15,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::process::Command;
 use tokio::time::Duration as TokioDuration;
-use tokio::time::timeout;
 use ts_rs::TS;
 
 use crate::GitSha;
+use crate::git_process::run_git_command_with_timeout_output;
 
 /// Return `true` if the project folder specified by the `Config` is inside a
 /// Git repository.
@@ -39,30 +39,6 @@ pub fn get_git_repo_root(base_dir: &Path) -> Option<PathBuf> {
         base_dir.parent()?
     };
     find_ancestor_git_entry(base).map(|(repo_root, _)| repo_root)
-}
-
-/// Return the repository root for `cwd` using the provided filesystem.
-///
-/// This mirrors [`get_git_repo_root`] for local paths, but works when `cwd`
-/// only exists inside a selected remote environment.
-pub async fn get_git_repo_root_with_fs(
-    fs: &dyn ExecutorFileSystem,
-    cwd: &AbsolutePathBuf,
-) -> Option<AbsolutePathBuf> {
-    let cwd_uri = PathUri::from_abs_path(cwd);
-    let base = match fs.get_metadata(&cwd_uri, /*sandbox*/ None).await {
-        Ok(metadata) if metadata.is_directory => cwd.clone(),
-        _ => cwd.parent()?,
-    };
-    find_nearest_native_ancestor_with_markers(
-        fs,
-        &base,
-        vec![".git".to_string()],
-        FindUpErrorPolicy::Ignore,
-        /*sandbox*/ None,
-    )
-    .await
-    .ok()?
 }
 
 /// Timeout for git commands to prevent freezing on large repositories
@@ -288,18 +264,6 @@ fn trim_git_suffix(value: &str) -> &str {
     value.strip_suffix(".git").unwrap_or(value)
 }
 
-pub async fn get_has_changes(cwd: &Path) -> Option<bool> {
-    let git = Path::new("git");
-    let fsmonitor = detect_local_fsmonitor_override(git, cwd).await;
-    let output =
-        run_git_command_with_timeout_from(git, &["status", "--porcelain"], cwd, fsmonitor).await?;
-    if !output.status.success() {
-        return None;
-    }
-
-    Some(!output.stdout.is_empty())
-}
-
 fn parse_git_remote_urls(stdout: &str) -> Option<BTreeMap<String, String>> {
     let mut remotes = BTreeMap::new();
     for line in stdout.lines() {
@@ -424,20 +388,26 @@ impl crate::FsmonitorProbeRunner for LocalFsmonitorProbeRunner<'_> {
         // Both probes are fast, bounded metadata queries that do not inspect the
         // worktree or index, so do not reduce the requested command's timeout.
         let mut command = Command::new(self.git);
-        command.args(args).current_dir(self.cwd).kill_on_drop(true);
-        match timeout(GIT_COMMAND_TIMEOUT, command.output()).await {
-            Ok(Ok(output)) if output.status.success() => Some(output.stdout),
+        command
+            .args(["-c", crate::SAFE_BARE_REPOSITORY_CONFIG])
+            .args(args)
+            .current_dir(self.cwd);
+        match run_git_command_with_timeout_output(&mut command, GIT_COMMAND_TIMEOUT).await {
+            Some(output) if output.status.success() => Some(output.stdout),
             _ => None,
         }
     }
 }
 
-async fn detect_local_fsmonitor_override(git: &Path, cwd: &Path) -> crate::FsmonitorOverride {
+pub(crate) async fn detect_local_fsmonitor_override(
+    git: &Path,
+    cwd: &Path,
+) -> crate::FsmonitorOverride {
     let mut runner = LocalFsmonitorProbeRunner { git, cwd };
     crate::detect_fsmonitor_override(&mut runner).await
 }
 
-async fn run_git_command_with_timeout_from(
+pub(crate) async fn run_git_command_with_timeout_from(
     git: &Path,
     args: &[&str],
     cwd: &Path,
@@ -446,19 +416,14 @@ async fn run_git_command_with_timeout_from(
     let mut command = Command::new(git);
     command
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(["-c", crate::SAFE_BARE_REPOSITORY_CONFIG])
         // Keep internal Git commands independent of repository-selected hooks
         // and fsmonitor helpers while preserving built-in fsmonitor acceleration.
         .args(["-c", &format!("core.hooksPath={DISABLED_HOOKS_PATH}")])
         .args(["-c", fsmonitor.git_config_arg()])
         .args(args)
-        .current_dir(cwd)
-        .kill_on_drop(true);
-    let result = timeout(GIT_COMMAND_TIMEOUT, command.output()).await;
-
-    match result {
-        Ok(Ok(output)) => Some(output),
-        _ => None, // Timeout or error
-    }
+        .current_dir(cwd);
+    run_git_command_with_timeout_output(&mut command, GIT_COMMAND_TIMEOUT).await
 }
 
 async fn get_git_remotes(cwd: &Path) -> Option<Vec<String>> {
@@ -811,7 +776,20 @@ pub async fn resolve_root_git_project_for_trust(
     fs: &dyn ExecutorFileSystem,
     cwd: &AbsolutePathBuf,
 ) -> Option<AbsolutePathBuf> {
-    let repo_root = get_git_repo_root_with_fs(fs, cwd).await?;
+    let cwd_uri = PathUri::from_abs_path(cwd);
+    let base = match fs.get_metadata(&cwd_uri, /*sandbox*/ None).await {
+        Ok(metadata) if metadata.is_directory => cwd.clone(),
+        _ => cwd.parent()?,
+    };
+    let repo_root = find_nearest_native_ancestor_with_markers(
+        fs,
+        &base,
+        vec![".git".to_string()],
+        FindUpErrorPolicy::Ignore,
+        /*sandbox*/ None,
+    )
+    .await
+    .ok()??;
     let dot_git = repo_root.join(".git");
     let dot_git_uri = PathUri::from_abs_path(&dot_git);
     if fs
@@ -910,6 +888,59 @@ mod tests {
     use pretty_assertions::assert_eq;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    #[tokio::test]
+    async fn git_metadata_commands_do_not_inherit_stdin() {
+        const CHILD_ENV: &str = "CODEX_GIT_UTILS_STDIN_CHILD";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let temp_dir = tempfile::tempdir().expect("create temp dir");
+            let status = Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(temp_dir.path())
+                .stdin(Stdio::null())
+                .status()
+                .await
+                .expect("initialize test repository");
+            assert!(status.success(), "initialize test repository");
+
+            let git = Path::new("git");
+            let mut runner = LocalFsmonitorProbeRunner {
+                git,
+                cwd: temp_dir.path(),
+            };
+            assert!(
+                crate::FsmonitorProbeRunner::run_probe(&mut runner, &["cat-file", "--batch"])
+                    .await
+                    .is_some()
+            );
+            assert!(
+                run_git_command_with_timeout_from(
+                    git,
+                    &["cat-file", "--batch"],
+                    temp_dir.path(),
+                    crate::FsmonitorOverride::Disabled,
+                )
+                .await
+                .is_some()
+            );
+            return;
+        }
+
+        let mut child =
+            Command::new(std::env::current_exe().expect("find current test executable"))
+                .args(["git_metadata_commands_do_not_inherit_stdin", "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn child test process");
+        let stdin = child.stdin.take().expect("hold child stdin open");
+        let status = child.wait().await.expect("wait for child test process");
+        drop(stdin);
+
+        assert!(status.success(), "child test process failed: {status}");
+    }
 
     #[test]
     fn canonicalize_git_remote_url_normalizes_github_variants() {
@@ -996,6 +1027,7 @@ mod tests {
         std::fs::write(
             &git,
             "#!/bin/sh\n\
+             if [ \"$1\" = \"-c\" ] && [ \"$2\" = \"safe.bareRepository=explicit\" ]; then shift 2; fi\n\
              printf '%s\\n' \"$*\" >>\"$0.log\"\n\
              case \"$1\" in\n\
              config) printf '/tmp/fsmonitor-helper\\000' ;;\n\
@@ -1061,6 +1093,7 @@ mod tests {
         std::fs::write(
             &git,
             "#!/bin/sh\n\
+             if [ \"$1\" = \"-c\" ] && [ \"$2\" = \"safe.bareRepository=explicit\" ]; then shift 2; fi\n\
              printf '%s\\n' \"$*\" >>\"$0.log\"\n\
              case \"$1\" in\n\
              config)\n\

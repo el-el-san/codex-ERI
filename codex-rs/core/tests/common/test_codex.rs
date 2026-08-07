@@ -36,18 +36,21 @@ use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::SharedModelsManager;
+use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationVersion as RealtimeWsVersion;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
@@ -67,6 +70,7 @@ use crate::responses::output_value_to_text;
 use crate::responses::start_mock_server;
 use crate::streaming_sse::StreamingSseServer;
 use crate::test_environment;
+use crate::wait_for_event;
 use crate::wait_for_event_match;
 use crate::wait_for_event_with_timeout;
 use wiremock::Match;
@@ -305,6 +309,7 @@ pub struct TestCodexBuilder {
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
     history_mode: Option<ThreadHistoryMode>,
+    models_manager: Option<SharedModelsManager>,
 }
 
 impl TestCodexBuilder {
@@ -318,6 +323,11 @@ impl TestCodexBuilder {
 
     pub fn with_auth(mut self, auth: CodexAuth) -> Self {
         self.auth = auth;
+        self
+    }
+
+    pub fn with_models_manager(mut self, models_manager: SharedModelsManager) -> Self {
+        self.models_manager = Some(models_manager);
         self
     }
 
@@ -548,6 +558,21 @@ impl TestCodexBuilder {
         .await
     }
 
+    pub async fn restart(
+        &mut self,
+        server: &MockServer,
+        previous: &TestCodex,
+    ) -> Result<TestCodex> {
+        let rollout_path = previous
+            .session_configured
+            .rollout_path
+            .clone()
+            .context("rollout path")?;
+        previous.codex.shutdown_and_wait().await?;
+        self.resume(server, Arc::clone(&previous.home), rollout_path)
+            .await
+    }
+
     async fn build_with_home_and_base_url(
         &mut self,
         base_url: String,
@@ -625,10 +650,14 @@ impl TestCodexBuilder {
                 ))
             });
         let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
+        let models_manager = self
+            .models_manager
+            .clone()
+            .unwrap_or_else(|| codex_core::build_models_manager(&config, auth_manager.clone()));
         let thread_manager = ThreadManager::new(
             &config,
             auth_manager.clone(),
-            codex_core::build_models_manager(&config, auth_manager),
+            models_manager,
             codex_core::CodexAppsToolsCache::default(),
             SessionSource::Exec,
             Arc::clone(&environment_manager),
@@ -651,12 +680,19 @@ impl TestCodexBuilder {
             codex_core::test_support::with_code_mode_host_program(
                 thread_manager,
                 code_mode_host_program,
+                &config,
             )
         } else {
             thread_manager
         };
         let thread_manager = Arc::new(thread_manager);
         let user_shell_override = self.user_shell_override.clone();
+        let client_mcp_extensions = || {
+            ClientMcpExtensions::new(
+                self.supports_openai_form_elicitation
+                    .then(|| (OPENAI_FORM_EXTENSION_ID.to_string(), serde_json::json!({}))),
+            )
+        };
 
         let new_conversation = match (resume_from, user_shell_override) {
             (Some(path), Some(user_shell_override)) => {
@@ -680,7 +716,7 @@ impl TestCodexBuilder {
                     path,
                     auth_manager,
                     /*parent_trace*/ None,
-                    self.supports_openai_form_elicitation,
+                    client_mcp_extensions(),
                 ))
                 .await?
             }
@@ -696,24 +732,11 @@ impl TestCodexBuilder {
                 .await?
             }
             (None, None) => {
-                let environments = thread_manager
-                    .default_environment_selections(&config.cwd, &config.workspace_roots);
-                Box::pin(
-                    thread_manager.start_thread_with_options(StartThreadOptions {
-                        config: config.clone(),
-                        allow_provider_model_fallback: false,
-                        initial_history: InitialHistory::New,
-                        history_mode: self.history_mode,
-                        session_source: None,
-                        thread_source: None,
-                        dynamic_tools: Vec::new(),
-                        metrics_service_name: None,
-                        parent_trace: None,
-                        environments,
-                        thread_extension_init: Default::default(),
-                        supports_openai_form_elicitation: self.supports_openai_form_elicitation,
-                    }),
-                )
+                Box::pin(thread_manager.start_thread(StartThreadOptions {
+                    history_mode: self.history_mode,
+                    client_mcp_extensions: client_mcp_extensions(),
+                    ..StartThreadOptions::new(config.clone())
+                }))
                 .await?
             }
         };
@@ -842,6 +865,25 @@ impl TestCodex {
     pub async fn submit_turn(&self, prompt: &str) -> Result<()> {
         self.submit_turn_with_permission_profile(prompt, PermissionProfile::Disabled)
             .await
+    }
+
+    /// Submits a text turn without changing the current thread settings.
+    pub async fn submit_text_turn(&self, prompt: &str) -> Result<()> {
+        self.codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: prompt.into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: ThreadSettingsOverrides::default(),
+            })
+            .await?;
+
+        wait_for_event(&self.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+        Ok(())
     }
 
     pub async fn submit_turn_with_permission_profile(
@@ -973,7 +1015,7 @@ impl TestCodex {
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
-                thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                thread_settings: ThreadSettingsOverrides {
                     environments: turn_environment_selections,
                     approval_policy: Some(approval_policy),
                     sandbox_policy: Some(sandbox_policy),
@@ -1250,6 +1292,7 @@ pub fn test_codex() -> TestCodexBuilder {
         external_time_provider: None,
         code_mode_host_program: None,
         history_mode: None,
+        models_manager: None,
     }
 }
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::unified_exec::clamp_yield_time;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use pretty_assertions::assert_eq;
+use tokio::sync::Notify;
 use tokio::time::Duration;
 use tokio::time::Instant;
 
@@ -110,9 +111,6 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
         .expect("current dir")
         .try_into()
         .expect("absolute path");
-    let file_system_sandbox_policy =
-        codex_protocol::permissions::FileSystemSandboxPolicy::unrestricted();
-    let network_sandbox_policy = codex_protocol::permissions::NetworkSandboxPolicy::Restricted;
     let permission_profile = codex_protocol::models::PermissionProfile::Disabled;
     let managed_network = ManagedNetworkSandboxContext {
         loopback_ports: vec![43123],
@@ -167,8 +165,6 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
         windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel::Disabled,
         windows_sandbox_private_desktop: false,
         permission_profile: permission_profile.clone(),
-        file_system_sandbox_policy,
-        network_sandbox_policy,
         windows_sandbox_filesystem_overrides: None,
         arg0: None,
         exec_server_sandbox: None,
@@ -177,8 +173,16 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
         exec_server_network_proxy: None,
     };
 
-    let params =
-        exec_server_params_for_request(/*process_id*/ 123, &request, /*tty*/ true);
+    let proxy_settings_mode = codex_sandboxing::WindowsSandboxProxySettingsMode::Preserve;
+    let params_for_request = |request: &ExecRequest| {
+        exec_server_params_for_request(
+            /*process_id*/ 123,
+            request,
+            proxy_settings_mode,
+            /*tty*/ true,
+        )
+    };
+    let params = params_for_request(&request);
 
     assert_eq!(params.process_id.as_str(), "123");
     assert_eq!(params.cwd, request.cwd);
@@ -200,10 +204,15 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     request.exec_server_sandbox = Some(
         codex_exec_server::FileSystemSandboxContext::from_permission_profile(permission_profile),
     );
-    let first =
-        exec_server_params_for_request(/*process_id*/ 123, &request, /*tty*/ true);
-    let second =
-        exec_server_params_for_request(/*process_id*/ 123, &request, /*tty*/ true);
+    let first = params_for_request(&request);
+    let second = params_for_request(&request);
+    assert_eq!(
+        first
+            .sandbox
+            .as_ref()
+            .and_then(|sandbox| sandbox.windows_sandbox_proxy_settings_mode),
+        Some(codex_sandboxing::WindowsSandboxProxySettingsMode::Preserve)
+    );
     assert!(first.process_id.as_str().starts_with("123-"));
     assert!(second.process_id.as_str().starts_with("123-"));
     assert_ne!(first.process_id, second.process_id);
@@ -216,6 +225,14 @@ fn initial_exec_yield_time_uses_windows_floor() {
 
     assert_eq!(
         clamp_yield_time(/*yield_time_ms*/ 1_000),
+        crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
+    );
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 2_000),
+        crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
+    );
+    assert_eq!(
+        clamp_yield_time(/*yield_time_ms*/ 5_000),
         crate::unified_exec::WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS
     );
     assert_eq!(clamp_yield_time(/*yield_time_ms*/ 10_000), 10_000);
@@ -242,13 +259,16 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     let output_closed = Arc::new(AtomicBool::new(false));
     let output_closed_notify = Arc::new(Notify::new());
     let cancellation_token = CancellationToken::new();
+    let output = OutputHandles {
+        output_buffer: Arc::clone(&output_buffer),
+        output_notify: Arc::clone(&output_notify),
+        output_closed: Arc::clone(&output_closed),
+        output_closed_notify: Arc::clone(&output_closed_notify),
+        cancellation_token: cancellation_token.clone(),
+    };
 
     let collect = UnifiedExecProcessManager::collect_output_until_deadline(
-        &output_buffer,
-        &output_notify,
-        &output_closed,
-        &output_closed_notify,
-        &cancellation_token,
+        &output,
         /*pause_state*/ None,
         Instant::now() + Duration::from_secs(5),
     );
@@ -307,13 +327,16 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
     let output_closed_notify = Arc::new(Notify::new());
     let cancellation_token = CancellationToken::new();
     cancellation_token.cancel();
+    let output = OutputHandles {
+        output_buffer,
+        output_notify,
+        output_closed,
+        output_closed_notify,
+        cancellation_token,
+    };
 
     let collected = UnifiedExecProcessManager::collect_output_until_deadline(
-        &output_buffer,
-        &output_notify,
-        &output_closed,
-        &output_closed_notify,
-        &cancellation_token,
+        &output,
         /*pause_state*/ None,
         Instant::now() + Duration::from_secs(1),
     )
@@ -394,6 +417,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         &request,
         #[allow(deprecated)]
         turn.cwd.clone().into(),
+        /*plugin_attribution*/ None,
         transcript,
         "PRE_DENIAL_MARKER".to_string(),
         "Network access denied".to_string(),
@@ -486,4 +510,69 @@ fn pruning_protects_recent_processes_even_if_exited() {
 
     // (10) is exited but among the last 8; we should drop the LRU outside that set.
     assert_eq!(candidate, Some(1));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing() {
+    let exited_process = Arc::new(
+        crate::unified_exec::process_tests::remote_process(
+            codex_exec_server::WriteStatus::Accepted,
+            /*terminate_error*/ None,
+            codex_sandboxing::SandboxType::None,
+        )
+        .await,
+    );
+    exited_process
+        .terminate_confirmed()
+        .await
+        .expect("exited process should terminate");
+    let live_process = Arc::new(
+        crate::unified_exec::process_tests::remote_process(
+            codex_exec_server::WriteStatus::Accepted,
+            /*terminate_error*/ None,
+            codex_sandboxing::SandboxType::None,
+        )
+        .await,
+    );
+    let _interaction_guard = exited_process.interaction_lock().lock_owned().await;
+    let now = Instant::now();
+    let cwd = PathUri::parse("file:///tmp").expect("test cwd should be valid");
+    let mut store = ProcessStore::default();
+    let max_process_id =
+        i32::try_from(MAX_UNIFIED_EXEC_PROCESSES).expect("process cap should fit in i32");
+
+    for process_id in 1..=max_process_id {
+        let is_exited = process_id == 1;
+        store.processes.insert(
+            process_id,
+            ProcessEntry {
+                process: if is_exited {
+                    Arc::clone(&exited_process)
+                } else {
+                    Arc::clone(&live_process)
+                },
+                call_id: format!("call-{process_id}"),
+                process_id,
+                cwd: cwd.clone(),
+                initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+                hook_command: format!("command-{process_id}"),
+                tty: false,
+                network_approval: None,
+                session: std::sync::Weak::new(),
+                last_used: if is_exited {
+                    now - Duration::from_secs(1)
+                } else {
+                    now
+                },
+            },
+        );
+    }
+
+    let pruned = UnifiedExecProcessManager::prune_processes_if_needed(&mut store);
+
+    assert_eq!(
+        (pruned.map(|entry| entry.process_id), store.processes.len()),
+        (None, MAX_UNIFIED_EXEC_PROCESSES)
+    );
 }

@@ -16,6 +16,7 @@ use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
+pub use codex_protocol::error::CodexErrKind;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -44,6 +45,50 @@ pub struct TrackEventsContext {
     pub product_client_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodeModeToolCallFact {
+    CellStarted {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: String,
+    },
+    ChildStarted {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: String,
+    },
+    CellClosed {
+        thread_id: String,
+        turn_id: String,
+        cell_id: String,
+    },
+    SamplingResponseCompleted {
+        thread_id: String,
+        turn_id: String,
+        response_id: String,
+        tool_call_ids: Vec<String>,
+    },
+    Completed {
+        thread_id: String,
+        turn_id: String,
+        call_id: String,
+        cell_id: Option<String>,
+        tool_name: String,
+        started_at_ms: u64,
+        completed_at_ms: u64,
+        status: CodeModeToolCallStatus,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeModeToolCallStatus {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
 pub fn build_track_events_context(
     model_slug: String,
     thread_id: String,
@@ -56,6 +101,35 @@ pub fn build_track_events_context(
         turn_id,
         product_client_id,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDetailSetting {
+    High,
+    Original,
+}
+
+/// Measurements for one successfully decoded image at the point where Codex prepares it for
+/// durable conversation history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ImagePreparationMetadata {
+    /// Set for images embedded in message content.
+    pub message_role: Option<String>,
+    /// Set to the originating call ID for tool-output images. This joins to the `item_id` on
+    /// existing tool events for tool type and provenance.
+    pub item_id: Option<String>,
+    pub effective_detail: ImageDetailSetting,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub prepared_width: u32,
+    pub prepared_height: u32,
+}
+
+#[derive(Clone)]
+pub struct ImagePreparationFact {
+    pub turn_id: String,
+    pub metadata: ImagePreparationMetadata,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -108,6 +182,7 @@ pub struct TurnTokenUsageFact {
 pub struct TurnProfile {
     pub before_first_sampling_ms: u64,
     pub sampling_ms: u64,
+    pub compaction_ms: u64,
     pub between_sampling_overhead_ms: u64,
     pub tool_blocking_ms: u64,
     pub after_last_sampling_ms: u64,
@@ -138,48 +213,6 @@ impl TurnCodexErrorFact {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodexErrKind {
-    TurnAborted,
-    SessionBudgetExceeded,
-    Stream,
-    ContextWindowExceeded,
-    ThreadNotFound,
-    AgentLimitReached,
-    SessionConfiguredNotFirstEvent,
-    Timeout,
-    RequestTimeout,
-    Spawn,
-    Interrupted,
-    UnexpectedStatus,
-    InvalidRequest,
-    InvalidImageRequest,
-    UsageLimitReached,
-    ServerOverloaded,
-    CyberPolicy,
-    ResponseStreamFailed,
-    ConnectionFailed,
-    QuotaExceeded,
-    UsageNotIncluded,
-    InternalServerError,
-    RetryLimit,
-    InternalAgentDied,
-    Sandbox,
-    LandlockSandboxExecutableNotProvided,
-    UnsupportedOperation,
-    RefreshTokenFailed,
-    Fatal,
-    Io,
-    Json,
-    #[cfg(target_os = "linux")]
-    LandlockRuleset,
-    #[cfg(target_os = "linux")]
-    LandlockPathFd,
-    TokioJoin,
-    EnvVar,
-}
-
 #[derive(Clone)]
 pub(crate) struct TurnCodexError {
     pub(crate) kind: CodexErrKind,
@@ -191,54 +224,6 @@ impl TurnCodexError {
         Self {
             kind: error.into(),
             http_status_code: error.http_status_code_value(),
-        }
-    }
-}
-
-impl From<&CodexErr> for CodexErrKind {
-    fn from(error: &CodexErr) -> Self {
-        match error {
-            CodexErr::TurnAborted => CodexErrKind::TurnAborted,
-            CodexErr::SessionBudgetExceeded => CodexErrKind::SessionBudgetExceeded,
-            CodexErr::Stream(..) => CodexErrKind::Stream,
-            CodexErr::ContextWindowExceeded => CodexErrKind::ContextWindowExceeded,
-            CodexErr::ThreadNotFound(_) => CodexErrKind::ThreadNotFound,
-            CodexErr::AgentLimitReached { .. } => CodexErrKind::AgentLimitReached,
-            CodexErr::SessionConfiguredNotFirstEvent => {
-                CodexErrKind::SessionConfiguredNotFirstEvent
-            }
-            CodexErr::Timeout => CodexErrKind::Timeout,
-            CodexErr::RequestTimeout => CodexErrKind::RequestTimeout,
-            CodexErr::Spawn => CodexErrKind::Spawn,
-            CodexErr::Interrupted => CodexErrKind::Interrupted,
-            CodexErr::UnexpectedStatus(_) => CodexErrKind::UnexpectedStatus,
-            CodexErr::InvalidRequest(_) => CodexErrKind::InvalidRequest,
-            CodexErr::InvalidImageRequest() => CodexErrKind::InvalidImageRequest,
-            CodexErr::UsageLimitReached(_) => CodexErrKind::UsageLimitReached,
-            CodexErr::ServerOverloaded => CodexErrKind::ServerOverloaded,
-            CodexErr::CyberPolicy { .. } => CodexErrKind::CyberPolicy,
-            CodexErr::ResponseStreamFailed(_) => CodexErrKind::ResponseStreamFailed,
-            CodexErr::ConnectionFailed(_) => CodexErrKind::ConnectionFailed,
-            CodexErr::QuotaExceeded => CodexErrKind::QuotaExceeded,
-            CodexErr::UsageNotIncluded => CodexErrKind::UsageNotIncluded,
-            CodexErr::InternalServerError => CodexErrKind::InternalServerError,
-            CodexErr::RetryLimit(_) => CodexErrKind::RetryLimit,
-            CodexErr::InternalAgentDied => CodexErrKind::InternalAgentDied,
-            CodexErr::Sandbox(_) => CodexErrKind::Sandbox,
-            CodexErr::LandlockSandboxExecutableNotProvided => {
-                CodexErrKind::LandlockSandboxExecutableNotProvided
-            }
-            CodexErr::UnsupportedOperation(_) => CodexErrKind::UnsupportedOperation,
-            CodexErr::RefreshTokenFailed(_) => CodexErrKind::RefreshTokenFailed,
-            CodexErr::Fatal(_) => CodexErrKind::Fatal,
-            CodexErr::Io(_) => CodexErrKind::Io,
-            CodexErr::Json(_) => CodexErrKind::Json,
-            #[cfg(target_os = "linux")]
-            CodexErr::LandlockRuleset(_) => CodexErrKind::LandlockRuleset,
-            #[cfg(target_os = "linux")]
-            CodexErr::LandlockPathFd(_) => CodexErrKind::LandlockPathFd,
-            CodexErr::TokioJoin(_) => CodexErrKind::TokioJoin,
-            CodexErr::EnvVar(_) => CodexErrKind::EnvVar,
         }
     }
 }
@@ -325,6 +310,7 @@ pub struct SkillInvocation {
     pub skill_scope: SkillScope,
     pub skill_path: PathBuf,
     pub plugin_id: Option<String>,
+    pub remote_plugin_id: Option<String>,
     pub invocation_type: InvocationType,
 }
 
@@ -461,6 +447,12 @@ pub(crate) enum AnalyticsFact {
         request_id: RequestId,
         request: Box<ClientRequest>,
     },
+    ExplicitClientInterruptRequest {
+        connection_id: u64,
+        request_id: RequestId,
+        turn_id: String,
+        requested_at_ms: u64,
+    },
     ClientResponse {
         connection_id: u64,
         request_id: RequestId,
@@ -497,6 +489,7 @@ pub(crate) enum AnalyticsFact {
 }
 
 pub(crate) enum CustomAnalyticsFact {
+    CodeModeToolCall(CodeModeToolCallFact),
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
     Goal(Box<CodexGoalEvent>),
@@ -505,6 +498,7 @@ pub(crate) enum CustomAnalyticsFact {
     TurnTokenUsage(Box<TurnTokenUsageFact>),
     TurnProfile(Box<TurnProfileFact>),
     TurnCodexError(Box<TurnCodexErrorFact>),
+    ImagePreparation(Box<ImagePreparationFact>),
     SkillInvoked(SkillInvokedInput),
     AppMentioned(AppMentionedInput),
     AppUsed(AppUsedInput),
@@ -597,6 +591,7 @@ pub(crate) struct PluginInstallFailedInput {
 pub struct ExternalAgentConfigImportCompletedInput {
     pub import_id: String,
     pub source: String,
+    pub provider_id: String,
     pub item_type: String,
     pub success_count: usize,
     pub failed_count: usize,
@@ -605,6 +600,7 @@ pub struct ExternalAgentConfigImportCompletedInput {
 pub struct ExternalAgentConfigImportFailureInput {
     pub import_id: String,
     pub source: String,
+    pub provider_id: String,
     pub item_type: String,
     pub failure_stage: String,
     pub error_type: String,

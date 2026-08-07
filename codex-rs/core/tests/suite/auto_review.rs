@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -26,7 +28,6 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::skip_if_no_network;
@@ -36,9 +37,15 @@ use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tokio::time::timeout;
+use wiremock::Mock;
 use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Result<()> {
@@ -48,13 +55,14 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
     let server = MockServer::start().await;
     let model = "remote-auto-review-parent";
     let review_model = "remote-auto-review-reviewer";
-    mount_models_once(
-        &server,
-        ModelsResponse {
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ModelsResponse {
             models: vec![remote_model_with_auto_review_override(model, review_model)],
-        },
-    )
-    .await;
+        }))
+        .expect(1..)
+        .mount(&server)
+        .await;
 
     let permissions_call_id = "auto-review-permissions-call";
     let permissions_args = json!({
@@ -130,12 +138,23 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
     } = builder.build(&server).await?;
 
     let models_manager = thread_manager.get_models_manager();
-    models_manager
-        .list_models(
-            RefreshStrategy::OnlineIfUncached,
+    timeout(
+        Duration::from_secs(10),
+        models_manager.list_models(
+            RefreshStrategy::Online,
             codex_core::test_support::default_http_client_factory(),
-        )
-        .await;
+        ),
+    )
+    .await?;
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should retain received requests")
+            .iter()
+            .any(|request| request.method == "GET" && request.url.path() == "/v1/models"),
+        "expected the model catalog to be fetched remotely"
+    );
     let model_info = models_manager
         .get_model_info(model, &config.to_models_manager_config())
         .await;
@@ -197,7 +216,12 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
         })
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_event_with_timeout(
+        &codex,
+        |event| matches!(event, EventMsg::TurnComplete(_)),
+        Duration::from_secs(15),
+    )
+    .await;
 
     let guardian_request = responses
         .requests()
@@ -213,6 +237,8 @@ async fn remote_model_override_uses_catalog_model_for_strict_auto_review() -> Re
         guardian_request.body_json()["model"].as_str(),
         Some(review_model)
     );
+
+    timeout(Duration::from_secs(10), codex.shutdown_and_wait()).await??;
 
     Ok(())
 }
@@ -235,6 +261,7 @@ fn remote_model_with_auto_review_override(slug: &str, review_model: &str) -> Mod
         supports_search_tool: false,
         use_responses_lite: false,
         auto_review_model_override: Some(review_model.to_string()),
+        model_specialty: None,
         tool_mode: None,
         multi_agent_version: None,
         priority: 1,
@@ -242,9 +269,10 @@ fn remote_model_with_auto_review_override(slug: &str, review_model: &str) -> Mod
         service_tiers: Vec::new(),
         default_service_tier: None,
         upgrade: None,
-        base_instructions: "base instructions".to_string(),
         model_messages: None,
         include_skills_usage_instructions: false,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
         supports_reasoning_summary_parameter: true,
         default_reasoning_summary: ReasoningSummary::Auto,
         support_verbosity: false,

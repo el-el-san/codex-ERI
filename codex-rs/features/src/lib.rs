@@ -17,6 +17,7 @@ use toml::Table;
 mod feature_configs;
 mod legacy;
 pub use feature_configs::CodeModeConfigToml;
+pub use feature_configs::CodeModeHostConfigToml;
 pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
@@ -25,9 +26,12 @@ pub use feature_configs::NetworkProxyConfigToml;
 pub use feature_configs::NetworkProxyDomainPermissionToml;
 pub use feature_configs::NetworkProxyModeToml;
 pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
+pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
+pub use feature_configs::TokenBudgetMode;
+pub use feature_configs::ToolRegistryConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
 
@@ -84,13 +88,17 @@ pub enum Feature {
     // Stable.
     /// Enable the default shell tool.
     ShellTool,
+    /// Enable the built-in local image viewer.
+    ViewImage,
     /// Enable Claude-style lifecycle hooks loaded from hooks.json files.
     CodexHooks,
     /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
     SecretAuthStorage,
 
     // Experimental
-    /// Enable JavaScript code mode backed by the in-process V8 runtime.
+    /// Record model-attempted tool calls in internal Responses metadata.
+    ExecutedToolCallMetadata,
+    /// Enable JavaScript code mode backed by the standalone host process.
     CodeMode,
     /// Use a 30-second default yield timeout for code mode exec calls.
     CodeModeBufferedExec,
@@ -160,16 +168,22 @@ pub enum Feature {
     Apps,
     /// Enable MCP apps.
     EnableMcpApps,
+    /// Enable MCP protocol version 2026-07-28 support.
+    Mcp20260728,
     /// Removed compatibility flag for the legacy Apps MCP path override.
     AppsMcpPathOverride,
     /// Removed compatibility flag retained as a no-op now that tool_search is always enabled.
     ToolSearch,
     /// Removed compatibility flag. MCP tools are always deferred when tool_search is available.
     ToolSearchAlwaysDeferMcpTools,
+    /// Describe deferred tool namespaces in the model-visible world state.
+    DeferredToolWorldState,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
     /// Enable discoverable tool suggestions for apps.
     ToolSuggest,
+    /// Include recommended plugins in model-visible context.
+    RecommendedPlugins,
     /// Enable plugins.
     Plugins,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
@@ -180,6 +194,10 @@ pub enum Feature {
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
     InAppBrowser,
+    /// Allow desktop apps to perform in-app updates.
+    ///
+    /// Requirements-only gate: this should be set from requirements, not user config.
+    InAppUpdates,
     /// Allow Browser Use agent integration in desktop apps.
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
@@ -204,9 +222,11 @@ pub enum Feature {
     ExternalMigration,
     /// Enable extension-backed image generation.
     ImageGeneration,
+    /// Tell the model when a prompt image was resized and include its dimensions.
+    ImageResizeNotice,
     /// Removed compatibility flag for always-on centralized image preparation.
     ResizeAllImages,
-    /// Generate Responses API item IDs for client-created history items.
+    /// Removed compatibility flag for always-on response item IDs.
     ItemIds,
     /// Request sequential cutoff reasoning summary delivery.
     ConcurrentReasoningSummaries,
@@ -222,6 +242,8 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Enable Guardian V2 automatic approval reviews.
+    GuardianV2,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
     /// Add current context-window metadata to model-visible context.
@@ -483,7 +505,7 @@ impl Features {
                 "tool_search" | "tool_search_always_defer_mcp_tools" | "apps_mcp_path_override" => {
                     continue;
                 }
-                "image_detail_original" | "resize_all_images" => {
+                "image_detail_original" | "resize_all_images" | "item_ids" => {
                     continue;
                 }
                 "plugin_hooks" => {
@@ -634,16 +656,22 @@ pub fn canonical_feature_for_key(key: &str) -> Option<Feature> {
         .map(|spec| spec.id)
 }
 
-/// Returns `true` if the provided string matches a known feature toggle key.
+/// Returns `true` if the provided string matches a known `[features]` key.
 pub fn is_known_feature_key(key: &str) -> bool {
-    feature_for_key(key).is_some()
+    key == "tool_registry" || feature_for_key(key).is_some()
 }
 
 /// Deserializable features table for TOML.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_registry: Option<ToolRegistryConfigToml>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_mode: Option<FeatureToml<CodeModeConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_mode_host: Option<FeatureToml<CodeModeHostConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_prefixed_mcp_tool_names: Option<FeatureToml<NonPrefixedMcpToolNamesConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -681,6 +709,16 @@ impl FeaturesToml {
         if let Some(enabled) = self.code_mode.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::CodeMode.key().to_string(), enabled);
         }
+        if let Some(enabled) = self.code_mode_host.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::CodeModeHost.key().to_string(), enabled);
+        }
+        if let Some(enabled) = self
+            .non_prefixed_mcp_tool_names
+            .as_ref()
+            .and_then(FeatureToml::enabled)
+        {
+            entries.insert(Feature::NonPrefixedMcpToolNames.key().to_string(), enabled);
+        }
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
         }
@@ -706,7 +744,10 @@ impl FeaturesToml {
     pub fn materialize_resolved_enabled(&mut self, features: &Features) {
         self.clear_removed_compatibility_entries();
         let Self {
+            tool_registry: _,
             code_mode,
+            code_mode_host,
+            non_prefixed_mcp_tool_names,
             multi_agent_v2,
             token_budget,
             rollout_budget,
@@ -722,6 +763,10 @@ impl FeaturesToml {
             let enabled = features.enabled(spec.id);
             if spec.id == Feature::CodeMode {
                 materialize_resolved_feature_enabled(code_mode, enabled);
+            } else if spec.id == Feature::CodeModeHost {
+                materialize_resolved_feature_enabled(code_mode_host, enabled);
+            } else if spec.id == Feature::NonPrefixedMcpToolNames {
+                materialize_resolved_feature_enabled(non_prefixed_mcp_tool_names, enabled);
             } else if spec.id == Feature::MultiAgentV2 {
                 materialize_resolved_feature_enabled(multi_agent_v2, enabled);
             } else if spec.id == Feature::TokenBudget {
@@ -814,6 +859,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::ViewImage,
+        key: "view_image",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::SecretAuthStorage,
         key: "secret_auth_storage",
         stage: Stage::Stable,
@@ -853,6 +904,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::JsRepl,
         key: "js_repl",
         stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ExecutedToolCallMetadata,
+        key: "executed_tool_call_metadata",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1082,6 +1139,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::Mcp20260728,
+        key: "mcp_2026_07_28",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::AppsMcpPathOverride,
         key: "apps_mcp_path_override",
         stage: Stage::Removed,
@@ -1100,6 +1163,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::DeferredToolWorldState,
+        key: "deferred_tool_world_state",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::NonPrefixedMcpToolNames,
         key: "non_prefixed_mcp_tool_names",
         stage: Stage::UnderDevelopment,
@@ -1116,6 +1185,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "tool_suggest",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::RecommendedPlugins,
+        key: "recommended_plugins",
+        stage: Stage::Stable,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Plugins,
@@ -1138,6 +1213,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::InAppBrowser,
         key: "in_app_browser",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::InAppUpdates,
+        key: "in_app_updates",
         stage: Stage::Stable,
         default_enabled: true,
     },
@@ -1190,6 +1271,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::ImageResizeNotice,
+        key: "image_resize_notice",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ResizeAllImages,
         key: "resize_all_images",
         stage: Stage::Removed,
@@ -1198,8 +1285,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ItemIds,
         key: "item_ids",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Removed,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ConcurrentReasoningSummaries,
@@ -1254,6 +1341,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "guardian_approval",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::GuardianV2,
+        key: "guardianv2",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Goals,

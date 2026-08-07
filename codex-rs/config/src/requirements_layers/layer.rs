@@ -65,8 +65,18 @@ impl ComposableRequirementsLayer {
             let _guard = base_dir
                 .as_ref()
                 .map(|base_dir| AbsolutePathBufGuard::new(base_dir.as_path()));
-            let regular_toml = parse_layer_toml(&toml, &source)?;
-            let requirements = parse_layer_requirements(&toml, &source)?;
+            let mut regular_toml = parse_layer_toml(&toml, &source)?;
+
+            // These fields can only be set locally; ignore them before validating cloud policy.
+            if matches!(source, RequirementSource::EnterpriseManaged { .. }) {
+                remove_top_level_field(&mut regular_toml, "allowed_login_methods");
+                remove_top_level_field(&mut regular_toml, "allowed_chatgpt_workspaces");
+            }
+
+            let requirements = parse_layer_requirements(
+                &RequirementsLayerToml::Value(regular_toml.clone()),
+                &source,
+            )?;
             (regular_toml, requirements)
         };
 
@@ -77,6 +87,7 @@ impl ComposableRequirementsLayer {
             .as_ref()
             .and_then(|_| hostname_resolver());
         requirements.apply_remote_sandbox_config(hostname.as_deref());
+        materialize_resolved_path_requirements(&mut regular_toml, &requirements)?;
         materialize_remote_sandbox_config(&mut regular_toml, &requirements)?;
         strip_special_fields(&mut regular_toml);
 
@@ -138,6 +149,30 @@ fn parse_layer_requirements(
             })
         }
     }
+}
+
+fn materialize_resolved_path_requirements(
+    layer_toml: &mut TomlValue,
+    requirements: &ConfigRequirementsToml,
+) -> Result<(), RequirementsCompositionError> {
+    let Some(table) = layer_toml.as_table_mut() else {
+        return Ok(());
+    };
+
+    for (key, value) in [
+        ("sqlite_home", requirements.sqlite_home.as_ref()),
+        ("log_dir", requirements.log_dir.as_ref()),
+        (
+            "model_catalog_json",
+            requirements.model_catalog_json.as_ref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            table.insert(key.to_string(), toml_value_from_serializable(value)?);
+        }
+    }
+
+    Ok(())
 }
 
 fn materialize_remote_sandbox_config(

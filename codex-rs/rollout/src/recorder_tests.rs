@@ -9,6 +9,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SandboxPolicy;
@@ -18,6 +19,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::fs::File;
@@ -31,7 +33,7 @@ use uuid::Uuid;
 fn test_config(codex_home: &Path) -> RolloutConfig {
     RolloutConfig {
         codex_home: codex_home.to_path_buf(),
-        sqlite_home: codex_home.to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.abs()),
         cwd: codex_home.to_path_buf(),
         model_provider_id: "test-provider".to_string(),
         generate_memories: true,
@@ -141,6 +143,25 @@ fn append_repair_terminates_nonempty_rollout_tail() -> std::io::Result<()> {
     drop(open_log_file(&rollout_path)?);
 
     assert_eq!(fs::read(&rollout_path)?, b"{\"type\":\"event_msg\"}\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::default(), &[])?;
+    let modified = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    File::options()
+        .write(true)
+        .open(&rollout_path)?
+        .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+
+    drop(open_log_file(&rollout_path)?);
+    assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
+
+    drop(open_rollout_for_append(&rollout_path).await?);
+    assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
     Ok(())
 }
 
@@ -590,6 +611,60 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
 }
 
 #[tokio::test]
+async fn referenced_paginated_rollout_starts_at_history_cutoff_and_resumes() -> std::io::Result<()>
+{
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let history_base = HistoryPosition {
+        thread_id: ThreadId::new(),
+        end_ordinal_exclusive: 41,
+        end_byte_offset: 1,
+    };
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        )
+        .with_history_mode(ThreadHistoryMode::Paginated)
+        .with_history_base(Some(history_base)),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    recorder.persist().await?;
+    recorder.shutdown().await?;
+
+    let resumed =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
+    resumed
+        .record_canonical_items(&[agent_message_item("first child record")])
+        .await?;
+    resumed.flush().await?;
+    resumed.shutdown().await?;
+
+    let resumed =
+        RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path.clone())).await?;
+    resumed
+        .record_canonical_items(&[agent_message_item("second child record")])
+        .await?;
+    resumed.flush().await?;
+    assert_eq!(
+        read_rollout_lines(&rollout_path)?
+            .into_iter()
+            .map(|line| line.ordinal)
+            .collect::<Vec<_>>(),
+        vec![Some(41), Some(42), Some(43)]
+    );
+    resumed.shutdown().await
+}
+
+#[tokio::test]
 async fn recorder_omits_ordinals_from_legacy_rollouts() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
@@ -932,7 +1007,8 @@ async fn list_threads_db_disabled_does_not_skip_paginated_items() -> std::io::Re
 }
 
 #[tokio::test]
-async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Result<()> {
+async fn list_threads_db_enabled_preserves_metadata_for_missing_rollout_paths()
+-> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
 
@@ -943,7 +1019,7 @@ async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Resul
     ));
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -972,11 +1048,34 @@ async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Resul
         .await
         .expect("state db upsert should succeed");
 
+    let valid_uuid = Uuid::from_u128(9011);
+    let valid_thread_id = ThreadId::from_string(&valid_uuid.to_string()).expect("valid thread id");
+    let valid_path = write_session_file(home.path(), "2025-01-02T13-00-00", valid_uuid)?;
+    let valid_created_at = chrono::Utc
+        .with_ymd_and_hms(2025, 1, 2, 13, 0, 0)
+        .single()
+        .expect("valid datetime");
+    let mut valid_builder = codex_state::ThreadMetadataBuilder::new(
+        valid_thread_id,
+        valid_path.clone(),
+        valid_created_at,
+        SessionSource::Cli,
+    );
+    valid_builder.model_provider = Some(config.model_provider_id.clone());
+    valid_builder.cwd = home.path().to_path_buf();
+    let mut valid_metadata = valid_builder.build(config.model_provider_id.as_str());
+    valid_metadata.first_user_message = Some("Older valid thread".to_string());
+    valid_metadata.preview = valid_metadata.first_user_message.clone();
+    runtime
+        .upsert_thread(&valid_metadata)
+        .await
+        .expect("state db upsert should succeed");
+
     let default_provider = config.model_provider_id.clone();
     let page = RolloutRecorder::list_threads(
         Some(runtime.clone()),
         &config,
-        /*page_size*/ 10,
+        /*page_size*/ 1,
         /*cursor*/ None,
         ThreadSortKey::CreatedAt,
         SortDirection::Desc,
@@ -987,12 +1086,18 @@ async fn list_threads_db_enabled_drops_missing_rollout_paths() -> std::io::Resul
         /*search_term*/ None,
     )
     .await?;
-    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].path, valid_path);
     let stored_path = runtime
         .find_rollout_path_by_id(thread_id, Some(false))
         .await
         .expect("state db lookup should succeed");
-    assert_eq!(stored_path, None);
+    assert_eq!(stored_path, Some(metadata.rollout_path.clone()));
+    let stored_metadata = runtime
+        .get_thread(thread_id)
+        .await
+        .expect("state db lookup should succeed");
+    assert_eq!(stored_metadata, Some(metadata));
     Ok(())
 }
 
@@ -1009,7 +1114,7 @@ async fn list_threads_db_enabled_repairs_stale_rollout_paths() -> std::io::Resul
     ));
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1070,7 +1175,7 @@ async fn list_threads_state_db_only_skips_jsonl_repair_scan() -> std::io::Result
     let config = test_config(home.path());
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1174,7 +1279,7 @@ async fn list_threads_default_filter_returns_filesystem_scan_results() -> std::i
     let stale_cwd = home.path().join("stale-cwd");
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1264,7 +1369,7 @@ async fn list_threads_metadata_filter_overlays_state_db_list_metadata() -> std::
     let rollout_path = write_session_file(home.path(), "2025-01-03T16-00-00", uuid)?;
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await
@@ -1332,6 +1437,7 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         thread_id: Some(filesystem_thread_id),
         first_user_message: Some("filesystem message".to_string()),
         preview: Some("filesystem preview".to_string()),
+        section: None,
         cwd: None,
         git_branch: Some("filesystem-branch".to_string()),
         git_sha: Some("filesystem-sha".to_string()),
@@ -1352,6 +1458,10 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
         thread_id: Some(state_thread_id),
         first_user_message: Some("state message".to_string()),
         preview: Some("state preview".to_string()),
+        section: Some(codex_state::ThreadSection {
+            id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+            name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+        }),
         cwd: Some(PathBuf::from("/tmp/state-cwd")),
         git_branch: Some("state-branch".to_string()),
         git_sha: Some("state-sha".to_string()),
@@ -1372,6 +1482,13 @@ fn fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fi
 
     assert_eq!(item.path, filesystem_path);
     assert_eq!(item.thread_id, Some(filesystem_thread_id));
+    assert_eq!(
+        item.section,
+        Some(codex_state::ThreadSection {
+            id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+            name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+        })
+    );
     assert_eq!(
         item.first_user_message.as_deref(),
         Some("filesystem message")
@@ -1404,7 +1521,7 @@ async fn list_threads_search_repairs_stale_state_db_hits_before_returning() -> s
     let real_path = write_session_file(home.path(), "2025-01-03T15-00-00", uuid)?;
 
     let runtime = codex_state::StateRuntime::init(
-        home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         config.model_provider_id.clone(),
     )
     .await

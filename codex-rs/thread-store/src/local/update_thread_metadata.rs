@@ -797,6 +797,7 @@ mod tests {
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
     use serde_json::Value;
     use serde_json::json;
@@ -806,6 +807,7 @@ mod tests {
     use super::*;
     use crate::GitInfoPatch;
     use crate::ListThreadsParams;
+    use crate::MoveThreadToSectionParams;
     use crate::ResumeThreadParams;
     use crate::SortDirection;
     use crate::ThreadMetadataPatch;
@@ -846,6 +848,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn section_moves_persist_in_sqlite_without_changing_the_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(320);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path =
+            write_session_file(home.path(), "2025-01-03T14-20-00", uuid).expect("session file");
+        let original_rollout = std::fs::read_to_string(&rollout_path).expect("read rollout");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+        codex_rollout::state_db::reconcile_rollout(
+            Some(runtime.as_ref()),
+            rollout_path.as_path(),
+            "test-provider",
+            /*builder*/ None,
+            &[],
+            /*archived_only*/ None,
+            /*new_thread_memory_mode*/ None,
+        )
+        .await;
+        store
+            .move_thread_to_section(MoveThreadToSectionParams {
+                thread_id,
+                section: Some(codex_state::PINNED_THREAD_SECTION_ID.to_string()),
+                before_thread_id: None,
+            })
+            .await
+            .expect("pin thread");
+
+        let pinned = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read pinned thread");
+
+        assert_eq!(
+            pinned.section,
+            Some(codex_state::ThreadSection {
+                id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+                name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+            })
+        );
+        let pinned_metadata = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("read pinned metadata")
+            .expect("pinned metadata");
+        assert_eq!(
+            pinned_metadata.section,
+            Some(codex_state::ThreadSection {
+                id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+                name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+            })
+        );
+        assert_eq!(pinned_metadata.preview.as_deref(), Some("Hello from user"));
+        assert_eq!(pinned_metadata.source, "cli");
+        let pinned_page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::RecencyAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                section: Some(Some(codex_state::PINNED_THREAD_SECTION_ID.to_string())),
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect("list pinned thread");
+        assert_eq!(
+            pinned_page
+                .items
+                .iter()
+                .map(|thread| thread.thread_id)
+                .collect::<Vec<_>>(),
+            vec![thread_id]
+        );
+        let read_by_path = store
+            .read_thread_by_rollout_path(
+                rollout_path.clone(),
+                /*include_archived*/ false,
+                /*include_history*/ false,
+            )
+            .await
+            .expect("read pinned thread by rollout path");
+        assert_eq!(
+            read_by_path.section,
+            Some(codex_state::ThreadSection {
+                id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+                name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+            })
+        );
+        assert_eq!(
+            std::fs::read_to_string(&rollout_path).expect("read rollout"),
+            original_rollout
+        );
+
+        store
+            .move_thread_to_section(MoveThreadToSectionParams {
+                thread_id,
+                section: None,
+                before_thread_id: None,
+            })
+            .await
+            .expect("clear thread section");
+
+        let unpinned = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read unpinned thread");
+
+        assert_eq!(unpinned.section, None);
+        assert_eq!(
+            runtime
+                .get_thread(thread_id)
+                .await
+                .expect("read cleared metadata")
+                .expect("cleared metadata")
+                .section,
+            None
+        );
+        assert_eq!(
+            std::fs::read_to_string(&rollout_path).expect("read rollout"),
+            original_rollout
+        );
+    }
+
+    #[tokio::test]
     async fn paginated_name_updates_use_sqlite_without_rollout_writes() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
@@ -860,7 +1007,7 @@ mod tests {
         .expect("session file");
         let original_rollout = std::fs::read_to_string(&path).expect("read rollout");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -952,7 +1099,7 @@ mod tests {
         let path =
             write_session_file(home.path(), "2025-01-03T14-30-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -998,7 +1145,7 @@ mod tests {
         .expect("session file");
         let original_rollout = std::fs::read_to_string(&path).expect("read rollout");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1095,7 +1242,7 @@ mod tests {
         let path =
             write_session_file(home.path(), "2025-01-03T18-30-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1200,7 +1347,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1243,7 +1390,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1298,7 +1445,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1356,7 +1503,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1559,7 +1706,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1652,7 +1799,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1695,7 +1842,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1753,7 +1900,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1800,7 +1947,7 @@ mod tests {
         )
         .expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1840,7 +1987,7 @@ mod tests {
         write_archived_session_file(home.path(), "2025-01-03T19-30-00", uuid)
             .expect("archived session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1876,7 +2023,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1920,6 +2067,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: Some(Vec::new()),
                 cwd_filters: Some(vec![workspace]),
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -1945,7 +2093,7 @@ mod tests {
         let archived_path = write_archived_session_file(home.path(), "2025-01-03T16-00-00", uuid)
             .expect("archived session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -2008,7 +2156,7 @@ mod tests {
         let archived_path = write_archived_session_file(home.path(), "2025-01-03T16-30-00", uuid)
             .expect("archived session file");
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
