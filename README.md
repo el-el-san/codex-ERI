@@ -1,12 +1,12 @@
 <h1 align="center">Codex CLI (ERI fork)</h1>
 
 ## このリポジトリについて
-- OpenAI Rust 版 Codex CLI v0.145.0 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-07-24 の upstream rust-v0.145.0）。
+- OpenAI Rust 版 Codex CLI v0.147.0 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-08-08 の upstream rust-v0.147.0）。
 - Termux / WSL / SSH / コンテナでもビルド・ログイン・MCP が破綻しないよう、必要最小限のパッチだけを維持します。
 - 主要ソースは `codex-rs/` 配下の Cargo ワークスペースで、Rust 1.90（`rust-toolchain.toml`）を前提としています。
 
 ## 上流からの主な差分
-- TLS を自己完結化: `core` / `login` / `ollama` の `reqwest` に `native-tls-vendored` を付与し、Android/Termux などでのビルド成功率を改善。
+- TLS を自己完結化: `http-client` の `reqwest` に `native-tls-vendored` を付与し、Android/Termux などでのビルド成功率を改善。
 - ログイン URL の起動を環境別に分岐:
   - `login` / `rmcp-client` で Termux / WSL / SSH / Container を考慮したローカル実装を使用
   - Termux: `termux-open-url`
@@ -14,7 +14,7 @@
   - SSH/コンテナ: 自動起動を抑止し、手動で開く案内を表示
   - Linux デスクトップ / macOS / Windows: 各 OS の標準コマンドとフォールバック（`BROWSER` / `xdg-open` / `gio open` / `sensible-browser` / Firefox/Chrome 系）
 - MCP サーバー起動時に Termux/Android の環境変数を保持（`rmcp-client` の `DEFAULT_ENV_VARS` を拡張）。
-- Android クロスビルドでは `rusty_v8` 配布物欠如を避けるため、`exec` / code mode を無効化。
+- upstream 0.147.0 で code mode が外部ホストへ分離された構成に追従。Android 用 CLI / exec / TUI の依存グラフには V8 を含めず、ホストが利用できない環境では upstream のフォールバックで code mode を無効化。
 - 詳細手順や再適用チェックリストは `docs/01-cross-platform-update-guide.md` を参照。上流確認手順は `docs/00-update-chk.md` にあります。
 
 ## リポジトリ構成
@@ -58,7 +58,7 @@ codex apply                           # 直近の diff を git apply 相当で�
 - `--output-schema schema.json`（非対話 `codex exec` で最終レスポンスの JSON 形を指定）
 
 ## 設定
-- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.145.0 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
+- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.147.0 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
 - ログは `~/.codex/log/` に保存されます。
 
 ## 環境別のログイン挙動

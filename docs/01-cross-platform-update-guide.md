@@ -9,10 +9,9 @@
 ### 1.1 依存関係（TLS）
 `reqwest` に `native-tls-vendored` を付与（TLS を自己完結化）
 - 変更ファイル:
-  - `core/Cargo.toml`
-  - `ollama/Cargo.toml`
-  - `login/Cargo.toml`
-  - （他に `reqwest` を使うクレートが増えた場合は同様に付与）
+  - `http-client/Cargo.toml`
+  - （上流で HTTP クライアントの配置が変わった場合は、Android 向け依存グラフで有効になる `reqwest` に同様に付与）
+- upstream 0.147.0 では HTTP 通信が `http-client` に集約され、従来の `core` / `ollama` / `login` は `reqwest` を直接依存しない
 
 - `login/src/server.rs` に `open_url` 相当のローカル実装を追加（Termux/WSL/SSH/Container/各OS を考慮）
 - MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も `webbrowser` を使わず、`rmcp-client/src/utils.rs` の同等ロジックでブラウザ起動を試みる
@@ -41,21 +40,11 @@
 - 変更ファイル:
   - `tui/src/clipboard_paste.rs`
 
-### 1.5 Androidでは code mode を無効化
-- `code-mode` クレートは `rusty_v8` に依存するが、現行 `v8 v146.4.0` では Android 向け静的配布物が存在せず CI のクロスビルドが失敗する
-- 変更内容:
-  - `core` / `tools` の `codex-code-mode` 依存を `cfg(not(target_os = "android"))` に限定
-  - Android では `exec` / `wait` を登録しないよう `ToolsConfig` で `Feature::CodeMode` を無効化
-  - `core` / `tools` に Android 用スタブモジュールを置き、非 Android 実装との API 互換だけ維持
-- 変更ファイル:
-  - `core/Cargo.toml`
-  - `tools/Cargo.toml`
-  - `core/src/tools/mod.rs`
-  - `core/src/tools/spec.rs`
-  - `core/src/tools/router.rs`
-  - `core/src/tools/code_mode_disabled.rs`
-  - `tools/src/lib.rs`
-  - `tools/src/code_mode_disabled.rs`
+### 1.5 Androidでの code mode / V8 分離
+- upstream 0.147.0 では V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離された
+- Android 用の `codex-cli` / `codex-exec` / `codex-tui` はこれらを依存グラフに含まず、外部ホストが利用できない場合は upstream のフォールバックで code mode を無効化する
+- 0.145.0 以前に必要だった `core` / `tools` の Android 用スタブと依存の `cfg` 分岐は削除し、0.147.0 の upstream 実装へ戻した
+- 更新時は `cargo tree --target aarch64-linux-android` で Android 用パッケージから `v8` / `rusty_v8` が到達不能であることを確認する
 
 ## 2. 変更の意図と効果
 
@@ -79,9 +68,10 @@
 以下は、新しい上流から Rust 実装へ変更を取り込む際に、クロスプラットフォーム対応を保つための手順です。
 
 ### 3.1 `reqwest` への TLS 機能付与を再確認
-- 対象クレート: `core` / `ollama` / `login`（他に `reqwest` を使うクレートが増えたら同様に）
-- Cargo.toml 例: `reqwest = { version = "0.12", features = ["json", "stream", "native-tls-vendored"] }`
-- 注意: `blocking` 機能を使う箇所（`login` 等）は `features = ["json", "blocking", "native-tls-vendored"]` のように併記
+- upstream 0.147.0 の対象クレートは `http-client`
+- `http-client/Cargo.toml` の `reqwest` features に `native-tls-vendored` が含まれることを確認
+- 上流更新で依存配置が変わった場合は、`cargo tree --target aarch64-linux-android -i openssl-src -e features` で `openssl-sys` が vendored OpenSSL を使うことを確認
+- 上流から削除された `core` / `ollama` / `login` の直接 `reqwest` 依存は復元しない
 
 ### 3.2 ブラウザ起動の共通ロジックを適用
 - もし上流で `webbrowser` クレートに戻っていたら、`login/src/server.rs` と `rmcp-client/src/utils.rs` / `perform_oauth_login.rs` を以下の分岐ロジックへ差し替え:
@@ -126,13 +116,10 @@
   - `PasteImageError` と Android版 `paste_image_as_png` に `#[cfg_attr(target_os = "android", allow(dead_code))]` を付与
 
 ### 3.8 Androidクロスビルドで `rusty_v8` 404 が出る場合
-- 症状: `https://github.com/denoland/rusty_v8/releases/.../librusty_v8_release_aarch64-linux-android.a.gz` が `404 Not Found`
-- 原因: 上流 `code-mode` が引く `v8` に Android 向け配布物がない
-- 対応:
-  - `core/Cargo.toml` と `tools/Cargo.toml` の `codex-code-mode` 依存を `cfg(not(target_os = "android"))` に移す
-  - `core/src/tools/spec.rs` で Android では `include_code_mode = false` にする
-  - `core/src/tools/mod.rs` / `tools/src/lib.rs` で Android 用スタブモジュールへ切り替える
-  - `core/src/tools/router.rs` で `codex_code_mode::is_code_mode_nested_tool()` への直接依存を避ける
+- まず `cargo tree --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui` を確認する
+- upstream 0.147.0 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
+- 到達する場合は `code-mode-runtime` / `code-mode-host` が Android パッケージへ混入した依存経路を特定し、その依存をホスト専用へ戻す
+- 0.145.0 以前の Android 用スタブを無条件に再適用せず、現行 upstream の外部ホスト分離を優先する
 
 ## 4. 実用的な差分確認コマンド
 
@@ -152,11 +139,13 @@ diff -u upstream/codex-rs/rmcp-client/src/perform_oauth_login.rs codex-rs/rmcp-c
 
 ### 5.1 `Cargo.toml`の例
 ```toml
-# reqwestの設定
-reqwest = { version = "0.12", features = ["json", "stream", "native-tls-vendored"] }
-
-# loginクレートでは
-reqwest = { version = "0.12", features = ["json", "blocking", "native-tls-vendored"] }
+# http-client/Cargo.toml
+reqwest = { workspace = true, features = [
+    "json",
+    "native-tls-vendored",
+    "rustls-tls-native-roots",
+    "stream",
+] }
 
 # tuiクレートでは（Android対応）
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -243,6 +232,24 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - GitHub Actions `Build Android` で `Build` ステップが完走するか
 
 ## 7. 最近の更新履歴
+
+### 2026-08-08 更新内容（rust-v0.147.0）
+- 上流 `rust-v0.147.0` を取り込み、`codex-rs` を同期
+- 再適用・確認した差分:
+  - HTTP 通信の集約に追従し、`http-client` の `reqwest` に `native-tls-vendored` を付与
+  - `login` / `rmcp-client` のブラウザ起動を `open_url` ベースに統一
+  - `rmcp-client` の Termux/Android 環境変数保持
+  - `arg0` の Android `try_lock()` 回避
+  - `core/src/installation_id.rs` の Android `file.lock()` 回避
+  - `tui` の Android 向け警告抑止
+  - upstream の外部 code-mode ホスト分離に追従し、旧 Android 用スタブを削除
+  - Android 用 `codex-cli` / `codex-exec` / `codex-tui` の依存グラフに V8 がないことを確認
+  - `codex-rs/Cargo.toml` の `[profile.release]` を `lto = "thin"` に維持
+  - Android CI の `CARGO_PROFILE_RELEASE_LTO=false` /
+    `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` を維持
+  - `quinn-proto` / `event-listener` / `memmap2` を監査済み修正版へ更新し、
+    `serial_test` が `scc` 2 系を要求する `RUSTSEC-2026-0205` は理由を明記して一時除外
+- GitHub Actions の Android aarch64 release build、Cargo audit、CodeQL が成功
 
 ### 2026-07-24 更新内容（rust-v0.145.0）
 - 上流 `rust-v0.145.0` を取り込み、`codex-rs` を同期
@@ -436,8 +443,12 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - WSL/SSH/Container: 手動でURLを開く必要がある（設計通りの動作）
 
 ### 8.3 TLSエラーが発生
-- 症状: HTTPSリクエストでTLS/SSL関連のエラー
-- 対処: `reqwest`の`native-tls-vendored`機能が有効になっているか確認
+- 症状: HTTPSリクエストでTLS/SSL関連のエラー、または Android クロスビルドで
+  `openssl-sys` が対象環境の OpenSSL を検出できず失敗
+- 対処:
+  - `http-client/Cargo.toml` の `reqwest` で `native-tls-vendored` が有効か確認
+  - `cargo tree --target aarch64-linux-android -i openssl-src -e features` で
+    `openssl-sys` から vendored OpenSSL へ到達することを確認
 
 ### 8.4 Androidで "try_lock() not supported" 警告が出る
 - 症状: `WARNING: proceeding, even though we could not update PATH: try_lock() not supported`
