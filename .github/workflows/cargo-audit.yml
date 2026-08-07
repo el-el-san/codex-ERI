@@ -31,10 +31,13 @@ jobs:
           # Remaining advisories are transitive through rama 0.3.0-alpha.4 and
           # the pinned ratatui fork; keep Dependabot alerts visible until their
           # upstream constraints can move. spin 0.9.8 is also yanked but remains
-          # required by rama's flume dependency, so report yanked crates without
-          # failing while continuing to deny unsound and unmaintained warnings.
+          # required by rama's flume dependency. serial_test 3.3.1 also pins
+          # scc 2.x, while the soundness fix is only available in scc >=3.8.4.
+          # Report yanked crates without failing and keep these transitive
+          # advisories visible until their upstream constraints can move.
           cargo audit --deny unsound --deny unmaintained \
             --ignore GHSA-3v94-mw7p-v465 \
             --ignore GHSA-q2qq-hmj6-3wpp \
             --ignore RUSTSEC-2026-0002 \
+            --ignore RUSTSEC-2026-0205 \
             --ignore RUSTSEC-2026-0097
