@@ -106,6 +106,10 @@ impl CodeModeService {
     }
 
     pub(crate) fn take_unavailable_warning(&self, tool_mode: ToolMode) -> Option<String> {
+        if cfg!(target_os = "android") && tool_mode == ToolMode::Direct {
+            return None;
+        }
+
         let error = self.availability.as_ref().err()?;
         let behavior = match tool_mode {
             ToolMode::Direct => "Falling back to direct tools",

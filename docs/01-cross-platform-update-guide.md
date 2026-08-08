@@ -146,6 +146,12 @@
 - Android は `codex-code-mode-host`（V8 依存）を提供できないため、ガードが無いと
   会話はできてもファイル操作・コマンド実行が一切できない状態になる
 - 0.145.0 にも同趣旨のガードがあったが、0.147.0 同期時にスタブ削除で失われたため復元した
+- `core/src/tools/code_mode/mod.rs` の `take_unavailable_warning` で、
+  Android かつ実効モードが `ToolMode::Direct` の場合のみ警告を返さない
+  - Android では Direct への切り替えが常に意図した挙動であり、
+    `Code Mode is unavailable ... Falling back to direct tools` を毎回表示する必要がないため
+  - Direct ツールの公開には影響せず、Android 以外の利用不可警告と、
+    Android でも fail-closed になった場合の重要な警告は維持される
 
 ## 4. 実用的な差分確認コマンド
 
@@ -502,6 +508,10 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   `codex-code-mode-host` を提供できない Android では upstream 仕様上 fail-closed になる
 - 対処: `core/src/tools/mod.rs` の `effective_tool_mode` に Android 強制 Direct ガードを適用（§3.9）
 - 補足: `[features] code_mode = false` 等の設定では回避不可（モデルメタデータが feature より優先）
+- Direct フォールバック後の
+  `Code Mode is unavailable ... Falling back to direct tools` は機能障害ではないが、
+  起動のたびに表示されるため、`core/src/tools/code_mode/mod.rs` で
+  Android かつ実効モードが Direct の場合のみ抑制する（§3.9）
 
 ### 8.5 Androidビルドで unused/dead_code 警告が出る
 - 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る
