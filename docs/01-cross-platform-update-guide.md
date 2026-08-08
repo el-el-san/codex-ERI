@@ -44,6 +44,10 @@
 - upstream 0.147.0 では V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離された
 - Android 用の `codex-cli` / `codex-exec` / `codex-tui` はこれらを依存グラフに含まず、外部ホストが利用できない場合は upstream のフォールバックで code mode を無効化する
 - 0.145.0 以前に必要だった `core` / `tools` の Android 用スタブと依存の `cfg` 分岐は削除し、0.147.0 の upstream 実装へ戻した
+- **ただし `effective_tool_mode` の Android 強制 Direct ガードは復元が必要だった**（§3.9 参照）
+  - upstream の Direct フォールバックは `CodeMode` のみで、`CodeModeOnly` は意図的に fail-closed
+  - gpt-5.6 系はサーバー側モデルメタデータで `tool_mode: code_mode_only` が指定されており、
+    ガードが無いと Android では直接ツールが一切公開されず実使用不可になる
 - 更新時は `cargo tree --target aarch64-linux-android` で Android 用パッケージから `v8` / `rusty_v8` が到達不能であることを確認する
 
 ## 2. 変更の意図と効果
@@ -125,6 +129,23 @@
 - upstream 0.147.0 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
 - 到達する場合は `code-mode-runtime` / `code-mode-host` が Android パッケージへ混入した依存経路を特定し、その依存をホスト専用へ戻す
 - 0.145.0 以前の Android 用スタブを無条件に再適用せず、現行 upstream の外部ホスト分離を優先する
+
+### 3.9 Android で code mode 系ツールモードを Direct に強制する
+- `core/src/tools/mod.rs` の `effective_tool_mode` 先頭に以下のガードを適用する
+  ```rust
+  #[cfg(target_os = "android")]
+  {
+      let _ = turn_context;
+      return ToolMode::Direct;
+  }
+  ```
+- 背景: gpt-5.6 系はサーバー側モデルメタデータが `tool_mode: code_mode_only` を返し、
+  feature フラグより優先される（設定での無効化は不可）
+- upstream はホスト不在時の Direct フォールバックを `CodeMode` にのみ用意し、
+  `CodeModeOnly` は意図的に fail-closed（直接ツールを公開しない）
+- Android は `codex-code-mode-host`（V8 依存）を提供できないため、ガードが無いと
+  会話はできてもファイル操作・コマンド実行が一切できない状態になる
+- 0.145.0 にも同趣旨のガードがあったが、0.147.0 同期時にスタブ削除で失われたため復元した
 
 ## 4. 実用的な差分確認コマンド
 
@@ -260,6 +281,9 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     Android で `lock() not supported` となり `thread/start failed during TUI bootstrap` で起動不可だったため、
     `arg0` / `installation_id` と同じ `#[cfg(not(target_os = "android"))]` パターンで回避
     （Android では stale クリーンアップも no-op）
+  - gpt-5.6 系の `tool_mode: code_mode_only` が Android で fail-closed となり
+    直接ツールが一切使えなかったため、`core/src/tools/mod.rs` の `effective_tool_mode` に
+    Android では常に `ToolMode::Direct` を返すガードを復元（0.145.0 同等の対策、§3.9 参照）
 
 ### 2026-07-24 更新内容（rust-v0.145.0）
 - 上流 `rust-v0.145.0` を取り込み、`codex-rs` を同期
@@ -471,6 +495,13 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 対処: `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
 - 補足: エラーメッセージに `thread-writer-locks/.coordination.lock` が含まれる場合は
   `thread-store/src/local/writer_lock.rs`（0.147.0 で新設）のロックが原因。§3.6 の対処を適用する
+
+### 8.8 Android で gpt-5.6 系が「会話はできるがツールを一切使わない」
+- 症状: ファイル操作・コマンド実行を伴う指示に応答しない / `Code Mode is unavailable ... Code mode will fail closed` の警告
+- 原因: gpt-5.6 系はサーバー側メタデータで `tool_mode: code_mode_only` が指定され、
+  `codex-code-mode-host` を提供できない Android では upstream 仕様上 fail-closed になる
+- 対処: `core/src/tools/mod.rs` の `effective_tool_mode` に Android 強制 Direct ガードを適用（§3.9）
+- 補足: `[features] code_mode = false` 等の設定では回避不可（モデルメタデータが feature より優先）
 
 ### 8.5 Androidビルドで unused/dead_code 警告が出る
 - 症状: `tui/src/clipboard_paste.rs` で `unused import: tempfile::Builder` / `dead_code` 警告が出る

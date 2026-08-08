@@ -80,6 +80,16 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext) -> ToolMode {
 }
 
 pub(crate) fn effective_tool_mode(turn_context: &TurnContext) -> ToolMode {
+    // Android (Termux) では code-mode ホスト（V8）を提供できないため、
+    // code mode 系のツールモードは常に Direct へフォールバックする。
+    // upstream は CodeModeOnly を意図的に fail-closed にするが、
+    // Android ではそれだとツールが一切使えなくなるため強制する。
+    #[cfg(target_os = "android")]
+    {
+        let _ = turn_context;
+        return ToolMode::Direct;
+    }
+
     let requested_tool_mode = requested_tool_mode(turn_context);
     if !turn_context.code_mode_available
         && requested_tool_mode == ToolMode::CodeMode
