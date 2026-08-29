@@ -2,9 +2,15 @@ name: CodeQL
 
 on:
   pull_request:
+    paths:
+      - "codex-rs/**"
+      - ".github/workflows/codeql.yml"
   push:
     branches:
       - main
+    paths:
+      - "codex-rs/**"
+      - ".github/workflows/codeql.yml"
   schedule:
     - cron: "23 3 * * 1"
 

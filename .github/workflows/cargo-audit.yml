@@ -2,9 +2,19 @@ name: Cargo audit
 
 on:
   pull_request:
+    paths:
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "codex-rs/**/Cargo.toml"
+      - ".github/workflows/cargo-audit.yml"
   push:
     branches:
       - main
+    paths:
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "codex-rs/**/Cargo.toml"
+      - ".github/workflows/cargo-audit.yml"
 
 permissions:
   contents: read
