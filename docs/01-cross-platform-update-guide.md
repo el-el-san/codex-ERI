@@ -11,7 +11,7 @@
 - 変更ファイル:
   - `http-client/Cargo.toml`
   - （上流で HTTP クライアントの配置が変わった場合は、Android 向け依存グラフで有効になる `reqwest` に同様に付与）
-- upstream 0.150.1 では HTTP 通信が `http-client` に集約され、従来の `core` / `ollama` / `login` は `reqwest` を直接依存しない
+- upstream 0.152.1 では HTTP 通信が `http-client` に集約され、従来の `core` / `ollama` / `login` は `reqwest` を直接依存しない
 
 ### 1.2 ブラウザ起動（Termux / WSL / SSH / Container）
 - `login/src/server.rs` に `open_url` 相当のローカル実装を追加（Termux/WSL/SSH/Container/各OS を考慮）
@@ -42,7 +42,7 @@
   - `tui/src/clipboard_paste.rs`
 
 ### 1.5 Androidでの code mode / V8 分離
-- upstream 0.147.0 で V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離され、0.150.1 でもこの構成を維持している
+- upstream 0.147.0 で V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離され、0.152.1 でもこの構成を維持している
 - Android 用の `codex-cli` / `codex-exec` / `codex-tui` はこれらを依存グラフに含まず、外部ホストが利用できない場合は upstream のフォールバックで code mode を無効化する
 - 0.145.0 以前に必要だった `core` / `tools` の Android 用スタブと依存の `cfg` 分岐は削除し、現行 upstream 実装へ戻した
 - **ただし `effective_tool_mode` の Android 強制 Direct ガードは復元が必要だった**（§3.9 参照）
@@ -53,7 +53,7 @@
 
 ### 1.6 Android release build の再帰上限
 - upstream 0.149.0 の Android release build で、CLI 起動部の大きな async 型により rustc の
-  `queries overflow the depth limit!` が発生したため、0.150.1 でも再帰上限の設定を維持する
+  `queries overflow the depth limit!` が発生したため、0.152.1 でも再帰上限の設定を維持する
 - 以下の crate root に `#![recursion_limit = "256"]` を付与する
   - `exec/src/lib.rs`
   - `exec/src/main.rs`
@@ -83,7 +83,7 @@
 以下は、新しい上流から Rust 実装へ変更を取り込む際に、クロスプラットフォーム対応を保つための手順です。
 
 ### 3.1 `reqwest` への TLS 機能付与を再確認
-- upstream 0.150.1 の対象クレートは `http-client`
+- upstream 0.152.1 の対象クレートは `http-client`
 - `http-client/Cargo.toml` の `reqwest` features に `native-tls-vendored` が含まれることを確認
 - 上流更新で依存配置が変わった場合は、`cargo tree --target aarch64-linux-android -i openssl-src -e features` で `openssl-sys` が vendored OpenSSL を使うことを確認
 - 上流から削除された `core` / `ollama` / `login` の直接 `reqwest` 依存は復元しない
@@ -137,7 +137,7 @@
 
 ### 3.8 Androidクロスビルドで `rusty_v8` 404 が出る場合
 - まず `cargo tree --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui` を確認する
-- upstream 0.150.1 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
+- upstream 0.152.1 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
 - 到達する場合は `code-mode-runtime` / `code-mode-host` が Android パッケージへ混入した依存経路を特定し、その依存をホスト専用へ戻す
 - 0.145.0 以前の Android 用スタブを無条件に再適用せず、現行 upstream の外部ホスト分離を優先する
 
@@ -272,7 +272,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ### 6.4 Androidクロスビルド時のリンク時間対策（LTO）
 - `codex-rs/Cargo.toml` の `[profile.release]` で `lto = "thin"` を維持する
 - 背景: `lto = "fat"` だと Android 向けクロスビルドでリンク工程が長時間化し、CI で `exit code 143`（プロセス終了）を誘発する場合がある
-- upstream 0.150.1 の `lto = "thin"` / `codegen-units = 4` でも Android 向け release build が長時間化する場合があるため、
+- upstream 0.152.1 の `lto = "thin"` / `codegen-units = 4` でも Android 向け release build が長時間化する場合があるため、
   GitHub Actions `Build Android` では `CARGO_PROFILE_RELEASE_LTO=false` と
   `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` で上書きする
 - 再適用時チェック:
@@ -287,6 +287,30 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-09-02 更新内容（rust-v0.152.1）
+- 上流 `rust-v0.152.1` を取り込み、`codex-rs` を同期
+- upstream 0.151.0～0.152.0 の optional MCP 起動猶予、Vim 検索、操作可能なレート制限バナー、
+  認証更新状況表示、パッケージ形式の MCP サーバー名、MCP ツール出力制限などを取り込み、
+  0.152.1 の Guardian における Node REPL ポリシー反映修正まで適用
+- 再適用・確認した差分:
+  - `http-client` の vendored OpenSSL、`login` / `rmcp-client` の環境別ブラウザ起動
+  - `rmcp-client` の Termux/Android 環境変数保持
+  - `arg0` / `installation_id` / `thread-store` の Android ファイルロック回避
+  - `tui` の Android 向け clipboard 警告抑止
+  - Android の Direct ツール強制と、意図した code mode フォールバック警告の抑止
+  - Android release build 用の再帰上限を維持
+- `effective_tool_mode` に追加された `model_info` 引数へ Android Direct ガードを追従
+- 上流アーカイブの `Cargo.lock` にある workspace package version `0.0.0` を 0.152.1 へ再生成し、
+  `quinn-proto` 0.11.15、`event-listener` 5.4.2、`memmap2` 0.9.11 への監査済み更新を維持
+- `cargo metadata --locked` と `just fmt` が成功
+- Android 用 3 パッケージの依存グラフに `v8` / `rusty_v8` がなく、
+  vendored OpenSSL が有効であることを確認
+- GitHub Actions の Android aarch64 release build、Cargo audit、CodeQL が成功
+- Android artifact を取得し、`codex` / `codex-exec` / `codex-tui` が
+  Android API 28 向け ARM aarch64 ELF で、各 `--version` が 0.152.1 を返すことを確認
+  - artifact: `codex-android-aarch64-release.tar.gz`
+  - SHA-256: `0fae41f65dcee49e9e74e4445b9c7d879ad2ee762ab761386d64a2210919cda7`
 
 ### 2026-08-29 更新内容（rust-v0.150.1）
 - 上流 `rust-v0.150.1` を取り込み、`codex-rs` を同期

@@ -1,7 +1,7 @@
 <h1 align="center">Codex CLI (ERI fork)</h1>
 
 ## このリポジトリについて
-- OpenAI Rust 版 Codex CLI v0.150.1 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-08-29 の upstream rust-v0.150.1）。
+- OpenAI Rust 版 Codex CLI v0.152.1 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-09-02 の upstream rust-v0.152.1）。
 - Termux / WSL / SSH / コンテナでもビルド・ログイン・MCP が破綻しないよう、必要最小限のパッチだけを維持します。
 - 主要ソースは `codex-rs/` 配下の Cargo ワークスペースで、Rust 1.95.0（`rust-toolchain.toml`）を前提としています。
 
@@ -14,7 +14,7 @@
   - SSH/コンテナ: 自動起動を抑止し、手動で開く案内を表示
   - Linux デスクトップ / macOS / Windows: 各 OS の標準コマンドとフォールバック（`BROWSER` / `xdg-open` / `gio open` / `sensible-browser` / Firefox/Chrome 系）
 - MCP サーバー起動時に Termux/Android の環境変数を保持（`rmcp-client` の `DEFAULT_ENV_VARS` を拡張）。
-- upstream 0.147.0 で code mode が外部ホストへ分離された構成に追従し、v0.150.1 でも維持。Android 用 CLI / exec / TUI の依存グラフには V8 を含めず、Android では code mode 系のツールモードを Direct tools へ切り替えます。
+- upstream 0.147.0 で code mode が外部ホストへ分離された構成に追従し、v0.152.1 でも維持。Android 用 CLI / exec / TUI の依存グラフには V8 を含めず、Android では code mode 系のツールモードを Direct tools へ切り替えます。
 - 詳細手順や再適用チェックリストは `docs/01-cross-platform-update-guide.md` を参照。上流確認手順は `docs/00-update-chk.md` にあります。
 
 ## リポジトリ構成
@@ -58,7 +58,7 @@ codex apply                           # 直近の diff を git apply 相当で�
 - `--output-schema schema.json`（非対話 `codex exec` で最終レスポンスの JSON 形を指定）
 
 ## 設定
-- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.150.1 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
+- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.152.1 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
 - ログは `~/.codex/log/` に保存されます。
 
 ## 環境別のログイン挙動
