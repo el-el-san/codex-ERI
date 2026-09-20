@@ -357,6 +357,7 @@ fn opened_or_error(outcome: CommandOutcome) -> Result<OpenUrlStatus, OpenUrlErro
         CommandOutcome::NotFound => Err(OpenUrlError::new("browser launcher not found")),
     }
 }
+
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",

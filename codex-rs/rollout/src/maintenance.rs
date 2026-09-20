@@ -33,9 +33,17 @@ pub fn try_acquire_rollout_maintenance_lock(
         .truncate(false)
         .open(directory.join(ROLLOUT_MAINTENANCE_LOCK))?;
 
-    match file.try_lock() {
-        Ok(()) => Ok(Some(RolloutMaintenanceGuard { _file: file })),
-        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    #[cfg(not(target_os = "android"))]
+    {
+        match file.try_lock() {
+            Ok(()) => Ok(Some(RolloutMaintenanceGuard { _file: file })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        Ok(Some(RolloutMaintenanceGuard { _file: file }))
     }
 }

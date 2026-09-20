@@ -11,7 +11,7 @@
 - 変更ファイル:
   - `http-client/Cargo.toml`
   - （上流で HTTP クライアントの配置が変わった場合は、Android 向け依存グラフで有効になる `reqwest` に同様に付与）
-- upstream 0.153.3 では HTTP 通信が `http-client` に集約され、従来の `core` / `ollama` / `login` は `reqwest` を直接依存しない
+- upstream 0.155.1 では HTTP 通信が `http-client` に集約され、従来の `core` / `ollama` / `login` は `reqwest` を直接依存しない
 
 ### 1.2 ブラウザ起動（Termux / WSL / SSH / Container）
 - `login/src/server.rs` に `open_url` 相当のローカル実装を追加（Termux/WSL/SSH/Container/各OS を考慮）
@@ -42,7 +42,7 @@
   - `tui/src/clipboard_paste.rs`
 
 ### 1.5 Androidでの code mode / V8 分離
-- upstream 0.147.0 で V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離され、0.153.3 でもこの構成を維持している
+- upstream 0.147.0 で V8 ランタイムが `code-mode-runtime`、プロセス境界が `code-mode-host` へ分離され、0.155.1 でもこの構成を維持している
 - Android 用の `codex-cli` / `codex-exec` / `codex-tui` はこれらを依存グラフに含まず、外部ホストが利用できない場合は upstream のフォールバックで code mode を無効化する
 - 0.145.0 以前に必要だった `core` / `tools` の Android 用スタブと依存の `cfg` 分岐は削除し、現行 upstream 実装へ戻した
 - **ただし `effective_tool_mode` の Android 強制 Direct ガードは復元が必要だった**（§3.9 参照）
@@ -53,7 +53,7 @@
 
 ### 1.6 Android release build の再帰上限
 - upstream 0.149.0 の Android release build で、CLI 起動部の大きな async 型により rustc の
-  `queries overflow the depth limit!` が発生したため、0.153.3 でも再帰上限の設定を維持する
+  `queries overflow the depth limit!` が発生したため、0.155.1 でも再帰上限の設定を維持する
 - 以下の crate root に `#![recursion_limit = "256"]` を付与する
   - `exec/src/lib.rs`
   - `exec/src/main.rs`
@@ -83,7 +83,7 @@
 以下は、新しい上流から Rust 実装へ変更を取り込む際に、クロスプラットフォーム対応を保つための手順です。
 
 ### 3.1 `reqwest` への TLS 機能付与を再確認
-- upstream 0.153.3 の対象クレートは `http-client`
+- upstream 0.155.1 の対象クレートは `http-client`
 - `http-client/Cargo.toml` の `reqwest` features に `native-tls-vendored` が含まれることを確認
 - 上流更新で依存配置が変わった場合は、`cargo tree --target aarch64-linux-android -i openssl-src -e features` で `openssl-sys` が vendored OpenSSL を使うことを確認
 - 上流から削除された `core` / `ollama` / `login` の直接 `reqwest` 依存は復元しない
@@ -125,10 +125,14 @@
   - `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
   - これにより `thread/start failed during TUI bootstrap` エラーが解消される
 
-- `thread-store/src/local/writer_lock.rs`（0.147.0 で新設）の `file.lock()` / `file.try_lock()` も同様にAndroidで非対応
+- `rollout/src/writer_lock.rs`（旧`thread-store/src/local/writer_lock.rs`、0.147.0 で新設）の `file.lock()` / `file.try_lock()` も同様にAndroidで非対応
   - `lock_coordination` 内の `file.lock()` と `acquire` 内の `file.try_lock()` を `#[cfg(not(target_os = "android"))]` で除外
+  - `try_acquire_for_publication` も Android ではロック確認なしで通過させる
   - Android では `remove_stale_thread_locks` は stale 判定ができないため no-op とする
   - 未対策だと `thread/start failed during TUI bootstrap: ... .coordination.lock: lock() not supported` で起動不可になる
+
+- `rollout/src/maintenance.rs` の保守ロックも Android では `try_lock()` が非対応
+  - Android ではファイルを作成・保持するだけのガードとして扱い、ロック取得を省略する
 
 ### 3.7 Androidビルドでの警告抑止（clipboard_paste）
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
@@ -137,7 +141,7 @@
 
 ### 3.8 Androidクロスビルドで `rusty_v8` 404 が出る場合
 - まず `cargo tree --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui` を確認する
-- upstream 0.153.3 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
+- upstream 0.155.1 の正常な構成では Android 用 3 パッケージから `v8` / `rusty_v8` へ到達しない
 - 到達する場合は `code-mode-runtime` / `code-mode-host` が Android パッケージへ混入した依存経路を特定し、その依存をホスト専用へ戻す
 - 0.145.0 以前の Android 用スタブを無条件に再適用せず、現行 upstream の外部ホスト分離を優先する
 
@@ -272,7 +276,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ### 6.4 Androidクロスビルド時のリンク時間対策（LTO）
 - `codex-rs/Cargo.toml` の `[profile.release]` で `lto = "thin"` を維持する
 - 背景: `lto = "fat"` だと Android 向けクロスビルドでリンク工程が長時間化し、CI で `exit code 143`（プロセス終了）を誘発する場合がある
-- upstream 0.153.3 の `lto = "thin"` / `codegen-units = 4` でも Android 向け release build が長時間化する場合があるため、
+- upstream 0.155.1 の `lto = "thin"` / `codegen-units = 4` でも Android 向け release build が長時間化する場合があるため、
   GitHub Actions `Build Android` では `CARGO_PROFILE_RELEASE_LTO=false` と
   `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16` で上書きする
 - 再適用時チェック:
@@ -287,6 +291,18 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-09-20 更新内容（rust-v0.155.1）
+- 上流 `rust-v0.155.1` を取り込み、`codex-rs` を同期
+- ログイン、MCP OAuth、Termux/Android環境変数保持、TLS vendoring、
+  clipboard警告抑止、AndroidのDirectツール強制を再適用
+- `arg0` / `installation_id` / `rollout` のAndroidファイルロック非対応を回避し、
+  `exec` / `cli` / `tui` のAndroid release向け再帰上限を維持
+- `Cargo.lock` のworkspace package versionを0.155.1へ更新
+- `cargo metadata --locked`、`cargo fmt --all -- --check` が成功
+- Android 用 `codex-cli` / `codex-exec` / `codex-tui` の依存グラフに
+  `v8` / `rusty_v8` がないことを確認
+- GitHub ActionsのAndroid aarch64 release build完走とartifact取得は、push後に確認する
 
 ### 2026-09-05 更新内容（rust-v0.153.3）
 - 上流 `rust-v0.153.3` を取り込み、`codex-rs` を同期

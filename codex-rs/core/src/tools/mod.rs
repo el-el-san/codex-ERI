@@ -31,7 +31,7 @@ use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_output_truncation::truncate_text;
-pub(crate) use executed_tool_calls::ExecutedToolCallRecorder;
+pub(crate) use executed_tool_calls::ExecutedToolCalls;
 pub use router::ToolRouter;
 
 /// Legacy boundaries such as hook payloads, telemetry tags, and Responses tool
@@ -78,10 +78,6 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &Model
 }
 
 pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
-    // Android (Termux) では code-mode ホスト（V8）を提供できないため、
-    // code mode 系のツールモードは常に Direct へフォールバックする。
-    // upstream は CodeModeOnly を意図的に fail-closed にするが、
-    // Android ではそれだとツールが一切使えなくなるため強制する。
     #[cfg(target_os = "android")]
     {
         let _ = (turn_context, model_info);
