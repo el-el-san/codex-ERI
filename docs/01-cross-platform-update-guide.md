@@ -299,10 +299,14 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `arg0` / `installation_id` / `rollout` のAndroidファイルロック非対応を回避し、
   `exec` / `cli` / `tui` のAndroid release向け再帰上限を維持
 - `Cargo.lock` のworkspace package versionを0.155.1へ更新
+- audit対応として `quinn-proto` 0.11.15、`rustls` 0.23.45 と関連依存を更新
 - `cargo metadata --locked`、`cargo fmt --all -- --check` が成功
 - Android 用 `codex-cli` / `codex-exec` / `codex-tui` の依存グラフに
   `v8` / `rusty_v8` がないことを確認
-- GitHub ActionsのAndroid aarch64 release build完走とartifact取得は、push後に確認する
+- GitHub Actions run `35505407504` の Android aarch64 release build と
+  artifact取得が成功（SHA-256:
+  `981bbc4d12dfb0aa3075ec39b8e93a13de047bd97d72d6dce739f2e1b809ef87`）
+- Cargo audit run `35505407490` と CodeQL run `35505407562` が成功
 
 ### 2026-09-05 更新内容（rust-v0.153.3）
 - 上流 `rust-v0.153.3` を取り込み、`codex-rs` を同期
