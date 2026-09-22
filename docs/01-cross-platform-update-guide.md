@@ -59,6 +59,7 @@
   - `exec/src/main.rs`
   - `cli/src/main.rs`
   - `tui/src/main.rs`
+- upstream 0.156.0 では `chatgpt/src/lib.rs` でも同じエラーが出るため、ここにも付与する
 - `cargo metadata` では検出できないため、GitHub Actions の Android release build 完走まで確認する
 
 ## 2. 変更の意図と効果
@@ -169,7 +170,8 @@
     Android でも fail-closed になった場合の重要な警告は維持される
 
 ### 3.10 Android release build の再帰上限を確認する
-- `exec/src/lib.rs`、`exec/src/main.rs`、`cli/src/main.rs`、`tui/src/main.rs` の crate root に
+- `exec/src/lib.rs`、`exec/src/main.rs`、`cli/src/main.rs`、`tui/src/main.rs`、
+  `chatgpt/src/lib.rs` の crate root に
   `#![recursion_limit = "256"]` があることを確認する
 - `queries overflow the depth limit!` が別の binary crate で発生した場合は、エラーが示す crate root に
   同じ属性を追加して再 push する
