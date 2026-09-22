@@ -175,13 +175,13 @@ impl ShutdownHandle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum OpenUrlStatus {
+pub(crate) enum OpenUrlStatus {
     Opened,
     Suppressed { reason: String },
 }
 
 #[derive(Debug)]
-struct OpenUrlError {
+pub(crate) struct OpenUrlError {
     message: String,
 }
 
@@ -201,7 +201,7 @@ impl std::fmt::Display for OpenUrlError {
 
 impl std::error::Error for OpenUrlError {}
 
-fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
+pub(crate) fn open_url(url: &str) -> Result<OpenUrlStatus, OpenUrlError> {
     let url = url.trim();
     if url.is_empty() {
         return Ok(OpenUrlStatus::Suppressed {

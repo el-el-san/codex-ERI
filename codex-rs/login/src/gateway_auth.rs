@@ -18,6 +18,8 @@ use crate::oauth::TokenEndpoint;
 use crate::oauth::build_authorization_url;
 use crate::oauth::generate_pkce;
 use crate::oauth::generate_state;
+use crate::server::OpenUrlStatus;
+use crate::server::open_url;
 use chrono::Utc;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClient;
@@ -307,8 +309,14 @@ impl GatewayAuthManager {
     async fn authorize(&self, cached: &mut GatewayAuthCache) -> io::Result<String> {
         self.authorize_with_browser(cached, |authorization_url| {
             eprintln!("Authorize the model provider by opening this URL:\n{authorization_url}\n");
-            if webbrowser::open(authorization_url.as_str()).is_err() {
-                eprintln!("Browser launch failed; open the URL above manually.");
+            match open_url(authorization_url.as_str()) {
+                Ok(OpenUrlStatus::Opened) => {}
+                Ok(OpenUrlStatus::Suppressed { reason }) => {
+                    eprintln!("Browser launch suppressed: {reason}");
+                }
+                Err(err) => {
+                    eprintln!("Browser launch failed: {err}; open the URL above manually.");
+                }
             }
         })
         .await
