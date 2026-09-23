@@ -288,11 +288,26 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - GitHub Actions `Build Android` で `Build` ステップが完走するか
 
 ### 6.5 Android release build で `queries overflow the depth limit!` が出る場合
-- 症状: `codex-exec` または `codex` のコンパイル中に rustc が再帰上限超過で停止する
-- 対処: §3.10 の 4 crate root に `#![recursion_limit = "256"]` を適用する
+- 症状: `codex-exec`、`codex`、`codex-chatgpt` などのコンパイル中に rustc が再帰上限超過で停止する
+- 対処: §3.10 の 5 crate root に `#![recursion_limit = "256"]` を適用する
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-09-23 更新内容（rust-v0.156.0）
+- 上流 `rust-v0.156.0` を取り込み、`codex-rs` を同期
+- Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
+  MCP 環境変数保持、ファイルロック回避、Direct ツール強制を再適用
+- 新設された model provider OAuth のブラウザ起動にも既存の環境別処理を適用
+- Android release build の再帰上限を `chatgpt/src/lib.rs` に追加
+- `Cargo.lock` の workspace package version を 0.156.0 に更新
+- `cargo metadata --no-deps --locked` と `cargo fmt --all -- --check` が成功
+- GitHub Actions run `35797952158` で Android aarch64 release build が成功
+- Android artifact を取得し、`codex` / `codex-exec` / `codex-tui` が
+  Android API 28 向け ARM aarch64 ELF で、各 `--version` が 0.156.0 を返すことを確認
+  - artifact: `codex-android-aarch64-release.tar.gz`
+  - SHA-256: `42ffb4b03fb98b6dab4ac0e40d949479a5e83d4ad5c788cc3e37d5921578e410`
+- Cargo audit run `35795091770` と CodeQL run `35797952200` が成功
 
 ### 2026-09-20 更新内容（rust-v0.155.1）
 - 上流 `rust-v0.155.1` を取り込み、`codex-rs` を同期
