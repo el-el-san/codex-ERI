@@ -4,6 +4,7 @@
 #[cfg(test)]
 #[path = "executed_tool_calls_direct_tests.rs"]
 mod direct_tests;
+mod mcp_attribution;
 mod request_metadata;
 
 use std::collections::HashMap;
@@ -19,9 +20,12 @@ use codex_code_mode::CellId;
 use codex_features::Feature;
 use codex_features::Features;
 use codex_history::InitialHistory;
+use codex_protocol::mcp::McpAttribution;
+use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::ExecutedToolCallArguments;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::models::bound_executed_tool_calls_for_prompt;
 use codex_protocol::models::bound_executed_tool_calls_for_prompt_prioritizing_recent;
 use codex_protocol::models::executed_tool_call_metadata_bytes;
@@ -33,6 +37,7 @@ use crate::session::step_context::StepContext;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::metadata_metrics;
 use crate::tools::router::ToolCall;
 use crate::utils::json::serialized_json_bytes;
 
@@ -58,6 +63,16 @@ pub(crate) struct ExecutedToolCalls {
     state: Arc<Mutex<Option<ExecutedToolCallRecorderState>>>,
     retained_direct_metadata_bytes: Arc<AtomicUsize>,
     pending_direct_calls: Arc<AtomicUsize>,
+    mcp_attribution: mcp_attribution::McpAttributionRecorder,
+}
+
+// Avoid exposing recorded call arguments or result metadata through client Debug output.
+impl std::fmt::Debug for ExecutedToolCalls {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutedToolCalls")
+            .finish_non_exhaustive()
+    }
 }
 
 // The tool future owns this reservation, so completion or cancellation releases it.
@@ -163,15 +178,20 @@ impl ExecutedToolCallRecorderState {
             self.output_cells
                 .retain(|_, cell_id| self.cells.contains_key(cell_id));
         }
-        while (self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
-            && !self.cells.contains_key(cell_id))
-            || self.pending_nested_calls >= MAX_PENDING_EXECUTED_TOOL_CALLS
-        {
+        loop {
+            let needs_cell_slot = self.cells.len() >= MAX_PENDING_EXECUTED_TOOL_CALLS
+                && !self.cells.contains_key(cell_id);
+            if !needs_cell_slot && self.pending_nested_calls < MAX_PENDING_EXECUTED_TOOL_CALLS {
+                break;
+            }
+
             let output_cells = self.output_cells.values().collect::<HashSet<_>>();
             let finished_cell = self.cells.iter().find_map(|(id, cell)| {
                 // Preserve late records until pressure, and never discard the cell
                 // whose output is about to make those records attachable again.
+                // Empty cells can free cell slots, but not pending-call slots.
                 (id != cell_id
+                    && (needs_cell_slot || !cell.pending_calls.is_empty())
                     && matches!(
                         cell.completion,
                         CellCompletion::Complete | CellCompletion::Incomplete
@@ -220,13 +240,65 @@ impl ExecutedToolCalls {
             }))),
             retained_direct_metadata_bytes: Arc::new(AtomicUsize::new(0)),
             pending_direct_calls: Arc::new(AtomicUsize::new(0)),
+            mcp_attribution: mcp_attribution::McpAttributionRecorder::new(history),
         }
+    }
+
+    pub(crate) fn record_mcp_source(&self, source: McpAttributionSource) {
+        self.mcp_attribution.record(source);
+    }
+
+    pub(crate) fn mcp_attribution_snapshot(&self) -> McpAttribution {
+        self.mcp_attribution.snapshot()
+    }
+
+    pub(crate) fn mcp_attribution_checkpoint(&self, force: bool) -> Option<(McpAttribution, u64)> {
+        self.mcp_attribution.checkpoint(force)
+    }
+
+    pub(crate) fn mark_mcp_attribution_persisted(&self, revision: u64) {
+        self.mcp_attribution.mark_persisted(revision);
     }
 
     fn lock_state(&self) -> MutexGuard<'_, Option<ExecutedToolCallRecorderState>> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A later wait cannot claim a complete inventory if an earlier wire copy
+    /// lost recorded calls or arguments from the same Code Mode cell.
+    pub(crate) fn invalidate_wire_inventory_loss(
+        &self,
+        original: &[ResponseItem],
+        bounded: &[ResponseItem],
+    ) {
+        let mut state = self.lock_state();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        // Request bounding clones the same items in the same order; it only edits metadata.
+        for (original, bounded) in original.iter().zip(bounded) {
+            let Some(metadata) = original.executed_tool_call_metadata() else {
+                continue;
+            };
+            let Some(origin) = metadata.cell_id.as_deref() else {
+                continue;
+            };
+            let Some(calls) = metadata
+                .executed_tool_calls
+                .as_deref()
+                .filter(|calls| !calls.is_empty())
+            else {
+                continue;
+            };
+            if bounded
+                .executed_tool_call_metadata()
+                .is_none_or(|bounded| !bounded.has_same_tool_calls(calls))
+            {
+                state.invalidate_origin(origin);
+            }
+        }
     }
 
     /// Called under the session config lock; this never changes execution features.
@@ -318,17 +390,38 @@ impl ExecutedToolCalls {
         let retained = self.retained_direct_metadata_bytes.load(Ordering::Relaxed);
         let available = MAX_RETAINED_DIRECT_METADATA_BYTES.saturating_sub(retained);
         let mut bytes = executed_tool_call_metadata_bytes(item);
+        let original_bytes = bytes;
+        if bytes > available {
+            item.retain_tool_resource_access_or_omit_metadata(bytes - available);
+            bytes = executed_tool_call_metadata_bytes(item);
+        }
+        if bytes > available {
+            item.omit_tool_result_metadata(bytes - available);
+            bytes = executed_tool_call_metadata_bytes(item);
+        }
         if bytes > available {
             item.clear_tool_result_metadata();
             bytes = executed_tool_call_metadata_bytes(item);
         }
         if bytes > available {
             item.clear_executed_tool_calls();
+            metadata_metrics::record_shedding(
+                "direct_retained",
+                original_bytes,
+                executed_tool_call_metadata_bytes(item),
+                codex_otel::global().as_ref(),
+            );
             return;
         }
         // All Direct attachments share the recorder lock, including cloned handles.
         self.retained_direct_metadata_bytes
             .store(retained + bytes, Ordering::Relaxed);
+        metadata_metrics::record_shedding(
+            "direct_retained",
+            original_bytes,
+            bytes,
+            codex_otel::global().as_ref(),
+        );
     }
 
     /// Remember IDs from response items that bypass local tool dispatch.
@@ -457,7 +550,7 @@ impl ExecutedToolCalls {
         let ToolCallSource::CodeMode { cell_id, .. } = source else {
             return false;
         };
-        let metadata = codex_protocol::models::ToolResultMetadata::new(metadata);
+        let metadata = ToolResultMetadata::new(metadata);
         let has_metadata = metadata.is_some();
         let mut state = self.lock_state();
         let Some(state) = state.as_mut() else {

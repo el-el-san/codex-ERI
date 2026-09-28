@@ -248,6 +248,7 @@ fn compacted(replacement_history: Vec<ResponseItem>) -> RolloutItem {
         window_id: None,
         compaction_response_id: None,
         latest_token_usage_record: None,
+        resume_metadata: None,
     })
 }
 
@@ -1398,7 +1399,8 @@ async fn assert_migrated_evidence_order(steer_order: Option<u64>) {
             {"order": if steer_order.is_some() { 2 } else { 1 }, "turn_id": "shared-turn", "call_id": "before", "questions": [{"question": "Publish?", "answer": "Only privately."}]},
             {"order": 3, "turn_id": "shared-turn", "call_id": "after", "questions": [{"question": "Publish the README?", "answer": "Do not publish it."}]}
         ],
-        "incomplete": false, "user_messages_incomplete": false, "next_order": 4
+        "incomplete": false, "user_messages_incomplete": false, "next_order": 4,
+        "assistant_messages": [], "assistant_messages_incomplete": true
     });
     checkpoint.retained_context =
         Some(serde_json::from_value(retained.clone()).expect("retained fixture"));
@@ -1455,6 +1457,18 @@ async fn assert_migrated_evidence_order(steer_order: Option<u64>) {
             rollout_response_item(initial.clone()),
             user_message(INITIAL),
             RolloutItem::RetainedContext(answers[0].clone()),
+            RolloutItem::ResponseItem(codex_rollout::ResponseItemEnvelope {
+                item: serde_json::from_value(json!({
+                    "type": "message", "id": "late-assistant", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Late assistant question?"}],
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "shared-turn"}
+                }))
+                .expect("assistant message"),
+                metadata: Some(
+                    serde_json::from_value(json!({"user_input_order": 2}))
+                        .expect("assistant order"),
+                ),
+            }),
             RolloutItem::Compacted(before_steer),
             RolloutItem::ResponseItem(codex_rollout::ResponseItemEnvelope {
                 item: steer,
@@ -1486,6 +1500,13 @@ async fn assert_migrated_evidence_order(steer_order: Option<u64>) {
         .await
         .expect("migrate same-turn rollback");
     let migrated = read_rollout(&path);
+    assert_eq!(
+        migrated.iter().any(|line| matches!(&line.item,
+            RolloutItem::ResponseItem(envelope)
+                if envelope.item.id().is_some_and(|id| id.as_str() == "late-assistant")
+        )),
+        steer_order.is_none()
+    );
     let checkpoints = migrated
         .iter()
         .filter_map(|line| match &line.item {
@@ -1783,6 +1804,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                resume_metadata: None,
             }),
             RolloutItem::Compacted(CompactedItem {
                 message: "latest checkpoint".to_string(),
@@ -1807,6 +1829,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
                 window_id: None,
                 compaction_response_id: None,
                 latest_token_usage_record: None,
+                resume_metadata: None,
             }),
             started("child-turn"),
             RolloutItem::TurnContext(TurnContextItem {
@@ -2206,7 +2229,7 @@ async fn migration_preserves_legacy_displayed_thread_names() {
     write_rollout(
         home.path(),
         title_thread_id,
-        SessionSource::Cli,
+        SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
         vec![user_message("title question")],
     );
     let index_thread_id = ThreadId::new();
@@ -2216,6 +2239,16 @@ async fn migration_preserves_legacy_displayed_thread_names() {
         SessionSource::Cli,
         vec![user_message("index question")],
     );
+    let guardian_thread_id = ThreadId::new();
+    let unnamed_guardian_thread_id = ThreadId::new();
+    for thread_id in [guardian_thread_id, unnamed_guardian_thread_id] {
+        write_rollout(
+            home.path(),
+            thread_id,
+            SessionSource::SubAgent(SubAgentSource::Other("guardian".to_string())),
+            vec![user_message("large synthetic Guardian prompt")],
+        );
+    }
     let store = indexed_store(home.path()).await;
     store
         .update_thread_metadata(UpdateThreadMetadataParams {
@@ -2235,42 +2268,77 @@ async fn migration_preserves_legacy_displayed_thread_names() {
         .await
         .expect("write legacy index name");
 
-    store
-        .migrate_rollouts(apply_options())
+    // Older metadata cleanup also seeded the default name on legacy threads.
+    let state_db = store.state_db().await.expect("state runtime");
+    let mut guardian_metadata = state_db
+        .get_thread(guardian_thread_id)
         .await
-        .expect("migrate named rollouts");
-
-    let page = store
-        .list_threads(ListThreadsParams {
-            page_size: 10,
-            cursor: None,
-            sort_key: ThreadSortKey::CreatedAt,
-            sort_direction: SortDirection::Desc,
-            allowed_sources: Vec::new(),
-            model_providers: None,
-            cwd_filters: None,
-            section: None,
-            project_id: None,
-            archived: false,
-            search_term: None,
-            relation_filter: None,
-            use_state_db_only: true,
-        })
+        .expect("read Guardian metadata")
+        .expect("Guardian metadata");
+    guardian_metadata.name = Some(codex_state::GUARDIAN_THREAD_TITLE.to_string());
+    state_db
+        .upsert_thread(&guardian_metadata)
         .await
-        .expect("list migrated threads");
-    let title_thread = page
-        .items
-        .iter()
-        .find(|thread| thread.thread_id == title_thread_id)
-        .expect("renamed title thread");
-    let index_thread = page
-        .items
-        .iter()
-        .find(|thread| thread.thread_id == index_thread_id)
-        .expect("indexed title thread");
+        .expect("seed legacy Guardian name");
+    codex_rollout::append_thread_name(home.path(), guardian_thread_id, "indexed Guardian name")
+        .await
+        .expect("write legacy Guardian name");
 
-    assert_eq!(title_thread.name.as_deref(), Some("renamed title"));
-    assert_eq!(index_thread.name.as_deref(), Some("indexed title"));
+    for history_mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        if history_mode == ThreadHistoryMode::Paginated {
+            store
+                .migrate_rollouts(apply_options())
+                .await
+                .expect("migrate named rollouts");
+        }
+        let page = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                section: None,
+                project_id: None,
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect("list threads");
+        for (thread_id, name) in [
+            (title_thread_id, "renamed title"),
+            (index_thread_id, "indexed title"),
+            (guardian_thread_id, "indexed Guardian name"),
+            (unnamed_guardian_thread_id, "Guardian review"),
+        ] {
+            let listed = page
+                .items
+                .iter()
+                .find(|thread| thread.thread_id == thread_id)
+                .expect("listed thread");
+            let read = store
+                .read_thread(crate::ReadThreadParams {
+                    thread_id,
+                    include_archived: false,
+                    include_history: false,
+                })
+                .await
+                .expect("read thread");
+            assert_eq!(
+                (
+                    listed.name.as_deref(),
+                    read.name.as_deref(),
+                    listed.history_mode,
+                    read.history_mode
+                ),
+                (Some(name), Some(name), history_mode, history_mode),
+            );
+        }
+    }
 }
 
 #[tokio::test]

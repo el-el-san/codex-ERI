@@ -103,7 +103,6 @@ use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::FeedbackUploadParams;
-use codex_app_server_protocol::FeedbackUploadResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::ListMcpServerStatusParams;
@@ -169,7 +168,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::style::Stylize;
@@ -180,7 +178,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -223,6 +220,7 @@ mod empty_state_policy;
 mod event_dispatch;
 mod exit_summary;
 mod experimental_features;
+mod feedback_upload;
 mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
@@ -232,7 +230,9 @@ mod managed_worktree_creation;
 mod misalignment_policy;
 mod model_defaults;
 mod new_session;
+mod turn_tips;
 pub(crate) use new_session::has_launch_setting;
+mod clipboard;
 mod native_history;
 mod owned_transcript;
 mod pending_interactive_replay;
@@ -249,6 +249,7 @@ mod reconnect;
 mod replay_filter;
 mod resize_reflow;
 mod resume_config;
+mod right_click_paste;
 mod safety_buffering;
 mod server_version_notice;
 mod session_lifecycle;
@@ -269,6 +270,7 @@ mod tui_mode_picker;
 mod user_verification;
 mod user_verification_errors;
 mod user_verification_requests;
+mod voice_owner;
 #[cfg(test)]
 #[path = "app/warnings_tests.rs"]
 mod warnings_tests;
@@ -578,8 +580,8 @@ pub(crate) struct App {
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
-    composer_tips: composer_hints::ComposerTips,
     native_history: native_history::NativeHistory,
+    turn_tips: turn_tips::TurnTips,
     pub(crate) transcript_view: crate::transcript_view::TranscriptView,
     last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
     last_thread_usage_status_cell: Option<history_ui::ThreadUsageStatusHistory>,
@@ -619,6 +621,8 @@ pub(crate) struct App {
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
     reconnect: reconnect::ReconnectState,
+    pending_right_click_paste: Option<right_click_paste::PendingPaste>,
+    right_click_paste_environment: right_click_paste::PasteEnvironment,
     /// Set when the user confirms an update; propagated on exit.
     daemon_cli_executable: Option<AbsolutePathBuf>,
     pub(crate) pending_update_action: Option<UpdateAction>,
@@ -640,6 +644,8 @@ pub(crate) struct App {
     pending_realtime_transcript_replay:
         HashMap<ThreadId, VecDeque<crate::chatwidget::RealtimeTranscriptRecord>>,
     realtime_replay_order: VecDeque<ThreadId>,
+    background_voice: Option<Box<ChatWidget>>,
+    background_voice_error: Option<(ThreadId, String)>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
     /// Track title generation across thread switches and deduplicate automatic requests.
     pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
@@ -688,6 +694,9 @@ pub(crate) struct App {
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
     recap: recap::RecapState,
+    // App fixtures keep their home alive across widget replacement; drop it last.
+    #[cfg(test)]
+    _test_codex_home: Option<tempfile::TempDir>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -859,8 +868,13 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        self.invalidate_right_click_paste(&event);
+        self.finish_clipboard(tui);
+        let event = self.finish_right_click_paste(tui, event);
         if matches!(&event, TuiEvent::Key(_))
-            && self.handle_composer_copy_event(tui, &event, tui::Tui::copy_transcript_selection)
+            && self.handle_composer_copy_event(tui, &event, |tui, text| {
+                tui.copy_transcript_selection(text, crate::clipboard_copy::CopyFormat::PlainText)
+            })
         {
             return Ok(AppRunControl::Continue);
         }
@@ -940,7 +954,21 @@ impl App {
         };
 
         self.cancel_primed_browsing_for_event(&event);
-        if self.handle_owned_transcript_event(tui, app_server, &event)? {
+        let voice_toggle = |app: &Self, key: KeyEvent| {
+            key.kind == KeyEventKind::Press
+                && app
+                    .active_keymap_contexts()
+                    .contains_action(crate::keymap::KeymapActionId {
+                        context: crate::keymap::KeymapContext::Chat,
+                        action: "toggle_voice",
+                    })
+                && app.keymap.chat.toggle_voice.is_pressed(key)
+        };
+        // Find consumes otherwise-unhandled keys; let enabled voice controls reach App.
+        if !matches!(&event, TuiEvent::Key(key)
+            if voice_toggle(self, *key) && !self.transcript_view.owns_interaction_key(*key))
+            && self.handle_owned_transcript_event(tui, app_server, &event)?
+        {
             return Ok(AppRunControl::Continue);
         }
         // Leave browsing before unhandled editing input reaches shortcuts or offline input.
@@ -955,12 +983,36 @@ impl App {
         {
             self.cancel_transcript_browsing(tui);
             // The first lookup used browsing contexts; retry after restoring composer contexts.
-            if let TuiEvent::Key(key) = event {
+            // Completed chords already identify an action and must not be matched again.
+            if let TuiEvent::Key(key) = event
+                && !crate::keymap::is_dispatch_token_event(key)
+            {
                 let Some(key) = self.route_key_chord_event(tui, key) else {
                     return Ok(AppRunControl::Continue);
                 };
                 event = TuiEvent::Key(key);
             }
+        }
+        if let TuiEvent::Key(key_event) = &event
+            && voice_toggle(self, *key_event)
+        {
+            self.cancel_transcript_browsing(tui);
+            if !self.chat_widget.handle_startup_submission_key(*key_event) {
+                self.control_voice(crate::app_event::VoiceControl::Toggle);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+        if let TuiEvent::Key(key_event) = &event
+            && key_event.kind == KeyEventKind::Press
+            && self
+                .active_keymap_contexts()
+                .contains(crate::keymap::KeymapContext::Voice)
+            && self.keymap.chat.toggle_voice_mute.is_pressed(*key_event)
+        {
+            if !self.chat_widget.handle_startup_submission_key(*key_event) {
+                self.control_voice(crate::app_event::VoiceControl::Mute);
+            }
+            return Ok(AppRunControl::Continue);
         }
         if self.reconnect.offline
             && !self.chat_widget.keymap_contexts().is_warnings()
@@ -970,7 +1022,15 @@ impl App {
                 && self.chat_widget.no_modal_or_popup_active()
                 && self.keymap.app.open_warnings.is_pressed(*key))
         {
-            if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
+            if self.overlay.is_none()
+                && self.chat_widget.no_modal_or_popup_active()
+                && self.chat_widget.is_external_writer_view()
+                && (crate::key_hint::plain(KeyCode::Esc).is_press(*key)
+                    || (crate::key_hint::plain(KeyCode::Left).is_press(*key)
+                        && self.chat_widget.agents_navigation_key_available()))
+            {
+                self.open_agents_overview(app_server);
+            } else if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
                 self.chat_widget.handle_disconnected_view_key(*key);
                 if self
                     .chat_widget
@@ -1055,6 +1115,9 @@ impl App {
                     }
                     // Allow widgets to process any pending timers before rendering.
                     let had_active_modal = self.chat_widget.has_active_modal();
+                    if let Some(owner) = self.background_voice.as_mut() {
+                        owner.refresh_realtime_microphone_level();
+                    }
                     self.chat_widget.pre_draw_tick();
                     self.refresh_agents_overview_usage(app_server, tui.frame_requester());
                     let rendered_area = self.render_chat_widget_frame(tui, screen_size)?;
@@ -1100,7 +1163,8 @@ impl App {
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
-                TuiEvent::FocusLost | TuiEvent::Mouse(_) => {}
+                TuiEvent::Mouse(mouse) => self.start_right_click_paste(tui, mouse),
+                TuiEvent::FocusLost => {}
             }
         }
         Ok(AppRunControl::Continue)

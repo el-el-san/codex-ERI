@@ -61,6 +61,10 @@ async fn overview_thread_colors_match_footer_and_respect_color_suppression() {
             let text: String = row.iter().map(ratatui::buffer::Cell::symbol).collect();
             if let Some(x) = text.find("Named task") {
                 let x = text[..x].chars().count();
+                let dot = row.iter().find(|cell| cell.symbol() == "○").unwrap();
+                let mut expected = ratatui::buffer::Cell::default();
+                expected.set_symbol("○").set_style(Style::default().cyan());
+                assert_eq!(dot, &expected);
                 snapshot.push(format!(
                     "{} | title style: {:?}",
                     normalize_agent_center_snapshot(&text),
@@ -147,6 +151,7 @@ use pretty_assertions::assert_eq;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 static OVERVIEW_TIMESTAMP: std::sync::LazyLock<i64> =
     std::sync::LazyLock::new(|| chrono::Utc::now().timestamp() - 120);
@@ -2434,22 +2439,22 @@ async fn command_center_attach_conflict_opens_read_only_and_retries() -> Result<
         insta::assert_snapshot!("agents_overview_attach_conflict", render_bottom_popup(&app.chat_widget, /*width*/ 96));
     });
 
-    app.handle_key_event(&mut tui, &mut server, KeyCode::Esc.into())
-        .await;
+    for key in [KeyCode::Left, KeyCode::Esc] {
+        Box::pin(app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(key.into()))).await?;
+        assert_eq!(
+            app.chat_widget
+                .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
+            selection
+        );
 
-    assert_eq!(
-        app.chat_widget
-            .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID),
-        selection
-    );
-
-    // Opening the displayed task returns to the same frozen snapshot without retrying.
-    Box::pin(app.handle_event(
-        &mut tui,
-        &mut server,
-        AppEvent::SelectAgentsOverviewThread { thread_id },
-    ))
-    .await?;
+        // Opening the displayed task returns to the same frozen snapshot without retrying.
+        Box::pin(app.handle_event(
+            &mut tui,
+            &mut server,
+            AppEvent::SelectAgentsOverviewThread { thread_id },
+        ))
+        .await?;
+    }
     assert!(app.chat_widget.no_modal_or_popup_active());
     assert!(app.chat_widget.is_external_writer_view());
     app.chat_widget.handle_paste(" should be ignored".into());

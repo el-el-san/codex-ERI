@@ -16,10 +16,14 @@
 ### 1.2 ブラウザ起動（Termux / WSL / SSH / Container）
 - `login/src/server.rs` に `open_url` 相当のローカル実装を追加（Termux/WSL/SSH/Container/各OS を考慮）
 - MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も `webbrowser` を使わず、`rmcp-client/src/utils.rs` の同等ロジックでブラウザ起動を試みる
+- モデルプロバイダーの OAuth ログインも `login/src/server.rs` の環境別処理を使用する
+  - upstream 0.158.0 ではブラウザ起動箇所が `login/src/gateway_auth.rs` から
+    `login/src/gateway_auth_login.rs` の `open_browser` に移動している
   - 注: 現行上流では `login` と `core` の依存関係上、`login` から `codex-core` に直接依存できないため、`login` 側もローカル実装として保持する
 - 変更ファイル:
   - `login/Cargo.toml`（`webbrowser` 削除、`shlex` 追加）
   - `login/src/server.rs`（ブラウザ起動処理と環境検知をローカル実装へ差し替え）
+  - `login/src/gateway_auth_login.rs`（モデルプロバイダー OAuth でも同じブラウザ起動処理を使用）
   - `rmcp-client/src/utils.rs`（`open_url` と環境検知関数を追加）
   - `rmcp-client/src/perform_oauth_login.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
   - `rmcp-client/Cargo.toml`（`webbrowser` 削除）
@@ -86,6 +90,8 @@
 ### 3.1 `reqwest` への TLS 機能付与を再確認
 - upstream 0.155.1 の対象クレートは `http-client`
 - `http-client/Cargo.toml` の `reqwest` features に `native-tls-vendored` が含まれることを確認
+- 上流の HTTP TLS features は維持したまま `native-tls-vendored` を追加すること
+  （0.158.0 では `rustls-tls` が追加されている）
 - 上流更新で依存配置が変わった場合は、`cargo tree --target aarch64-linux-android -i openssl-src -e features` で `openssl-sys` が vendored OpenSSL を使うことを確認
 - 上流から削除された `core` / `ollama` / `login` の直接 `reqwest` 依存は復元しない
 
@@ -96,6 +102,8 @@
   - SSH/Container: 自動起動を回避し、URL を出力
   - macOS/Linux/Windows: それぞれ `open` / `xdg-open` / `cmd /c start`
 - `login/src/server.rs` のリダイレクト開始箇所（認可 URL を開く処理）で上記関数を使用すること
+- `login/src/gateway_auth_login.rs` の `open_browser` も同じ関数を使用し、
+  `OpenUrlStatus::Suppressed` と起動失敗時に手動で URL を開く案内を維持すること
 - MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も同様に適用すること
 
 ### 3.3 MCP環境変数保持の確認
@@ -274,6 +282,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 ### 6.3 テストファイルとGitignore
 - `.gitignore`の過度に広範なパターン（例：`test*`）に注意
 - テストファイルやfixtureファイルがGitに追跡されているか確認が必要
+- 個人用の `old/` 除外は `/old/` とし、`apply-patch` の fixture 内の `old/` を除外しない
 
 ### 6.4 Androidクロスビルド時のリンク時間対策（LTO）
 - `codex-rs/Cargo.toml` の `[profile.release]` で `lto = "thin"` を維持する

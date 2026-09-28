@@ -23,6 +23,20 @@ pub(super) struct ThreadUsageStatusHistory {
 
 impl App {
     pub(super) fn insert_history_cell(&mut self, tui: &mut tui::Tui, cell: Box<dyn HistoryCell>) {
+        // Global deprecations can be delivered again by hidden threads. Scope deduplication to
+        // retained history so clearing or rebuilding a transcript can show the notice again.
+        if let Some(notice) = cell
+            .as_any()
+            .downcast_ref::<history_cell::DeprecationNoticeCell>()
+            && self.transcript_cells.iter().any(|existing| {
+                existing
+                    .as_any()
+                    .downcast_ref::<history_cell::DeprecationNoticeCell>()
+                    == Some(notice)
+            })
+        {
+            return;
+        }
         if !crate::empty_state_animation::is_startup_cell(cell.as_ref()) {
             self.chat_widget
                 .empty_state_animation
@@ -301,7 +315,7 @@ impl App {
         &self,
         version: &'static str,
     ) -> history_cell::SessionHeaderHistoryCell {
-        history_cell::SessionHeaderHistoryCell::new(
+        let mut header = history_cell::SessionHeaderHistoryCell::new(
             self.chat_widget.model_display_name().to_string(),
             self.chat_widget.current_reasoning_effort(),
             self.chat_widget.should_show_fast_status(
@@ -311,7 +325,12 @@ impl App {
             self.config.cwd.to_path_buf(),
             version,
         )
-        .with_yolo_mode(history_cell::is_yolo_mode(&self.config))
+        .with_yolo_mode(history_cell::is_yolo_mode(&self.config));
+        history_cell::set_session_greeting(
+            &mut header,
+            &self.chat_widget.empty_state_animation.borrow().greeting,
+        );
+        header
     }
 
     pub(super) fn clear_ui_header_lines(&self, width: u16) -> Vec<Line<'static>> {
@@ -381,6 +400,7 @@ impl App {
     pub(super) fn reset_transcript_state_after_clear(&mut self) {
         self.overlay = None;
         self.transcript_cells.clear();
+        self.turn_tips.dismiss();
         self.native_history = Default::default();
         self.cancel_pending_key_chord();
         self.transcript_view = Default::default();

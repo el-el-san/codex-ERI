@@ -157,6 +157,7 @@ pub struct PluginsConfigInput {
     pub plugins_enabled: bool,
     pub remote_plugin_enabled: bool,
     pub chatgpt_base_url: String,
+    pub product_sku: Option<String>,
     http_client_factory: HttpClientFactory,
 }
 
@@ -168,6 +169,7 @@ impl PluginsConfigInput {
         remote_plugin_enabled: bool,
         chatgpt_base_url: String,
         http_client_factory: HttpClientFactory,
+        product_sku: Option<String>,
     ) -> Self {
         Self {
             config_layer_stack,
@@ -176,6 +178,7 @@ impl PluginsConfigInput {
             remote_plugin_enabled,
             chatgpt_base_url,
             http_client_factory,
+            product_sku,
         }
     }
 
@@ -184,6 +187,7 @@ impl PluginsConfigInput {
         RemotePluginServiceConfig::new(
             self.chatgpt_base_url.clone(),
             self.http_client_factory.clone(),
+            self.product_sku.clone(),
         )
     }
 }
@@ -560,20 +564,26 @@ struct LoadedPluginsCacheEntry {
 struct LoadedPluginsCache {
     generation: u64,
     // Most recently used first.
-    entries: VecDeque<LoadedPluginsCacheEntry>,
+    entries: VecDeque<Arc<LoadedPluginsCacheEntry>>,
 }
 
 impl LoadedPluginsCache {
     fn get(
-        &mut self,
+        cache: &Mutex<Self>,
         key: &PluginLoadCacheKey,
         store: &PluginStore,
-    ) -> Option<&LoadedPluginsCacheEntry> {
-        let index = self.entries.iter().position(|entry| &entry.key == key)?;
-        let entry = self.entries.remove(index)?;
+    ) -> Option<Arc<LoadedPluginsCacheEntry>> {
+        let (generation, entry) = {
+            let cache = cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = cache.entries.iter().find(|entry| &entry.key == key)?;
+            (cache.generation, Arc::clone(entry))
+        };
         // Another process can replace installed versions without invalidating this manager.
         // Keep the parsed skills paired with the installation whose paths they advertise.
-        if entry.plugins.iter().any(|plugin| {
+        // Validate outside the cache lock so filesystem work does not block other cache keys.
+        let stale = entry.plugins.iter().any(|plugin| {
             let Ok(plugin_id) = PluginId::parse(&plugin.config_name) else {
                 return false;
             };
@@ -581,11 +591,24 @@ impl LoadedPluginsCache {
                 .active_plugin_root(&plugin_id)
                 .unwrap_or_else(|| store.plugin_base_root(&plugin_id));
             installed_root != plugin.root
-        }) {
+        });
+        let mut cache = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.generation != generation {
             return None;
         }
-        self.entries.push_front(entry);
-        self.entries.front()
+        // A load can replace this key without changing the cache generation.
+        let index = cache
+            .entries
+            .iter()
+            .position(|current| Arc::ptr_eq(current, &entry))?;
+        let current = cache.entries.remove(index)?;
+        if stale {
+            return None;
+        }
+        cache.entries.push_front(current);
+        Some(entry)
     }
 }
 
@@ -753,10 +776,7 @@ impl PluginsManager {
             self.remote_global_catalog_active(config),
             RemoteInstalledPluginsAuthIdentity::from_auth(auth.as_ref()),
         );
-        self.loaded_plugins_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&key, &self.store)
+        LoadedPluginsCache::get(&self.loaded_plugins_cache, &key, &self.store)
             .map(|cached| cached.plugin_skill_snapshots.clone())
     }
 
@@ -971,10 +991,7 @@ impl PluginsManager {
     }
 
     fn cached_loaded_plugins(&self, key: &PluginLoadCacheKey) -> Option<Vec<LoadedPlugin>> {
-        self.loaded_plugins_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key, &self.store)
+        LoadedPluginsCache::get(&self.loaded_plugins_cache, key, &self.store)
             .map(|cached| cached.plugins.clone())
     }
 
@@ -1000,11 +1017,11 @@ impl PluginsManager {
             return;
         }
         cache.entries.retain(|entry| entry.key != key);
-        cache.entries.push_front(LoadedPluginsCacheEntry {
+        cache.entries.push_front(Arc::new(LoadedPluginsCacheEntry {
             key,
             plugins,
             plugin_skill_snapshots,
-        });
+        }));
         let evicted = cache.entries.len() > LOADED_PLUGINS_CACHE_CAPACITY;
         cache.entries.truncate(LOADED_PLUGINS_CACHE_CAPACITY);
         drop(cache);
