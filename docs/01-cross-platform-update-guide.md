@@ -303,6 +303,30 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 ## 7. 最近の更新履歴
 
+### 2026-09-29 更新内容（rust-v0.158.0）
+- 上流 `rust-v0.158.0` を取り込み、`codex-rs` を同期
+- Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
+  MCP 環境変数保持、ファイルロック回避、Direct ツール強制、再帰上限を維持
+- モデルプロバイダー OAuth のブラウザ起動を移動先の
+  `login/src/gateway_auth_login.rs` に再適用し、HTTP の新しい `rustls-tls` feature も維持
+- `Cargo.lock` の workspace package version を 0.158.0 に更新
+- Cargo audit で検出された `RUSTSEC-2026-0306` に対応し、
+  `faster-hex` を 0.10.1、必要な `autocfg` を 1.5.1 に更新
+- `.gitignore` の `old/` をルート限定にし、除外されていた `apply-patch` の fixture を追跡
+- `cargo metadata --no-deps --locked` と `cargo fmt --all -- --check` が成功
+- Android 用 3 パッケージの依存グラフに V8 がなく、vendored OpenSSL が有効であることを確認
+- Cargo audit run `36432060729` と CodeQL run `36432060521` が成功
+- GitHub Actions run `36432060428` で Android aarch64 release build が成功
+- Android artifact を取得し、`codex` / `codex-exec` / `codex-tui` が
+  Android API 28 向け ARM aarch64 ELF で、各 `--version` が 0.158.0 を返すことを確認
+  - artifact: `artifacts/rust-v0.158.0/codex-android-aarch64-release.tar.gz`
+  - SHA-256: `8b6fb6079f68174988e6d8e25db4ef54ff1959509756b101ae7416d55181a97b`
+- Termux 上で新しい `codex exec --ephemeral` の実際の応答を確認後、
+  `~/bin` の 3 バイナリを置換し、設置先からも応答とバージョンを確認
+  - 置換前の応答テスト: `CODEX_0_158_0_OK`（約11秒、正常終了）
+  - 置換後の応答テスト: `CODEX_INSTALLED_0_158_0_OK`（約8秒、正常終了）
+  - 旧 0.156.0 バイナリ: `~/bin/.codex-backup-0.156.0-20260929-003233/`
+
 ### 2026-09-23 更新内容（rust-v0.156.0）
 - 上流 `rust-v0.156.0` を取り込み、`codex-rs` を同期
 - Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
