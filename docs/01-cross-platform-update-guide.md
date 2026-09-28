@@ -323,6 +323,26 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   単体バイナリから通常の対話画面を起動できるように修正
 - `--version` / `codex exec` では共有 daemon の起動経路を通らないため、
   更新時の検証項目に PTY 上の対話起動を追加
+- 上流の最新リリースが引き続き `rust-v0.158.0` であることを確認し、
+  バージョンを維持したまま起動修正を適用
+- `cargo fmt --all -- --check` と `git diff --check` が成功
+  （ローカルでの `cargo build` は実施せず、GitHub Actions でビルド）
+- 修正 commit `dc5a6de69` の Android build run `36449341083` と
+  CodeQL run `36449340997` が成功し、ログを確認
+- Android artifact を取得し、3 バイナリが Android API 28 向け ARM aarch64 ELF、
+  バージョン 0.158.0 であることを確認
+  - artifact: `artifacts/rust-v0.158.0-daemon-fix/codex-android-aarch64-release.tar.gz`
+  - SHA-256: `014ccb170f61c93cf64b1cacc8af7340722cae694ada69cdf682706038ebe996`
+- 隔離した設定環境で `daemon_auto_start` の既定値が `false` であることを確認
+- `--no-daemon` や daemon 設定の上書きなしで、
+  `codex` / `codex resume` / `codex fork` / `codex-tui` の対話起動、
+  `/status` の表示、正常終了を確認
+  - `resume` / `fork` は空のセッション選択画面から新規画面へ進んで確認
+  - ローカルのテスト用プロバイダーを使用し、モデルへのプロンプトは送信していない
+- `~/bin` の 3 バイナリを置換し、ビルド待ちの間だけ追加していた
+  `features.daemon_auto_start = false` を取り除いて元の設定ファイルを復元
+- 設置先でも既定値 `false` と、普段の設定での対話起動・`/status`・正常終了を確認
+  - 旧バイナリ: `~/bin/.codex-backup-0.158.0-daemon-fix-20260929-025211/`
 
 ### 2026-09-29 更新内容（rust-v0.158.0）
 - 上流 `rust-v0.158.0` を取り込み、`codex-rs` を同期
