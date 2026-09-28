@@ -935,7 +935,8 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::DaemonAutoStart,
         key: "daemon_auto_start",
         stage: Stage::Stable,
-        default_enabled: true,
+        // Android distributes standalone binaries without a managed daemon package.
+        default_enabled: !cfg!(target_os = "android"),
     },
     FeatureSpec {
         id: Feature::TranscriptV2,

@@ -185,6 +185,19 @@
   同じ属性を追加して再 push する
 - 上流側で型が単純化された場合も、属性の削除は Android release build の成功を確認してから行う
 
+### 3.11 Android では共有 daemon の自動起動を既定で無効にする
+- `features/src/lib.rs` の `Feature::DaemonAutoStart` で
+  `default_enabled: !cfg!(target_os = "android")` を維持する
+- upstream 0.158.0 では `daemon_auto_start` が既定で有効になったが、
+  このリポジトリの Android artifact は単体バイナリであり、
+  daemon の初期導入に必要な `codex-package.json` と補助プログラムを同梱していない
+- daemon のパッケージ検証にも Android target は未定義のため、
+  既定の対話起動は従来どおり embedded app-server を使用する
+- 非 Android の既定値、明示的な `--remote` / `--no-daemon` は従来どおり扱う
+- 起動確認は `--version` と `codex exec` だけで完了とせず、
+  PTY 上で `codex` / `codex resume` / `codex fork` / `codex-tui` を
+  `--no-daemon` なしで起動し、対話画面まで到達することを確認する
+
 ## 4. 実用的な差分確認コマンド
 
 上流と現状の差分が多い場合でも、まず「どのファイルが変更されたか」を把握するのが有効です。
@@ -302,6 +315,14 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-09-29 起動修正（rust-v0.158.0）
+- Android で `codex` が
+  `this CLI has no complete local package` と表示して終了する原因を特定
+- `daemon_auto_start` の既定値を Android のみ無効にし、
+  単体バイナリから通常の対話画面を起動できるように修正
+- `--version` / `codex exec` では共有 daemon の起動経路を通らないため、
+  更新時の検証項目に PTY 上の対話起動を追加
 
 ### 2026-09-29 更新内容（rust-v0.158.0）
 - 上流 `rust-v0.158.0` を取り込み、`codex-rs` を同期
@@ -656,6 +677,17 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - **MCP環境変数**: `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 関連を追加
 
 ## 8. トラブルシューティング
+
+### 8.9 Android で "this CLI has no complete local package" と表示される
+- 症状: 0.158.0 への更新後、`codex` / `codex resume` / `codex fork` の
+  対話起動が共有バックグラウンドサーバーの準備中に終了する
+- 原因: upstream の `daemon_auto_start` が既定で有効になり、
+  Android の単体バイナリにはない完全な CLI パッケージを要求する
+- 対処: §3.11 の Android 向け既定値を維持する
+- 修正版へ置換するまでの回避方法:
+  `codex --no-daemon` または `codex --no-daemon resume <SESSION_ID>`
+- 修正版でも同じエラーが出る場合は、設定ファイルや `--enable` で
+  `daemon_auto_start` を明示的に有効にしていないか確認する
 
 ### 8.1 Termux環境でMCP機能が動作しない
 - 症状: MCPサーバーが起動するが、コマンド実行でエラーが発生
