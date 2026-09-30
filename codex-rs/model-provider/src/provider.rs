@@ -142,6 +142,17 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     /// Returns the configured provider metadata.
     fn info(&self) -> &ModelProviderInfo;
 
+    /// Returns whether the resolved Responses provider may receive internal tool metadata.
+    fn include_internal_metadata(&self, provider: &Provider) -> bool {
+        self.info().include_internal_metadata
+            || url::Url::parse(&provider.base_url).ok().is_some_and(|url| {
+                url.scheme() == "https"
+                    && url.host_str().is_some_and(|host| {
+                        host == "api.openai.com" || codex_http_client::is_allowed_chatgpt_host(host)
+                    })
+            })
+    }
+
     /// Returns the provider-owned capability upper bounds.
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::default()
@@ -697,6 +708,7 @@ mod tests {
             requires_openai_auth: false,
             supports_websockets: false,
             supports_standalone_web_search: false,
+            include_internal_metadata: false,
         }
     }
 
@@ -1265,6 +1277,7 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
             .await;
         assert_eq!(uncached_catalog, catalog);
         for slug in [
+            "openai.gpt-6.1-sol",
             "openai.gpt-6-sol",
             "openai.gpt-6-luna",
             "openai.gpt-5.6-sol",
@@ -1295,8 +1308,9 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
         assert_eq!(
             models,
             vec![
-                ("openai.gpt-6-sol", "GPT-6 Sol"),
+                ("openai.gpt-6.1-sol", "GPT-6.1 Sol"),
                 ("openai.gpt-6-astra", "GPT-6-Astra"),
+                ("openai.gpt-6-sol", "GPT-6 Sol"),
                 ("openai.gpt-6-luna", "GPT-6 Luna"),
                 ("openai.gpt-5.6-sol", "GPT-5.6 Sol"),
                 ("openai.gpt-5.6-terra", "GPT-5.6 Terra"),
@@ -1317,8 +1331,9 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
                 .map(|preset| preset.model.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "openai.gpt-6-sol",
+                "openai.gpt-6.1-sol",
                 "openai.gpt-6-astra",
+                "openai.gpt-6-sol",
                 "openai.gpt-6-luna",
                 "openai.gpt-5.6-sol",
                 "openai.gpt-5.6-terra",
@@ -1332,7 +1347,7 @@ printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
             .find(|preset| preset.is_default)
             .expect("Bedrock catalog should have a default model");
 
-        assert_eq!(default_model.model, "openai.gpt-6-sol");
+        assert_eq!(default_model.model, "openai.gpt-6.1-sol");
     }
 
     #[tokio::test]

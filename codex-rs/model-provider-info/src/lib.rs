@@ -81,6 +81,7 @@ const AMAZON_BEDROCK_RUNTIME_PROVIDER_NAME: &str = "Amazon Bedrock Runtime";
 pub const AMAZON_BEDROCK_RUNTIME_PROVIDER_ID: &str = "amazon-bedrock-runtime";
 pub const AMAZON_BEDROCK_GPT_5_5_MODEL_ID: &str = "openai.gpt-5.5";
 pub const AMAZON_BEDROCK_GPT_5_6_SOL_MODEL_ID: &str = "openai.gpt-5.6-sol";
+pub const AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID: &str = "openai.gpt-6.1-sol";
 pub const AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID: &str = "openai.gpt-6-sol";
 pub const AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID: &str = "openai.gpt-6-luna";
 pub const AMAZON_BEDROCK_GPT_6_ASTRA_MODEL_ID: &str = "openai.gpt-6-astra";
@@ -192,6 +193,11 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the standalone web-search endpoint.
     #[serde(default)]
     pub supports_standalone_web_search: bool,
+    /// Runtime-only opt-in for internal metadata, independent of the destination check.
+    /// This cannot be loaded from or written to serialized provider configuration.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub include_internal_metadata: bool,
 }
 
 /// AWS SigV4 auth configuration for a model provider.
@@ -547,6 +553,7 @@ other non-default provider fields are not supported"
             requires_openai_auth: true,
             supports_websockets: true,
             supports_standalone_web_search: true,
+            include_internal_metadata: true,
         }
     }
 
@@ -585,6 +592,7 @@ other non-default provider fields are not supported"
             requires_openai_auth: false,
             supports_websockets: false,
             supports_standalone_web_search: false,
+            include_internal_metadata: false,
         }
     }
 
@@ -757,6 +765,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     }
 }
 
