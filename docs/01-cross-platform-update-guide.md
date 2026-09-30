@@ -316,6 +316,36 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 ## 7. 最近の更新履歴
 
+### 2026-09-30 更新内容（rust-v0.159.2）
+- 上流の最新安定版 `rust-v0.159.2` を確認し、`codex-rs` を同期
+- Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
+  MCP 環境変数保持、ファイルロック回避、Direct ツール強制、再帰上限を維持
+- Android の `daemon_auto_start` を既定で無効にする修正も維持
+- 以前の Cargo audit 対応を保持するため、
+  `autocfg` 1.5.1 と `faster-hex` 0.10.1 を再適用
+- `Cargo.lock` の workspace package version を 0.159.2 に更新
+- 上流との差分が既存の 20 ファイルに限定されることと、
+  上流ソースの取り込み漏れがないことを確認
+- `cargo metadata --no-deps --locked`、`cargo fmt --all -- --check`、
+  `git diff --cached --check` が成功
+  （ローカルでの `cargo build` は実施せず、GitHub Actions でビルド）
+- Android 用 CLI / exec / TUI の依存グラフに V8 がなく、
+  vendored OpenSSL が有効であることを確認
+- 2026-10-01 に更新 commit `b17f4339f` の CI 成功とログを確認
+  - Android aarch64 release build: run `36730275714`
+  - Cargo audit: run `36730275563`
+  - CodeQL: run `36730275540`
+- Android artifact を取得し、3 バイナリが Android API 28 向け ARM aarch64 ELF、
+  各 `--version` が 0.159.2 であることを確認
+  - artifact: `artifacts/rust-v0.159.2/codex-android-aarch64-release.tar.gz`
+  - SHA-256: `8c91d18b3873b627ea22e91823bef07b3ce5798e411af5629d80c2f5ddfd2cec`
+- 隔離した設定環境で `daemon_auto_start` の既定値が `false` であることを確認
+- `--no-daemon` や daemon 設定の上書きなしで、
+  `codex` / `codex resume` / `codex fork` / `codex-tui` の対話起動、
+  `/status` の表示、正常終了を確認
+  - `resume` / `fork` は空のセッション選択画面から新規画面へ進んで確認
+  - ローカルのテスト用プロバイダーを使用し、モデルへのプロンプトは送信していない
+
 ### 2026-09-29 起動修正（rust-v0.158.0）
 - Android で `codex` が
   `this CLI has no complete local package` と表示して終了する原因を特定
