@@ -346,6 +346,18 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `resume` / `fork` は空のセッション選択画面から新規画面へ進んで確認
   - ローカルのテスト用プロバイダーを使用し、モデルへのプロンプトは送信していない
 
+- 2026-10-01 に取得済み artifact の SHA-256 を再確認し、
+  実際のモデル応答を確認してから `~/bin` の 3 バイナリを 0.159.2 へ置換
+  - 置換前: `CODEX_0_159_2_PREINSTALL_OK`（約20秒、正常終了）
+  - 置換後: `CODEX_0_159_2_INSTALLED_OK`（約19秒、正常終了）
+  - 応答確認は `codex exec --ephemeral` で実施
+  - 旧 0.158.0 バイナリ: `~/bin/.codex-backup-0.158.0-to-0.159.2-20261001-082729/`
+- この Termux 環境の Python は `os.link` を提供しないため、
+  バックアップとステージングに通常コピーと SHA-256 照合を使用し、
+  最終置換は `os.replace` で実施
+- 設置先の 3 バイナリのバージョンと、普段の設定での対話起動・`/status`・正常終了を確認
+  - 設定ファイルの変更なし
+
 ### 2026-09-29 起動修正（rust-v0.158.0）
 - Android で `codex` が
   `this CLI has no complete local package` と表示して終了する原因を特定
