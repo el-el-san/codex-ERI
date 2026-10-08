@@ -10,6 +10,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::TruncationPolicy;
 
 use crate::ComposedContext;
+use crate::composition::SectionContent;
 use crate::composition::SectionDelivery;
 use crate::composition::SectionOutput;
 
@@ -145,13 +146,21 @@ impl ComposedContext {
 
     /// Stable section names and numeric costs; never exposes evidence in diagnostics.
     pub fn section_costs(&self) -> impl Iterator<Item = (&'static str, SectionCost)> + '_ {
-        self.sections.iter().map(|section| {
+        let mut costs: Vec<(&'static str, SectionCost)> = Vec::new();
+        for section in &self.sections {
             let cost = match &section.delivery {
                 SectionDelivery::UserContent(content) => content
                     .iter()
                     .map(|item| &item.content)
-                    .fold(SectionCost::default(), SectionCost::add_content),
-                SectionDelivery::Message(message) => match message.as_ref() {
+                    .fold(SectionCost::default(), |mut cost, item| match item {
+                        SectionContent::Transcript(text) => {
+                            cost.text_bytes =
+                                cost.text_bytes.saturating_add(text.rendered().text_bytes);
+                            cost
+                        }
+                        SectionContent::Other(item) => cost.add_content(item),
+                    }),
+                SectionDelivery::Message(message) => match &message.content.item {
                     ResponseItem::Message { content, .. } => content
                         .iter()
                         .fold(SectionCost::default(), SectionCost::add_content),
@@ -161,8 +170,19 @@ impl ComposedContext {
                     },
                 },
             };
-            (section.id, cost)
-        })
+            // Native messages split a transcript into adjacent deliveries, but
+            // telemetry must still report one total for the logical section.
+            if let Some((id, total)) = costs.last_mut()
+                && *id == section.id
+            {
+                total.text_bytes = total.text_bytes.saturating_add(cost.text_bytes);
+                total.image_bytes = total.image_bytes.saturating_add(cost.image_bytes);
+                total.image_count = total.image_count.saturating_add(cost.image_count);
+            } else {
+                costs.push((section.id, cost));
+            }
+        }
+        costs.into_iter()
     }
 }
 
@@ -175,6 +195,13 @@ pub fn estimate_input_tokens(item: &ResponseItem) -> usize {
         _ => &[],
     };
     adjusted_tokens(ByteCount::item(item), content)
+}
+
+pub(super) fn section_content_tokens(item: &SectionContent) -> usize {
+    match item {
+        SectionContent::Transcript(record) => record.rendered().tokens,
+        SectionContent::Other(item) => content_tokens(item),
+    }
 }
 
 pub(super) fn content_tokens(item: &ContentItem) -> usize {
@@ -200,9 +227,9 @@ pub(super) fn section_tokens(section: &SectionOutput) -> usize {
     match &section.delivery {
         SectionDelivery::UserContent(content) => content
             .iter()
-            .map(|item| content_tokens(&item.content))
+            .map(|item| section_content_tokens(&item.content))
             .fold(content_framing_tokens(content.len()), usize::saturating_add),
-        SectionDelivery::Message(message) => estimate_input_tokens(message),
+        SectionDelivery::Message(message) => estimate_input_tokens(&message.content.item),
     }
 }
 

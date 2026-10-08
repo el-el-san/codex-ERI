@@ -40,13 +40,32 @@ impl ConversationTranscriptEntryKind {
     }
 }
 
-/// Structured text evidence shared by sync Guardian and async scoring.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Collected text, a host-attributed record, or an opaque backend-native message.
+#[derive(Clone, PartialEq)]
+pub enum TranscriptContent {
+    Text(String),
+    /// Host-attributed text prepared by the profile, rendered at delivery.
+    Record(crate::TranscriptRecord),
+    AgentMessage(Box<codex_protocol::models::ResponseItem>),
+}
+
+impl std::fmt::Debug for TranscriptContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Text(_) => "Text(..)",
+            Self::Record(_) => "Record(..)",
+            Self::AgentMessage(_) => "AgentMessage(..)",
+        })
+    }
+}
+
+/// Structured evidence shared by sync Guardian and async scoring.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConversationTranscriptEntry {
     /// Semantic role used for consumer-specific retention and truncation.
     pub kind: ConversationTranscriptEntryKind,
     /// Complete authorization evidence, or other text bounded by per-entry limits.
-    pub text: String,
+    pub content: TranscriptContent,
     /// Size before truncation, retained for omission and truncation accounting.
     pub original_bytes: usize,
     /// Original source revision and display order, established from host metadata.

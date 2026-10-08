@@ -130,16 +130,22 @@ impl App {
                 None
             };
         let trust_cwd = resume_config.0.cwd.to_path_buf();
-        self.confirm_directory_trust(
-            tui,
-            app_server,
-            &mut resume_config.0,
-            &trust_cwd,
-            resumed_thread.as_ref(),
-            /*startup_draft*/ None,
-        )
-        .await?;
-        resume_config.1 = self.local_settings.reloaded(&resume_config.0);
+        if let Some(local_settings) = self
+            .confirm_directory_trust(
+                tui,
+                app_server,
+                &mut resume_config.0,
+                &trust_cwd,
+                crate::onboarding::DirectoryTrustOptions {
+                    resumed_thread: resumed_thread.as_ref(),
+                    ..Default::default()
+                },
+                /*startup_draft*/ None,
+            )
+            .await?
+        {
+            resume_config.1 = local_settings;
+        }
         Ok(resume_config)
     }
 
@@ -149,14 +155,14 @@ impl App {
         app_server: &mut AppServerSession,
         config: &mut Config,
         cwd: &Path,
-        resumed_thread: Option<&codex_app_server_protocol::Thread>,
+        options: crate::onboarding::DirectoryTrustOptions<'_>,
         mut startup_draft: Option<&mut StartupDraftPump>,
-    ) -> std::result::Result<(), AppRunControl> {
+    ) -> std::result::Result<Option<crate::local_settings::LocalSettings>, AppRunControl> {
         // Keep the existing explicit remote --cd gate, including retries after cancellation.
         // Other remote destinations await authoritative trust-root metadata.
         let cwd = if self.app_server_target.uses_remote_workspace() {
             let Some(cwd) = app_server.remote_cwd_override() else {
-                return Ok(());
+                return Ok(None);
             };
             cwd
         } else {
@@ -168,7 +174,7 @@ impl App {
             config,
             &self.app_server_target,
             cwd,
-            resumed_thread,
+            options,
             startup_draft.as_deref_mut(),
         )
         .await
@@ -177,6 +183,9 @@ impl App {
             AppRunControl::Continue
         })?;
         if result.should_exit {
+            if options.cancel == Some(crate::onboarding::TrustCancelAction::CurrentTask) {
+                return Err(AppRunControl::Continue);
+            }
             if matches!(self.app_server_target, AppServerTarget::Embedded) {
                 return Err(AppRunControl::Exit(ExitReason::UserRequested));
             }
@@ -189,7 +198,10 @@ impl App {
             }
             return Err(AppRunControl::Continue);
         }
-        if result.directory_trust_persisted && !app_server.uses_remote_workspace() {
+        if !app_server.uses_remote_workspace()
+            && (result.directory_trust_persisted
+                || options.cancel == Some(crate::onboarding::TrustCancelAction::CurrentTask))
+        {
             *config = StartupDraftPump::run_with_optional_draft(
                 startup_draft.as_deref_mut(),
                 tui,
@@ -202,13 +214,20 @@ impl App {
                 ));
                 AppRunControl::Continue
             })?;
-            if resumed_thread.is_none() {
+            // Directory changes review hooks once, after attaching the destination.
+            if result.directory_trust_persisted
+                && options.resumed_thread.is_none()
+                && options.cancel != Some(crate::onboarding::TrustCancelAction::CurrentTask)
+            {
                 let load_hooks = load_startup_hooks_review_entry(
                     app_server.request_handle(),
                     config.cwd.to_path_buf(),
                 );
                 let hooks = if let Some(draft) = startup_draft {
-                    draft.apply_config(config);
+                    draft.apply_settings(
+                        &crate::local_settings::LocalSettings::from(&*config),
+                        config.cwd.as_path(),
+                    );
                     async {
                         let hooks = draft.run_until(tui, load_hooks).await?;
                         draft.flush_pending_events(tui).await?;
@@ -245,7 +264,8 @@ impl App {
                     }
                 }
             }
+            return Ok(Some(self.local_settings.reloaded(config)));
         }
-        Ok(())
+        Ok(None)
     }
 }

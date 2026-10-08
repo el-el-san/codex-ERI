@@ -86,15 +86,10 @@ wire_api = "responses"
         ] {
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
                 let executable = bin.join(name);
-                std::fs::write(
+                codex_utils_cargo_bin::write_executable(
                     &executable,
                     "#!/bin/sh\nprintf 'helper ran\\n' >> \"$CODEX_TEST_HELPER_MARKER\"\nexit 0\n",
-                )?;
-                std::fs::set_permissions(
-                    executable,
-                    std::fs::Permissions::from_mode(/*mode*/ 0o755),
                 )?;
             }
             #[cfg(windows)]
@@ -420,6 +415,24 @@ fn doctor_reports_only_safe_config_error_metadata() -> Result<()> {
 }
 
 #[test]
+fn doctor_reports_configured_tui_mode() -> Result<()> {
+    let fixture = Fixture::new()?;
+    for (setting, expected) in [("true", "fullscreen"), ("false", "scrollback")] {
+        let output = fixture
+            .command()?
+            .args(["-c", &format!("tui.fullscreen_transcript={setting}")])
+            .args(["doctor", "--json"])
+            .output()?;
+        let report: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(
+            report["checks"]["config.load"]["details"]["configured TUI mode"],
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn doctor_reports_configured_filesystem_paths() -> Result<()> {
     let fixture = Fixture::new()?;
     let config_file = fixture.home.join("config.toml");
@@ -497,6 +510,7 @@ fn filesystem_probe_does_not_load_configuration() -> Result<()> {
 #[tokio::test]
 async fn interactive_tmux_startup_does_not_execute_workspace_helpers() -> Result<()> {
     let fixture = Fixture::new()?;
+    std::fs::create_dir(fixture.workspace.join(".codex"))?;
     let command = fixture.command()?;
     let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
     for (key, value) in command.get_envs() {

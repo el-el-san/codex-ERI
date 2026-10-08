@@ -6,6 +6,8 @@
 
 use super::CopyLine;
 use super::SelectedLine;
+use super::SelectionOutput;
+use crate::clipboard_copy::CopyFormat;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::LogicalLineSource;
 use std::collections::BTreeMap;
@@ -100,7 +102,12 @@ pub(crate) fn append(output: &mut Option<TableLine>, source: &LogicalLineSource,
     }
 }
 
-pub(super) fn render(lines: &[&SelectedLine], table: &TableLine) -> String {
+pub(super) fn render(
+    lines: &[&SelectedLine],
+    table: &TableLine,
+    entire_selection: bool,
+    output: SelectionOutput,
+) -> (String, CopyFormat) {
     let mut cells: BTreeMap<(usize, usize), Vec<LogicalLineSource>> = BTreeMap::new();
     for line in lines {
         let Some(copy) = line
@@ -155,20 +162,37 @@ pub(super) fn render(lines: &[&SelectedLine], table: &TableLine) -> String {
                 .is_some_and(|table| table.fragments.is_empty())
     });
     let standalone = cells.len() == 1 && !includes_separator;
+    if entire_selection
+        && standalone
+        && let Some(parts) = cells.values().next()
+        && let [source] = parts.as_slice()
+        && source
+            .copy
+            .as_ref()
+            .is_some_and(|copy| copy.is_literal(&source.range))
+    {
+        return (
+            source.text[source.range.clone()].to_owned(),
+            CopyFormat::PlainText,
+        );
+    }
     let cells: BTreeMap<_, _> = cells
         .into_iter()
         .map(|(key, parts)| {
             let text = parts
                 .into_iter()
                 .map(|source| {
-                    source.copy.as_ref().map_or_else(
-                        || super::escape(&source.text[source.range.clone()]),
-                        |copy| {
-                            let mut copy = (**copy).clone();
-                            copy.table_cell = !standalone;
-                            copy.render(&source.text, source.range.clone(), /*depth*/ 0)
-                        },
-                    )
+                    let text = &source.text[source.range.clone()];
+                    output.render(text, || {
+                        source.copy.as_ref().map_or_else(
+                            || super::escape(text),
+                            |copy| {
+                                let mut copy = (**copy).clone();
+                                copy.table_cell = !standalone;
+                                copy.render(&source.text, source.range.clone(), /*depth*/ 0)
+                            },
+                        )
+                    })
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -176,14 +200,23 @@ pub(super) fn render(lines: &[&SelectedLine], table: &TableLine) -> String {
         })
         .collect();
     if standalone {
-        return cells.into_values().next().unwrap_or_default();
+        return (
+            cells.into_values().next().unwrap_or_default(),
+            CopyFormat::Markdown,
+        );
     }
     if cells.is_empty() {
-        return lines
-            .iter()
-            .map(|line| super::escape(&line.source.text[line.range.clone()]))
-            .collect::<Vec<_>>()
-            .join("\n");
+        return (
+            lines
+                .iter()
+                .map(|line| {
+                    let text = &line.source.text[line.range.clone()];
+                    output.render(text, || super::escape(text))
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            CopyFormat::Markdown,
+        );
     }
     let mut rows: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
     rows.insert(/*key*/ 0, vec![""; table.table.len()]);
@@ -205,5 +238,5 @@ pub(super) fn render(lines: &[&SelectedLine], table: &TableLine) -> String {
             }
         }
     }
-    out
+    (out, CopyFormat::Markdown)
 }

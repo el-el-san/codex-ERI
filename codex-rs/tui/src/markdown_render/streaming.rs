@@ -5,8 +5,8 @@
 
 use super::DecodedTextMerge;
 use super::Event;
-use super::FileCitations;
 use super::HyperlinkLine;
+use super::InlineDirectives;
 use super::ListSpacing;
 use super::Options;
 use super::Parser;
@@ -43,6 +43,24 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
     is_hidden_link_destination: &dyn Fn(&str) -> bool,
     list_spacing: ListSpacing,
 ) -> StreamingMarkdownRender {
+    render_with_copy_sources(
+        input,
+        width,
+        cwd,
+        is_hidden_link_destination,
+        list_spacing,
+        Vec::new(),
+    )
+}
+
+pub(crate) fn render_with_copy_sources(
+    input: &str,
+    width: Option<usize>,
+    cwd: Option<&Path>,
+    is_hidden_link_destination: &dyn Fn(&str) -> bool,
+    list_spacing: ListSpacing,
+    code_sources: Vec<crate::markdown_copy::SourceBlock>,
+) -> StreamingMarkdownRender {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
@@ -50,14 +68,14 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
         Options::ENABLE_TASKLISTS,
         super::preferences::current().lists,
     );
-    let citations = FileCitations::new(input, options);
-    let math = MathMarkdown::new(&citations.markdown, options, width);
+    let directives = InlineDirectives::new(input, options);
+    let math = MathMarkdown::new(&directives.markdown, options, width);
     let parser = Parser::new_ext(&math.markdown, options);
     let has_reference_link_definition = parser.reference_definitions().iter().next().is_some();
     let parser = TopLevelBlockTracker {
         iter: DecodedTextMerge::new(super::source_tables::preserve(
             input,
-            citations.events(math.events(parser.into_offset_iter()), cwd),
+            directives.events(math.events(parser.into_offset_iter()), cwd),
         )),
         depth: 0,
         block_count: 0,
@@ -69,6 +87,7 @@ pub(crate) fn render_streaming_markdown_lines_with_width_and_cwd(
     // Drop the consumed parser before the rendering state, including on unwind.
     let mut parser = parser;
     writer.list_spacing = list_spacing;
+    writer.code_sources = code_sources;
     writer.run(&mut parser);
     StreamingMarkdownRender {
         lines: writer.text,

@@ -16,7 +16,7 @@ mod elements;
 #[test]
 fn selected_markdown_preserves_lists_and_inline_code() {
     let cells: Vec<Arc<dyn HistoryCell>> = vec![Arc::new(AgentMarkdownCell::new(
-        "- setting `closeRequested_`,\n- removing the tailer from `tailers_`,\n- clearing its live/discovery state.".into(),
+        "- setting `closeRequested_`,\n- removing the tailer from `tailers_`,\n- clearing /repo/my_notes!.txt.".into(),
         Path::new("/"),
     ))];
     let mut view = TranscriptView::default();
@@ -53,11 +53,13 @@ fn selected_markdown_preserves_lists_and_inline_code() {
         &plain,
         /*clear_selection*/ true,
         |text, format| {
-            assert_eq!(format, CopyFormat::Markdown);
+            let CopyFormat::MarkdownSelection(source) = format else {
+                panic!("expected rich selection");
+            };
             insta::assert_snapshot!(text);
             insta::assert_snapshot!(
                 "selected_list_html",
-                crate::clipboard_html::render_markdown(text)
+                crate::clipboard_html::render_markdown(&source)
             );
             Ok(crate::clipboard_copy::CopyStatus::Confirmed)
         },
@@ -82,8 +84,6 @@ fn payload(layout: &TextLayout, range: std::ops::Range<usize>) -> (String, CopyF
 #[test]
 fn partial_markup_is_balanced_and_preserves_selected_characters() {
     for (source, selected, expected) in [
-        ("before `closeRequested_` after", "Requested", "`Requested`"),
-        ("before ``a`b`` after", "a`", "`` a` ``"),
         ("**hello café界**", "café界", "**café界**"),
         ("before * first *", "first", "first"),
         ("before **hello world** after", " world", "&#32;**world**"),
@@ -113,6 +113,68 @@ fn partial_markup_is_balanced_and_preserves_selected_characters() {
         let start = layout.text().find(selected).expect(source);
         assert_eq!(
             payload(&layout, start..start + selected.len()),
+            (expected.into(), CopyFormat::Markdown),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn inline_code_selection_copies_only_selected_content() {
+    let mut copies = Vec::new();
+    for (source, selected) in [
+        ("before `something` after", "something"),
+        ("before `something` after", "some"),
+        ("before `something` after", "thing"),
+        ("before `closeRequested_` after", "Requested"),
+        ("before ``a`b`` after", "a`"),
+        ("- **`café界_*`**", "café界_*"),
+        ("before `  leading and trailing  ` after", " leading"),
+        (r"before ``real\_literal\!`` after", r"real\_literal\!"),
+        ("before [`foo_bar!`](/repo/foo_bar!) after", "repo/foo_bar!"),
+        ("before [`foo_bar!`](/repo/foo_bar!) after", "bar!"),
+        ("[](/foo_bar!)[](/baz_qux!)", "foo_bar!baz_qux!"),
+        ("`foo_bar!`[](/baz_qux!)", "foo_bar!baz_qux!"),
+        ("before **[file](/repo/foo_bar!)** after", "foo_bar!"),
+        (
+            "| File |\n|---|\n| [`foo_bar!`](/repo/foo_bar!) |",
+            "foo_bar!",
+        ),
+        (
+            "before [file](</repo/%60%2A_%5B%5D%3C%3E~%23%7C%26!%3D-+.)>) after",
+            "repo/`*_[]<>~#|&!=-+.)",
+        ),
+    ] {
+        for width in [18, 80] {
+            let layout = markdown_layout(source, width);
+            let start = layout.text().find(selected).expect(source);
+            let copied = payload(&layout, start..start + selected.len());
+            assert_eq!(copied, (selected.into(), CopyFormat::PlainText), "{source}");
+            assert_eq!(
+                payload(&layout.rewrap(/*width*/ 12), start..start + selected.len()),
+                copied
+            );
+            if width == 80 {
+                copies.push(format!("{source}\nSelected {selected:?} → {copied:?}"));
+            }
+        }
+    }
+    insta::assert_snapshot!(copies.join("\n"));
+}
+
+#[test]
+fn mixed_file_targets_preserve_markdown_escaping() {
+    for (source, expected) in [
+        ("before [+](/+) after", "before + (+) after"),
+        ("before [1.)](</1.)>) after", "before 1.) (1.)) after"),
+        (
+            "| File |\n|---|\n| [`foo_bar!`](/repo/foo_bar!) |",
+            "| File |\n|---|\n| `foo_bar!` (repo/foo\\_bar\\!) |",
+        ),
+    ] {
+        let layout = markdown_layout(source, /*width*/ 80);
+        assert_eq!(
+            payload(&layout, 0..layout.text().len()),
             (expected.into(), CopyFormat::Markdown),
             "{source}"
         );
@@ -306,7 +368,7 @@ fn copied_selection_keeps_its_revision_and_format_across_resize() {
     assert_eq!(view.selected_text(&cells).as_deref(), Some("selected"));
     for clear_selection in [false, true] {
         view.copy_selected_text_with(&cells, "selected", clear_selection, |text, format| {
-            assert_eq!((text, format), ("`selected`", CopyFormat::Markdown));
+            assert_eq!((text, format), ("selected", CopyFormat::PlainText));
             Ok(CopyStatus::Pending(1))
         })
         .unwrap();
@@ -351,12 +413,15 @@ fn explicit_hard_breaks_survive_only_when_selected() {
 
 #[test]
 fn task_lists_and_transformed_tables_keep_their_meaning() {
-    for (source, expected) in [
-        ("- [x] done\n- [ ] next", "- [x] done\n- [ ] next"),
-        ("1. [x] done\n2. [ ] next", "1. [x] done\n2. [ ] next"),
-    ] {
+    for source in ["- [x] done\n- [ ] next", "1. [x] done\n2. [ ] next"] {
         let layout = markdown_layout(source, /*width*/ 80);
-        assert_eq!(payload(&layout, 0..layout.text().len()).0, expected);
+        let mut lines = Vec::new();
+        layout.copy_lines(0..layout.text().len(), "", &mut lines);
+        assert_eq!(payload(&layout, 0..layout.text().len()).0, source);
+        assert_eq!(
+            crate::markdown_copy::literal_selection(&lines, "unused"),
+            source
+        );
     }
     let layout = markdown_layout(
         "Prose\n\n| A | B |\n| - | - |\n| x | y |",
@@ -396,7 +461,7 @@ fn complete_rules_keep_structure_and_partial_rules_keep_selected_text() {
     let mut copies = Vec::new();
     for (source, partial) in [
         ("Before\n\n---\n\nAfter", "—"),
-        ("Before\n\n> ---\n\nAfter", "> —"),
+        ("Before\n\n> ---\n\nAfter", "—"),
     ] {
         let layout = markdown_layout(source, /*width*/ 80);
         let copied = payload(&layout, 0..layout.text().len()).0;
@@ -434,7 +499,11 @@ fn partial_prose_keeps_leading_whitespace_outside_code_blocks() {
     ] {
         let layout = markdown_layout(source, /*width*/ 80);
         let start = layout.text().find("prefix").unwrap() + "prefix".len();
-        let copied = payload(&layout, start..layout.text().len()).0;
+        let (copied, format) = payload(&layout, start..layout.text().len());
+        if format == CopyFormat::PlainText {
+            copies.push(format!("{copied}\n{format:?}"));
+            continue;
+        }
         copies.push(format!(
             "{copied}\n{}",
             crate::clipboard_html::render_markdown(&copied)
@@ -487,9 +556,12 @@ fn selected_hard_breaks_survive_surrounding_blocks() {
     view.extend_selection(/*column*/ 79, /*row*/ 39);
     let plain = view.selected_text(&cells).unwrap();
     view.copy_selected_text_with(&cells, &plain, /*clear_selection*/ true, |text, format| {
-        assert_eq!(format, CopyFormat::Markdown);
+        let CopyFormat::MarkdownSelection(source) = format else {
+            panic!("expected rich selection");
+        };
+        assert_eq!(text, "First paragraph.\n\nSecond paragraph with a hard break:\nnext line.\n\n> quoted words\n> next quote line\n\nFinal paragraph.");
         assert_eq!(
-            crate::clipboard_html::render_markdown(text),
+            crate::clipboard_html::render_markdown(&source),
             "<p>First paragraph.</p>\n<p>Second paragraph with a hard break:<br />\nnext line.</p>\n<blockquote>\n<p>quoted <strong>words</strong><br />\nnext quote line</p>\n</blockquote>\n<p>Final paragraph.</p>\n"
         );
         Ok(crate::clipboard_copy::CopyStatus::Confirmed)
@@ -523,8 +595,11 @@ fn selected_open_code_fence_keeps_streamed_rows_in_one_block() {
         &plain,
         /*clear_selection*/ true,
         |text, format| {
-            assert_eq!(format, CopyFormat::Markdown);
-            insta::assert_snapshot!(crate::clipboard_html::render_markdown(text), @r#"
+            let CopyFormat::MarkdownSelection(source) = format else {
+                panic!("expected rich selection");
+            };
+            assert_eq!(text, "Prose\n\nlet a = 1;\nlet b = 2;");
+            insta::assert_snapshot!(crate::clipboard_html::render_markdown(&source), @r#"
         <p>Prose</p>
         <pre><code>let a = 1;
         let b = 2;
@@ -684,7 +759,14 @@ fn selected_list_and_code_containers_keep_their_structure() {
         let layout = markdown_layout(source, /*width*/ 80);
         let start = layout.text().find(start).expect(source);
         let end = layout.text().rfind(end).expect(source) + end.len();
-        let copied = payload(&layout, start..end).0;
+        let (copied, format) = payload(&layout, start..end);
+        if source.starts_with('>') {
+            assert_eq!(
+                (copied.as_str(), format),
+                (&layout.text()[start..end], CopyFormat::PlainText)
+            );
+            continue;
+        }
         assert_eq!(
             crate::clipboard_html::render_markdown(&copied),
             crate::clipboard_html::render_markdown(expected),

@@ -44,7 +44,7 @@ impl AgentsOverviewView {
         if area.is_empty() {
             return;
         }
-        let indices = self.visible_indices();
+        let indices = self.selectable_indices();
         let mut state = self.state();
         if indices.is_empty() {
             line(
@@ -68,7 +68,11 @@ impl AgentsOverviewView {
         let entries = self.center_rows(&indices, state.grouping);
         let selected = entries
             .iter()
-            .position(|row| matches!(row, CenterRow::Task(index) if *index == self.selected))
+            .position(|row| match row {
+                CenterRow::Task(index) => *index == self.selected,
+                CenterRow::ShowMore => self.selected == usize::MAX,
+                _ => false,
+            })
             .unwrap_or_default();
         let padding = u16::from(area.height >= 3);
         let viewport = row(area, padding, area.height - padding * 2);
@@ -102,23 +106,59 @@ impl AgentsOverviewView {
             let index = match entry {
                 CenterRow::Group(index) | CenterRow::Task(index) => *index,
                 CenterRow::Gap => continue,
+                CenterRow::ShowMore => {
+                    let rect = row(viewport, offset as u16, /*height*/ 1);
+                    let selected = self.selected == usize::MAX;
+                    let style = if selected {
+                        selection_style()
+                    } else {
+                        Style::default()
+                    };
+                    buf.set_style(
+                        Rect {
+                            width: row_width,
+                            ..rect
+                        },
+                        style,
+                    );
+                    let label = if state.loading {
+                        "Loading more…"
+                    } else if state.refresh_failed {
+                        "Show more (retry)"
+                    } else {
+                        "Show more"
+                    };
+                    let marker = if selected { "›" } else { " " };
+                    line(
+                        Line::from(format!("{marker}   {label}")).style(style),
+                        rect,
+                        buf,
+                    );
+                    continue;
+                }
             };
             let task = &self.rows[index];
             let rect = row(viewport, offset as u16, /*height*/ 1);
             if matches!(entry, CenterRow::Group(_)) {
-                let group = match state.grouping {
-                    AgentsOverviewGrouping::Project => {
-                        format_directory_display(
-                            &self.project_groups[index].heading,
-                            /*max_width*/ None,
-                        )
+                let group = if self.is_pinned(index) {
+                    "Pinned".to_owned()
+                } else {
+                    match state.grouping {
+                        AgentsOverviewGrouping::Project => {
+                            format_directory_display(
+                                &self.project_groups[index].heading,
+                                /*max_width*/ None,
+                            )
+                        }
+                        AgentsOverviewGrouping::Status => task.group.label().to_owned(),
+                        AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
                     }
-                    AgentsOverviewGrouping::Status => task.group.label().to_owned(),
-                    AgentsOverviewGrouping::Model => model_name(&task.thread).to_owned(),
                 };
                 let count = indices
                     .iter()
-                    .filter(|&&candidate| self.same_group(state.grouping, candidate, index))
+                    .filter(|&&candidate| {
+                        candidate != usize::MAX && self.same_group(state.grouping, candidate, index)
+                    })
                     .count();
                 let total = (0..self.rows.len())
                     .filter(|&candidate| self.same_group(state.grouping, candidate, index))
@@ -128,7 +168,9 @@ impl AgentsOverviewView {
                 } else {
                     format!("{count} of {total}")
                 };
-                let group = if state.grouping == AgentsOverviewGrouping::Project {
+                let group = if state.grouping == AgentsOverviewGrouping::Project
+                    && !self.is_pinned(index)
+                {
                     crate::text_formatting::center_truncate_path(
                         &group,
                         usize::from(rect.width)

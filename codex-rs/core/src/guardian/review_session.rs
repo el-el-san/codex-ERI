@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -38,7 +39,6 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
-use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::InputModality;
@@ -92,6 +92,7 @@ use super::prompt::GUARDIAN_TRANSCRIPT_START;
 use super::prompt::GuardianPromptMode;
 #[cfg(test)]
 use super::prompt::GuardianTranscriptCursor;
+use super::prompt::GuardianTranscriptHistory;
 use super::prompt::build_guardian_prompt_items_with_parent_turn;
 use super::review::guardian_review_session_config;
 pub(crate) use super::reviewer_config::build_guardian_review_session_config;
@@ -134,8 +135,20 @@ pub struct GuardianReviewSession {
 /// Opaque conversation progress retained while ThreadManager starts a reviewer.
 pub struct GuardianReviewState {
     conversation: ConversationState<GuardianReviewHistory>,
+    // Only the first attempt may use the checkpoint loaded without prior reviewer history.
+    fresh_parent_checkpoint: bool,
+    // The cursor describes evidence admitted before any later reviewer compaction.
+    transcript_history_version: u64,
+    transcript_source: Option<GuardianTranscriptSource>,
     last_admitted_node_repl_response_sequence: u64,
     pending_node_repl_evidence_admission: Option<PendingNodeReplEvidenceAdmission>,
+}
+
+// These histories have independent version counters; a cursor must identify its source.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuardianTranscriptSource {
+    Retained,
+    LoadedParentCheckpoint,
 }
 
 struct PendingNodeReplEvidenceAdmission {
@@ -167,6 +180,7 @@ type GuardianReviewForkSnapshot = ConversationCheckpoint<GuardianReviewHistory>;
 #[derive(Clone)]
 pub struct GuardianReviewHistory {
     initial_history: InitialHistory,
+    transcript_source: Option<GuardianTranscriptSource>,
     last_admitted_node_repl_response_sequence: u64,
 }
 
@@ -188,7 +202,7 @@ pub struct GuardianReviewSessionReuseKey {
     model_auto_compact_token_limit_scope: AutoCompactTokenLimitScope,
     model_reasoning_effort: Option<ReasoningEffortConfig>,
     model_reasoning_summary: Option<ReasoningSummaryConfig>,
-    personality: Option<Personality>,
+    omit_personality: bool,
     permissions: Permissions,
     developer_instructions: Option<String>,
     base_instructions: Option<String>,
@@ -232,7 +246,7 @@ impl GuardianReviewSessionReuseKey {
             model_auto_compact_token_limit_scope: spawn_config.model_auto_compact_token_limit_scope,
             model_reasoning_effort: spawn_config.model_reasoning_effort.clone(),
             model_reasoning_summary: spawn_config.model_reasoning_summary,
-            personality: spawn_config.personality,
+            omit_personality: spawn_config.personality == Some(Personality::None),
             permissions: spawn_config.permissions.clone(),
             developer_instructions: spawn_config.developer_instructions.clone(),
             base_instructions: spawn_config.base_instructions.clone(),
@@ -387,7 +401,7 @@ async fn run_review_on_session(
         }
     }
 
-    if params.spawn_config.features.enabled(Feature::TokenBudget)
+    let needs_compaction = params.spawn_config.features.enabled(Feature::TokenBudget)
         && crate::session::context_window::context_window_token_status_for_model(
             review_session.session.as_ref(),
             &params.spawn_config,
@@ -395,8 +409,22 @@ async fn run_review_on_session(
             &model_info,
         )
         .await
-        .token_limit_reached
-    {
+        .token_limit_reached;
+    let should_compact = if needs_compaction {
+        match super::input_budget::should_compact(&review_session.session) {
+            Ok(should_compact) => should_compact,
+            Err(error) => {
+                return ReviewSessionResult {
+                    outcome: GuardianReviewSessionOutcome::PromptBuildFailed(error.into()),
+                    disposition: SessionDisposition::Discard,
+                    analytics: analytics_result,
+                };
+            }
+        }
+    } else {
+        false
+    };
+    if should_compact {
         let compact_submission = run_before_review_deadline(
             deadline,
             params.external_cancel.as_ref(),
@@ -448,23 +476,37 @@ async fn run_review_on_session(
         }
     }
 
-    let reviewer_has_full_transcript = review_session
-        .session
-        .clone_history()
-        .await
-        .raw_items()
-        .any(|item| {
-            matches!(item, ResponseItem::Message { role, content, .. }
-            if role == "user" && content.iter().any(|content| {
-                matches!(content, ContentItem::InputText { text }
-                    if text == GUARDIAN_TRANSCRIPT_START)
-            }))
-        });
-    let (prompt_mode, last_admitted_node_repl_response_sequence) = {
+    let reviewer_history = review_session.session.clone_history().await;
+    let reviewer_history_version = reviewer_history.history_version();
+    let reviewer_has_full_transcript = reviewer_history.raw_items().any(|item| {
+        matches!(item, ResponseItem::Message { role, content, .. }
+        if role == "user" && content.iter().any(|content| {
+            matches!(content, ContentItem::InputText { text }
+                if text == GUARDIAN_TRANSCRIPT_START)
+        }))
+    });
+    let (prompt_mode, last_admitted_node_repl_response_sequence, previous_transcript_source) = {
         let mut state = review_session.state.lock().await;
         state.pending_node_repl_evidence_admission = None;
+        if state.transcript_history_version != reviewer_history_version
+            && let Some(recovery) = review_session
+                .session
+                .services
+                .thread_extension_data
+                .get::<super::input_budget::CheckpointRecovery>()
+        {
+            recovery.requested.store(/*val*/ true, Ordering::Release);
+            return ReviewSessionResult {
+                outcome: GuardianReviewSessionOutcome::PromptBuildFailed(anyhow::anyhow!(
+                    "Guardian history changed; restart from the parent checkpoint"
+                )),
+                disposition: SessionDisposition::Discard,
+                analytics: analytics_result,
+            };
+        }
         if !reviewer_has_full_transcript {
             state.conversation.reset_transcript();
+            state.transcript_source = None;
             state.last_admitted_node_repl_response_sequence = 0;
         }
 
@@ -474,10 +516,12 @@ async fn run_review_on_session(
             .map_or(GuardianPromptMode::Full, |cursor| {
                 GuardianPromptMode::Delta { cursor }
             });
-        (prompt_mode, state.last_admitted_node_repl_response_sequence)
+        (
+            prompt_mode,
+            state.last_admitted_node_repl_response_sequence,
+            state.transcript_source,
+        )
     };
-    analytics_result.had_prior_review_context = Some(had_prior_review_context(&prompt_mode));
-
     let prompt_items = run_before_review_deadline(
         deadline,
         params.external_cancel.as_ref(),
@@ -490,16 +534,40 @@ async fn run_review_on_session(
                 .await;
 
             let parent_history = params.parent_history.conversation_history_snapshot();
-            let history = if GuardianContextMode::from_history(parent_history.as_ref())
-                != GuardianContextMode::Legacy
-            {
-                parent_history
+            let policy = ReviewContextPolicy::for_context(
+                GuardianContextMode::from_history(parent_history.as_ref()),
+                &params.spawn_config.features,
+            );
+            let loaded_parent_checkpoint = policy
+                .parent_compaction(&params.parent_history)?
+                .as_ref()
+                .zip(codex_history::CompactionCheckpoint::latest(
+                    reviewer_history.annotated_items(),
+                ))
+                .is_some_and(|(parent, loaded)| parent == loaded.item);
+            // Keep the action-time snapshot: a later parent compaction must not
+            // replace evidence with a checkpoint this reviewer never received.
+            let (history, transcript_source) = if loaded_parent_checkpoint {
+                (
+                    GuardianTranscriptHistory::LoadedParentCheckpoint(parent_history.as_ref()),
+                    GuardianTranscriptSource::LoadedParentCheckpoint,
+                )
             } else {
-                params.parent_session.conversation_history_snapshot().await
+                (
+                    GuardianTranscriptHistory::Retained(parent_history.as_ref()),
+                    GuardianTranscriptSource::Retained,
+                )
             };
+            let prompt_mode = if previous_transcript_source == Some(transcript_source) {
+                prompt_mode
+            } else {
+                GuardianPromptMode::Full
+            };
+            analytics_result.had_prior_review_context =
+                Some(had_prior_review_context(&prompt_mode));
             let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
-                history.as_ref(),
+                history,
                 Some(&params.parent_context),
                 params.reasons.clone(),
                 params.request.clone(),
@@ -580,10 +648,13 @@ async fn run_review_on_session(
                             }
                         }
                     });
-                    let prompt: ResponseItem =
-                        ResponseInputItem::from(prompt_items.context.clone().into_user_inputs()?)
-                            .into();
-                    let prompt_tokens = crate::context_manager::estimate_item_token_count(&prompt);
+                    let prompt_tokens = prompt_items
+                        .context
+                        .clone()
+                        .into_messages()
+                        .iter()
+                        .map(crate::context_manager::estimate_item_token_count)
+                        .fold(0i64, i64::saturating_add);
                     let base_instructions = review_session.session.get_base_instructions().await;
                     let history_tokens = reviewer_history
                         .estimate_token_count_with_base_instructions(&base_instructions)
@@ -599,11 +670,27 @@ async fn run_review_on_session(
                 }
             }
 
-            let items = prompt_items.context.clone().into_user_inputs()?;
-            Ok::<_, anyhow::Error>((prompt_items, items))
+            let items = match prompt_items.context.clone().into_user_inputs() {
+                Ok(items) => items,
+                Err(codex_guardian_context::SectionError::UnsupportedDelivery {
+                    section: "conversation_transcript",
+                }) => {
+                    // Final admission replaces this turn-start marker with the complete,
+                    // budgeted context, including native encrypted agent-message evidence.
+                    vec![codex_protocol::user_input::UserInput::Text {
+                        text: super::prompt::GUARDIAN_TRANSCRIPT_START.to_owned(),
+                        text_elements: Vec::new(),
+                    }]
+                }
+                Err(error) => return Err(error.into()),
+            };
+            Ok::<_, anyhow::Error>((prompt_items, items, transcript_source))
         }),
     )
     .await;
+    // Release the shared snapshot before recording input so it does not force
+    // a copy of the accumulated reviewer history during inference.
+    drop(reviewer_history);
     let prompt_items = match prompt_items {
         Ok(prompt_items) => prompt_items,
         Err(outcome) => {
@@ -614,7 +701,7 @@ async fn run_review_on_session(
             };
         }
     };
-    let (prompt_items, items) = match prompt_items {
+    let (prompt_items, items, transcript_source) = match prompt_items {
         Ok(prompt_items) => prompt_items,
         Err(err) => {
             return ReviewSessionResult {
@@ -736,6 +823,8 @@ async fn run_review_on_session(
         }
         let mut state = review_session.state.lock().await;
         state.conversation.complete_review(transcript_cursor);
+        state.transcript_history_version = reviewer_history_version;
+        state.transcript_source = Some(transcript_source);
     }
     let budget_exhausted = review_session
         .session
@@ -908,11 +997,27 @@ impl codex_guardian_reviewer::ReviewerSession for GuardianReviewSession {
         // The pool holds the review lock until this checkpoint is published. Capture the
         // completed model context directly; saving and reloading the transcript adds no state.
         let items = self.session.guardian_fork_history().await;
+        let history_version = self.session.clone_history().await.history_version();
         let mut state = self.state.lock().await;
+        // Forks must not inherit a cursor for evidence a completed turn compacted away.
+        if state.transcript_history_version != history_version
+            && self
+                .session
+                .services
+                .thread_extension_data
+                .get::<super::input_budget::CheckpointRecovery>()
+                .is_some()
+        {
+            state.conversation.reset_transcript();
+            state.transcript_source = None;
+            state.last_admitted_node_repl_response_sequence = 0;
+        }
         let last_admitted_node_repl_response_sequence =
             state.last_admitted_node_repl_response_sequence;
+        let transcript_source = state.transcript_source;
         state.conversation.commit_snapshot(GuardianReviewHistory {
             initial_history: InitialHistory::Forked(items),
+            transcript_source,
             last_admitted_node_repl_response_sequence,
         });
     }

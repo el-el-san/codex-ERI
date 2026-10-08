@@ -2,6 +2,7 @@ use crate::PluginGitMode;
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
 use crate::app_mcp_routing::apps_route_available;
 use crate::is_openai_curated_marketplace_name;
+use crate::manifest::ManifestCache;
 use crate::manifest::PluginManifest;
 use crate::manifest::PluginManifestFormat;
 use crate::manifest::PluginManifestHooks;
@@ -47,6 +48,7 @@ use codex_skills::SkillRootLoadRequest;
 use codex_skills::SkillRootLoader;
 use codex_skills::SkillRootSnapshots;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use codex_utils_plugins::PluginIdentity;
 use codex_utils_plugins::PluginSkillRoot;
 use codex_utils_plugins::SkillDiscoveryMode;
@@ -889,7 +891,7 @@ async fn load_plugin(
         return loaded_plugin;
     }
 
-    let Some(loaded_manifest) = load_plugin_manifest_with_format(plugin_root.as_path()) else {
+    let Some(loaded_manifest) = store.manifest_cache.load(plugin_root.as_path()) else {
         loaded_plugin.error = Some("missing or invalid plugin.json".to_string());
         return loaded_plugin;
     };
@@ -942,7 +944,8 @@ async fn load_plugin(
             )
             .await;
             if loaded_manifest.format == PluginManifestFormat::Legacy {
-                loaded_plugin.apps = load_plugin_apps(plugin_root.as_path()).await;
+                loaded_plugin.apps =
+                    load_plugin_apps_from_manifest(plugin_root.as_path(), manifest_paths).await;
             }
         }
         PluginLoadScope::HooksOnly => {}
@@ -964,9 +967,9 @@ async fn load_plugin(
 }
 
 fn apply_plugin_mcp_server_policy(config: &mut McpServerConfig, policy: &PluginMcpServerConfig) {
-    config.enabled = policy.enabled;
-    if let Some(ema) = &policy.ema_auth {
-        ema.apply(config);
+    config.enabled = policy.enabled && !policy.has_unsupported_ema_auth;
+    if policy.has_unsupported_ema_auth {
+        config.auth = codex_config::McpServerAuth::EmaAuth;
     }
     if let Some(approval_mode) = policy.default_tools_approval_mode {
         config.default_tools_approval_mode = Some(approval_mode);
@@ -1020,7 +1023,7 @@ impl PluginSkillInventory {
 #[derive(Debug, Clone)]
 pub struct ResolvedPluginSkills {
     pub skills: Vec<SkillMetadata>,
-    pub disabled_skill_paths: HashSet<AbsolutePathBuf>,
+    pub disabled_skill_paths: HashSet<PathUri>,
     pub had_errors: bool,
 }
 
@@ -1032,7 +1035,7 @@ impl ResolvedPluginSkills {
 
 fn contains_enabled_skill(
     skills: &[SkillMetadata],
-    disabled_skill_paths: &HashSet<AbsolutePathBuf>,
+    disabled_skill_paths: &HashSet<PathUri>,
 ) -> bool {
     skills
         .iter()
@@ -1328,12 +1331,13 @@ async fn load_apps_from_paths(
     app_declarations
 }
 
-pub async fn plugin_capability_summary_from_root(
+pub(crate) async fn plugin_capability_summary_from_root(
     plugin_id: &PluginId,
     plugin_root: &AbsolutePathBuf,
     skill_root_loader: &dyn SkillRootLoader<PluginSkillRoot>,
+    manifest_cache: &ManifestCache,
 ) -> Option<PluginCapabilitySummary> {
-    let loaded_manifest = load_plugin_manifest_with_format(plugin_root.as_path())?;
+    let loaded_manifest = manifest_cache.load(plugin_root.as_path())?;
     let manifest_format = loaded_manifest.format;
     let manifest = loaded_manifest.manifest;
     let plugin_identity = PluginIdentity {
@@ -1434,9 +1438,9 @@ pub fn apply_configured_plugin_mcp_server_policies(
 ) {
     for (name, server) in servers {
         if let Some(policy) = policies.get(name) {
-            server.enabled &= policy.enabled;
-            if let Some(ema) = &policy.ema_auth {
-                ema.apply(server);
+            server.enabled &= policy.enabled && !policy.has_unsupported_ema_auth;
+            if policy.has_unsupported_ema_auth {
+                server.auth = codex_config::McpServerAuth::EmaAuth;
             }
             let declared_approval_mode = server.default_tools_approval_mode.unwrap_or_default();
 

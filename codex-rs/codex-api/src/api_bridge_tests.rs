@@ -11,6 +11,25 @@ fn map_api_error_maps_server_overloaded() {
     assert!(matches!(err.details(), CodexErrorDetails::ServerOverloaded));
 }
 
+#[test]
+fn map_api_error_preserves_content_filter_retry_and_public_error() {
+    let err = map_api_error(ApiError::ContentFilter);
+    assert!(matches!(err.details(), CodexErrorDetails::ContentFilter));
+    assert_eq!(
+        (
+            err.retry_delay(/*retry_count*/ 1).is_some(),
+            err.to_codex_protocol_error(),
+            err.to_string(),
+        ),
+        (
+            true,
+            CodexErrorInfo::Other,
+            "stream disconnected before completion: Incomplete response returned, reason: content_filter"
+                .to_string(),
+        )
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn map_api_error_preserves_retry_delay() {
     let retry_delay = std::time::Duration::from_secs(17);
@@ -52,6 +71,56 @@ async fn map_api_error_preserves_retry_delay() {
                 expected_message.to_string(),
             )
         );
+    }
+}
+
+/// Mapping a new error category preserves elapsed advice without making hard failures retryable.
+#[tokio::test(start_paused = true)]
+async fn http_retry_deadline_survives_mapping_and_respects_terminal_errors() {
+    use std::time::Duration;
+
+    let advice = RetryAfter::from_delay(Duration::from_secs(10)).expect("retry advice");
+    tokio::time::advance(Duration::from_secs(4)).await;
+    for (status, code, retryable) in [
+        (503, "server_is_overloaded", true),
+        (429, "rate_limit_exceeded", true),
+        (429, "insufficient_quota", false),
+        (429, "usage_limit_reached", false),
+        (400, "cyber_policy", false),
+    ] {
+        let error = map_api_error(ApiError::Transport(TransportError::Http {
+            status: http::StatusCode::from_u16(status).unwrap(),
+            url: None,
+            headers: None,
+            body: Some(serde_json::json!({"error": {"type": code, "code": code, "message": "sensitive upstream detail"}}).to_string()),
+            retry_after: Some(advice),
+        }));
+        assert_eq!(
+            (error.retry_after(), error.server_retry_delay()),
+            (Some(advice), Some(Duration::from_secs(6))),
+            "{code}",
+        );
+        assert_eq!(
+            error.retry_delay(/*retry_count*/ 1),
+            retryable.then_some(Duration::from_secs(6)),
+            "{code}",
+        );
+        if status == 429 && retryable {
+            assert_eq!(
+                (
+                    error.to_codex_protocol_error(),
+                    error.http_status_code_value(),
+                    error.to_string()
+                ),
+                (
+                    CodexErrorInfo::ResponseTooManyFailedAttempts {
+                        http_status_code: Some(429),
+                    },
+                    Some(429),
+                    "exceeded retry limit, last status: 429 Too Many Requests".to_string(),
+                ),
+            );
+        }
     }
 }
 
@@ -318,6 +387,7 @@ fn map_api_error_preserves_misalignment_details_from_403_body() {
             "code": "misalignment_policy_violation",
             "misalignment": {
                 "error_type": "unauthorized_data_transfer",
+                "review_target": " RB/opaque== ",
                 "detailed_explanation": "The agent attempted an external transfer.",
                 "steer": { "message": "Do not transfer the user's files." }
             }
@@ -344,6 +414,7 @@ fn map_api_error_preserves_misalignment_details_from_403_body() {
         misalignment,
         &Some(MisalignmentErrorDetails {
             error_type: Some("unauthorized_data_transfer".to_string()),
+            review_target: Some(" RB/opaque== ".to_string()),
             detailed_explanation: Some("The agent attempted an external transfer.".to_string()),
             steer: Some(codex_protocol::protocol::MisalignmentSteer {
                 message: "Do not transfer the user's files.".to_string(),
@@ -363,6 +434,7 @@ fn map_api_error_preserves_misalignment_details_from_wrapped_websocket_error() {
             "code": "misalignment_policy_violation",
             "misalignment": {
                 "error_type": "future_safety_category",
+                "review_target": " RB/opaque== ",
                 "detailed_explanation": "The agent attempted an external transfer.",
                 "steer": { "message": "Do not transfer the user's files." }
             }
@@ -392,6 +464,7 @@ fn map_api_error_preserves_misalignment_details_from_wrapped_websocket_error() {
         misalignment,
         &Some(MisalignmentErrorDetails {
             error_type: Some("future_safety_category".to_string()),
+            review_target: Some(" RB/opaque== ".to_string()),
             detailed_explanation: Some("The agent attempted an external transfer.".to_string()),
             steer: Some(codex_protocol::protocol::MisalignmentSteer {
                 message: "Do not transfer the user's files.".to_string(),

@@ -8,7 +8,6 @@ use crate::style::accent_color;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
 use crate::version::CODEX_CLI_VERSION;
-use crate::width::display_width;
 use chrono::DateTime;
 use chrono::Local;
 use codex_app_server_protocol::AskForApproval;
@@ -51,7 +50,7 @@ use crate::wrapping::word_wrap_lines;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
+const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/settings/usage";
 
 #[derive(Debug, Clone)]
 struct StatusContextWindowData {
@@ -322,13 +321,15 @@ impl StatusHistoryCell {
                 .map(|effort| effort.to_string())
                 .unwrap_or_else(|| "none".to_string());
             config_entries.push(("reasoning effort", effort_value));
-            config_entries.push((
-                "reasoning summaries",
-                config
-                    .model_reasoning_summary
-                    .map(|summary| summary.to_string())
-                    .unwrap_or_else(|| "auto".to_string()),
-            ));
+            if remote_connection.is_none() {
+                config_entries.push((
+                    "reasoning summaries",
+                    config
+                        .model_reasoning_summary
+                        .map(|summary| summary.to_string())
+                        .unwrap_or_else(|| "auto".to_string()),
+                ));
+            }
         }
         let (model_name, model_details) = compose_model_display(model_name, &config_entries);
         let approval = config_entries
@@ -947,20 +948,22 @@ impl HistoryCell for Arc<StatusHistoryCell> {
     ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
         let mut lines =
             crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width));
-        for line in &mut lines {
-            let visible = line
-                .line
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>();
-            if let Some(start_byte) = visible.find(CHATGPT_USAGE_URL) {
-                let start = display_width(&visible[..start_byte]);
-                line.hyperlinks
-                    .push(crate::terminal_hyperlinks::TerminalHyperlink::web(
-                        start..start + display_width(CHATGPT_USAGE_URL),
-                        CHATGPT_USAGE_URL.to_string(),
-                    ));
+        // The usage URL has a known destination; wrapping preserves its underlined spans.
+        // Attach that destination to every fragment instead of searching for the full URL.
+        if self.show_chatgpt_usage_link {
+            for line in &mut lines {
+                let mut column = 0;
+                for span in &line.line.spans {
+                    let end = column + span.width();
+                    if span.style.add_modifier.contains(Modifier::UNDERLINED) {
+                        line.hyperlinks
+                            .push(crate::terminal_hyperlinks::TerminalHyperlink::web(
+                                column..end,
+                                CHATGPT_USAGE_URL.to_string(),
+                            ));
+                    }
+                    column = end;
+                }
             }
         }
         lines

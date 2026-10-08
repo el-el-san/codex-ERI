@@ -425,6 +425,9 @@ pub fn process_responses_event(
                         .and_then(Value::as_str)
                 });
                 let reason = reason.unwrap_or("unknown");
+                if reason == "content_filter" {
+                    return Err(ResponsesEventError::Api(ApiError::ContentFilter));
+                }
                 if reason != "interrupted" {
                     let message = format!("Incomplete response returned, reason: {reason}");
                     return Err(ResponsesEventError::Api(ApiError::Stream(message)));
@@ -647,6 +650,10 @@ async fn process_sse_with_treatment(
 }
 
 #[cfg(test)]
+#[path = "responses_error_tests.rs"]
+mod error_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use assert_matches::assert_matches;
@@ -725,6 +732,46 @@ mod tests {
 
     fn idle_timeout() -> Duration {
         Duration::from_millis(1000)
+    }
+
+    #[tokio::test]
+    async fn partial_answer_phase_survives_item_start_and_completion() {
+        let item = json!({
+            "id": "msg_partial",
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "phase": "partial_answer"
+        });
+        let added = json!({"type": "response.output_item.added", "item": item});
+        let delta = json!({"type": "response.output_text.delta", "delta": "First result."});
+        let mut done_item = item;
+        done_item["content"] = json!([{"type": "output_text", "text": "First result."}]);
+        let done = json!({"type": "response.output_item.done", "item": done_item});
+        let completed = json!({
+            "type": "response.completed",
+            "response": {"id": "resp1", "end_turn": false}
+        });
+        let stream = [added, delta, done, completed]
+            .into_iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+
+        let events = collect_events(&[stream.as_bytes()]).await;
+        assert_matches!(events.as_slice(), [
+            Ok(ResponseEvent::OutputItemAdded(ResponseItem::Message {
+                phase: Some(MessagePhase::PartialAnswer), content: start_content, ..
+            })),
+            Ok(ResponseEvent::OutputTextDelta(text)),
+            Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
+                phase: Some(MessagePhase::PartialAnswer), content: done_content, ..
+            })),
+            Ok(ResponseEvent::Completed { end_turn: Some(false), .. }),
+        ] if start_content.is_empty()
+            && text == "First result."
+            && done_content == &vec![codex_protocol::models::ContentItem::OutputText {
+                text: "First result.".to_string()
+            }]);
     }
 
     #[tokio::test]
@@ -1244,6 +1291,7 @@ mod tests {
                     misalignment,
                     &Some(MisalignmentErrorDetails {
                         error_type: Some("future_safety_category".to_string()),
+                        review_target: None,
                         detailed_explanation: Some(
                             "The agent attempted an external transfer.".to_string()
                         ),

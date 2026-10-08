@@ -316,6 +316,21 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 ## 7. 最近の更新履歴
 
+### 2026-10-09 更新内容（rust-v0.162.0）
+- 上流の最新安定版 `rust-v0.162.0`（2026-10-08 UTC 公開）を確認し、`codex-rs` を同期
+- Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
+  MCP 環境変数保持、ファイルロック回避、Direct ツール強制を再適用
+- Android の `daemon_auto_start` を既定で無効にする修正と、5 crate root の再帰上限を維持
+  - `chatgpt/src/lib.rs` の再帰上限は上流にも追加されたため、上流の実装を使用
+- 以前の Cargo audit 対応として `autocfg` 1.5.1 と `faster-hex` 0.10.1 を維持し、
+  `Cargo.lock` の workspace package version を 0.162.0 に更新
+- `cargo metadata --no-deps --locked` と `cargo fmt --all -- --check` が成功
+  （ローカルでの `cargo build` は実施せず、GitHub Actions でビルド）
+- Android 用 CLI / exec / TUI の依存グラフに V8 がなく、
+  vendored OpenSSL が有効であることを確認
+- 上流の TUI snapshot に含まれる末尾空白は期待値として保持し、
+  snapshot 以外の `git diff --check` が成功
+
 ### 2026-09-30 更新内容（rust-v0.159.2）
 - 上流の最新安定版 `rust-v0.159.2` を確認し、`codex-rs` を同期
 - Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、

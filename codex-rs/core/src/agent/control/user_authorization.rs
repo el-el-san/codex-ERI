@@ -6,10 +6,15 @@
 //! Retained-history reconciliation owns recovery order and missing-instruction provenance.
 //! Known positions preserve host order, not delivery order or inferred question-answer pairs.
 //! Unmatched legacy instructions supplement retained facts without claiming a known ordering.
+//! Optional handoff filtering narrows assistant context using surviving calls as relevance boundaries.
+//! Handoff projection preserves saved heartbeat instructions and the active turn's skills.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 
 use super::LocalAgentControl;
 use crate::codex_thread::GuardianRootMessage;
@@ -57,6 +62,15 @@ impl LocalAgentControl {
             return None;
         }
 
+        let worker_path = root_thread
+            .enabled(codex_features::Feature::GuardianRootHandoffContext)
+            .then(|| {
+                self.runtime
+                    .registry
+                    .agent_metadata_for_thread(thread_id)?
+                    .agent_path
+            })
+            .flatten();
         let root_history = root_thread.session.clone_history().await;
         let history = root_history.conversation_history_snapshot();
         // Join calls to host-confirmed outputs in this snapshot. Older outputs without
@@ -282,6 +296,40 @@ impl LocalAgentControl {
         messages.extend(assistant_messages);
         // Unknown order cannot establish recency; prune these assistants first.
         messages.sort_by_key(|(order, _)| *order);
+        let mut review_context_revision = history.guardian_review_context_revision();
+        if let Some(worker) = worker_path
+            && let Some(selected) = super::root_handoff::selected_message_indices(
+                root_history.annotated_items(),
+                &messages,
+                &worker,
+                root_thread
+                    .config()
+                    .await
+                    .multi_agent_v2
+                    .tool_namespace
+                    .as_deref(),
+            )
+        {
+            // A handoff can change the selection without adding a new root user message.
+            let mut revision = DefaultHasher::new();
+            review_context_revision.hash(&mut revision);
+            selected.hash(&mut revision);
+            review_context_revision = revision.finish();
+            missing_assistant_context |=
+                messages.iter().enumerate().any(|(index, (_, message))| {
+                    !selected.contains(&index)
+                        && matches!(
+                            message,
+                            GuardianRootMessage::Assistant(_)
+                                | GuardianRootMessage::UnorderedAssistant(_)
+                        )
+                });
+            messages = messages
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, message)| selected.contains(&index).then_some(message))
+                .collect();
+        }
         // Apply one shared cap so user records and confirmed questions compete
         // while keeping omissions explicit for authorization and assistant context.
         let removed = messages.len().saturating_sub(MAX_ROOT_MESSAGES);
@@ -343,7 +391,7 @@ impl LocalAgentControl {
             root_thread_id,
             history_reset_version: root_history.reset_version,
             authorization_version,
-            review_context_revision: history.guardian_review_context_revision(),
+            review_context_revision,
             messages,
             trusted_skill_paths,
         })

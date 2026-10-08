@@ -7,20 +7,28 @@ const TABLE: &str = "| Task | Status | Next step |\n|---|---|---|\n| Task 1 | Co
 
 #[test]
 fn table_copy_preserves_structure_across_grid_and_record_layouts() {
+    let table = TABLE.replace("Finish implementation", "Finish my_long_file_name!.txt");
     let source = format!(
-        "The project is moving forward, with one task complete and two still to finish.\n\n{TABLE}\n\nThe next priority is to finish Task 2 while gathering the requirements needed to begin Task 3."
+        "The project is moving forward, with one task complete and two still to finish.\n\n{table}\n\nThe next priority is to finish Task 2 while gathering the requirements needed to begin Task 3."
     );
+    let markdown = source.replace("my_long_file_name!.txt", r"my\_long\_file\_name\!.txt");
     for width in [12, 24, 40, 80, 120] {
         let layout = markdown_layout(&source, width);
+        let mut lines = Vec::new();
+        layout.copy_lines(0..layout.text().len(), "", &mut lines);
         assert_eq!(
             payload(&layout, 0..layout.text().len()),
-            (source.clone(), CopyFormat::Markdown),
+            (markdown.clone(), CopyFormat::Markdown),
             "width {width}"
+        );
+        assert_eq!(
+            crate::markdown_copy::literal_selection(&lines, "unused"),
+            source
         );
         let rewrapped = layout.rewrap(/*width*/ 17);
         assert_eq!(
             payload(&rewrapped, 0..rewrapped.text().len()).0,
-            source,
+            markdown.clone(),
             "rewrapped {width}"
         );
     }
@@ -33,7 +41,33 @@ fn partial_table_selection_never_adds_unselected_cell_text() {
         /*width*/ 80,
     );
     let start = code.text().find("a|b").unwrap();
-    assert_eq!(payload(&code, start..start + 3).0, "`a|b`");
+    assert_eq!(
+        payload(&code, start..start + 3),
+        ("a|b".into(), CopyFormat::PlainText)
+    );
+    assert_eq!(
+        payload(&code, start + 1..start + 3),
+        ("|b".into(), CopyFormat::PlainText)
+    );
+    let mixed = markdown_layout(
+        "Before\n\n| `a\\|b` | B |\n|---|---|\n| left | right |",
+        /*width*/ 80,
+    );
+    let end = mixed.text().find("a|b").unwrap() + "a|b".len();
+    assert_eq!(
+        payload(&mixed, 0..end),
+        ("Before\n\n`a|b`".into(), CopyFormat::Markdown)
+    );
+    let controls = markdown_layout(
+        "| A | B |\n|---|---|\n| `a\u{7}\\|b` | value |",
+        /*width*/ 80,
+    );
+    let selected = "a\u{7}|b";
+    let start = controls.text().find(selected).unwrap();
+    assert_eq!(
+        payload(&controls, start..start + selected.len()),
+        ("a|b".into(), CopyFormat::PlainText)
+    );
     let repeated = markdown_layout(
         "| alpha SECRET omega |\n|---|\n| long_value_one |\n| long_value_two |",
         /*width*/ 12,
@@ -172,7 +206,7 @@ fn empty_selected_rows_keep_copy_spacing_without_newline_highlights() {
                 (text, format),
                 (
                     format!("Before\n\n{TABLE}\n\nAfter").as_str(),
-                    CopyFormat::Markdown
+                    CopyFormat::MarkdownSelection(format!("Before\n\n{TABLE}\n\nAfter").into())
                 )
             );
             Ok(crate::clipboard_copy::CopyStatus::Confirmed)

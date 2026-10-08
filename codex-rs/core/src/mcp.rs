@@ -16,6 +16,7 @@ use codex_extension_api::McpServerContributionContext;
 use codex_extension_api::SelectedPlugin;
 use codex_extension_api::SelectedPluginIdentity;
 use codex_extension_api::SelectedPluginSnapshot;
+use codex_extension_api::SessionIsolation;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -164,22 +165,64 @@ impl McpManager {
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
         executor_capability_discovery: Option<&ExecutorCapabilityDiscoverySnapshot>,
     ) -> McpRuntimeProjection {
+        let mut context = McpServerContributionContext::for_step(
+            config,
+            thread_init,
+            thread_store,
+            identity.originator,
+            ready_selected_capability_roots,
+            executor_capability_discovery,
+        )
+        .with_session_source(identity.session_source)
+        .with_auth_changed(identity.auth_changed);
+        if let McpEnvironmentScope::Selected(environments) = &identity.environments {
+            context = context.with_selected_environments(environments);
+        }
         self.runtime_config_with_context(
-            McpServerContributionContext::for_step(
-                config,
-                thread_init,
-                thread_store,
-                identity.originator,
-                ready_selected_capability_roots,
-                executor_capability_discovery,
-            )
-            .with_session_source(identity.session_source)
-            .with_auth_changed(identity.auth_changed),
+            context,
             Some(identity.originator),
             identity.environments,
             identity.disabled_plugin_ids,
         )
         .await
+    }
+
+    /// Resolves only plugins from this step's ready roots, independent of shared MCP refresh.
+    pub(crate) async fn selected_plugins_for_step(
+        &self,
+        context: McpServerContributionContext<'_, Config>,
+        disabled_plugin_ids: &[String],
+    ) -> SelectedPluginSnapshot {
+        let roots = context
+            .ready_selected_capability_roots()
+            .unwrap_or_default();
+        let mut selected = SelectedPluginSnapshot::default();
+        if roots.is_empty() {
+            return selected;
+        }
+        for contributor in self.extensions.mcp_server_contributors() {
+            for SelectedPlugin {
+                selected_root_id,
+                plugin_id,
+                ..
+            } in contributor.selected_plugins(context).await
+            {
+                if !roots.iter().any(|root| root.id == selected_root_id) {
+                    continue;
+                }
+                if !context.config().features.enabled(Feature::Plugins)
+                    || disabled_plugin_ids.contains(&plugin_id)
+                {
+                    selected.disabled_plugin_roots.push(selected_root_id);
+                } else {
+                    selected.plugins.push(SelectedPluginIdentity {
+                        selected_root_id: Some(selected_root_id),
+                        plugin_id,
+                    });
+                }
+            }
+        }
+        selected
     }
 
     async fn runtime_config_with_context(
@@ -348,7 +391,14 @@ impl McpManager {
         let mut mcp_config = config
             .to_mcp_config_with_loaded_plugins(&loaded_plugins, selected_plugin_registrations);
         let mut catalog = mcp_config.mcp_server_catalog.to_builder();
-        if mcp_config.apps_enabled {
+        // Isolated sessions do not inherit the implicit Apps connection.
+        if mcp_config.apps_enabled
+            && context
+                .thread_init()
+                .and_then(codex_extension_api::ExtensionDataInit::get::<SessionIsolation>)
+                .as_deref()
+                != Some(&SessionIsolation::Isolated)
+        {
             catalog.register(McpServerRegistration::from_compatibility(
                 CODEX_APPS_MCP_SERVER_NAME.to_string(),
                 LEGACY_CODEX_APPS_REGISTRATION_ID,
