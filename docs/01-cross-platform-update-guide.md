@@ -349,6 +349,20 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   - `resume` / `fork` は空のセッション選択画面から新規画面へ進んで確認
   - ローカルのテスト用プロバイダーを使用し、モデルへのプロンプトは送信していない
 - CI ログと起動確認結果を `logs/rust-v0.162.0/` に保存
+- 取得済み artifact の SHA-256 を再確認し、実際のモデル応答を確認してから
+  `~/bin` の `codex` / `codex-exec` / `codex-tui` を 0.162.0 へ置換
+  - 置換前: `CODEX_0_162_0_PREINSTALL_OK`（約66秒、正常終了）
+  - 置換後: `CODEX_0_162_0_INSTALLED_OK`（約54秒、正常終了）
+  - 応答確認は普段の設定を使用した `codex exec --ephemeral` で実施し、
+    置換後は `PATH` 上の `codex` からの応答を確認
+  - 旧 0.159.2 バイナリ:
+    `~/bin/.codex-backup-0.159.2-to-0.162.0-20261009-122034/`
+- バックアップと配置前コピーを SHA-256 で照合し、`os.replace` で切り替えた後、
+  設置先の 3 バイナリの SHA-256 とバージョンを確認
+- 普段の設定で対話起動・`/status`・正常終了を確認
+  - 初回は `workspace routing discovery timed out` で終了したが、再試行で正常起動を確認
+  - 設定ファイルの SHA-256 は検証前後で一致
+- 設置前後の応答と対話起動の検証結果を `logs/rust-v0.162.0/install/` に保存
 
 ### 2026-09-30 更新内容（rust-v0.159.2）
 - 上流の最新安定版 `rust-v0.159.2` を確認し、`codex-rs` を同期
