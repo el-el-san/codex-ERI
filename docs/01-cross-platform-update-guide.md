@@ -330,6 +330,25 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   vendored OpenSSL が有効であることを確認
 - 上流の TUI snapshot に含まれる末尾空白は期待値として保持し、
   snapshot 以外の `git diff --check` が成功
+- 上流との差分が互換対応と lockfile の 19 ファイルに限定されることと、
+  上流ソースの取り込み漏れがないことを確認
+- 更新 commit `36249d8b4` の CI 成功を確認
+  - Android aarch64 release build: run `37856112743`
+  - Cargo audit: run `37856112718`
+  - CodeQL: run `37856112823`
+- Android artifact を取得し、配布 ZIP の SHA-256 が GitHub の digest と一致することを確認
+  - ZIP SHA-256: `79b650c78bb53ea5e35f750912144dbb011fb1e79299cf2c0ac2625e1336a975`
+  - artifact: `artifacts/rust-v0.162.0/codex-android-aarch64-release.tar.gz`
+  - tar.gz SHA-256: `9fae870145637926dfd726a0e77c352bafa1f259bd955dcc5d89dd4779d9cd9a`
+- 3 バイナリが Android API 28 向け ARM aarch64 ELF であり、
+  各 `--version` が 0.162.0 を返すことを確認
+- 隔離した設定環境で `daemon_auto_start` の既定値が `false` であることを確認
+- `--no-daemon` や daemon 設定の上書きなしで、
+  `codex` / `codex resume` / `codex fork` / `codex-tui` の対話起動、
+  `/status` の表示、正常終了を確認
+  - `resume` / `fork` は空のセッション選択画面から新規画面へ進んで確認
+  - ローカルのテスト用プロバイダーを使用し、モデルへのプロンプトは送信していない
+- CI ログと起動確認結果を `logs/rust-v0.162.0/` に保存
 
 ### 2026-09-30 更新内容（rust-v0.159.2）
 - 上流の最新安定版 `rust-v0.159.2` を確認し、`codex-rs` を同期
