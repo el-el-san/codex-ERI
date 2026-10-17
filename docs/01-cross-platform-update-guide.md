@@ -322,6 +322,8 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   Android のファイルロック回避、Direct ツール強制、daemon 自動起動の既定無効を維持
 - 再帰上限は上流に追加された `exec/src/main.rs` / `tui/src/main.rs` も利用し、重複を除去
 - `Cargo.lock` の workspace version を 0.163.0 に更新し、既存の依存パッケージ修正を維持
+- Cargo audit が検出した脆弱性に対応し、`rustls` を 0.23.46、`zip` を 9.0.4 へ更新
+  - zip 9 の `ZipFile` に追加された reader 型引数へ `core-plugins` の権限適用関数を追従
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証
 
 
