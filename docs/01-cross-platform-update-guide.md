@@ -316,6 +316,15 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 ## 7. 最近の更新履歴
 
+### 2026-10-17 更新内容（rust-v0.163.0）
+- 最新安定版 `rust-v0.163.0`（2026-10-15 UTC 公開）の `codex-rs` を同期
+- TLS vendoring、ログインと MCP OAuth のブラウザ起動、Termux 環境変数保持、
+  Android のファイルロック回避、Direct ツール強制、daemon 自動起動の既定無効を維持
+- 再帰上限は上流に追加された `exec/src/main.rs` / `tui/src/main.rs` も利用し、重複を除去
+- `Cargo.lock` の workspace version を 0.163.0 に更新し、既存の依存パッケージ修正を維持
+- ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証
+
+
 ### 2026-10-09 更新内容（rust-v0.162.0）
 - 上流の最新安定版 `rust-v0.162.0`（2026-10-08 UTC 公開）を確認し、`codex-rs` を同期
 - Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
