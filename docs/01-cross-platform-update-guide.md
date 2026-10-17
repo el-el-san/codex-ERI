@@ -327,6 +327,21 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証
 
 
+- Android aarch64 release build が成功（commit `326effa34`、run `38995391095`）
+- Cargo audit が成功（依存更新 commit `9dcb102cd`、run `38994308672`）
+- ZIP の SHA-256 が GitHub artifact digest と一致することを確認
+  - ZIP SHA-256: `af9c195e2abc51093324700f127ef7b387a4ad03f3d96f451cc3c6043db4d68d`
+  - artifact: `artifacts/rust-v0.163.0/codex-android-aarch64-release.tar.gz`
+  - tar.gz SHA-256: `4d5fe9c100cb016b910ebdd24d2896882c5f8177e8ceebb46afb65400d6fc766`
+- 3 バイナリが Android API 28 向け ARM aarch64 ELF で、各 `--version` が 0.163.0 を返すことを確認
+- 隔離した設定環境で `daemon_auto_start` の既定値が `false` であることを確認
+- `--no-daemon` と daemon 設定の上書きなしで、`codex` / `codex resume` /
+  `codex fork` / `codex-tui` の対話起動、`/status` 表示、正常終了を確認
+  - 起動確認用のローカルプロバイダー設定を使用し、モデルへのプロンプトは送信していない
+- 上流ソースのコピー漏れがないことと、互換対応・依存修正の差分が 19 ファイルであることを確認
+  - 既存の `.gitignore` で除外される設定・NPM 配布メタデータ・`AGENTS.md` は従来どおり扱う
+- CI ログ、依存関係、ハッシュ、起動確認結果を `logs/rust-v0.163.0/` に保存
+
 ### 2026-10-09 更新内容（rust-v0.162.0）
 - 上流の最新安定版 `rust-v0.162.0`（2026-10-08 UTC 公開）を確認し、`codex-rs` を同期
 - Termux/Android 向けの TLS vendoring、ログインと MCP OAuth のブラウザ起動、
