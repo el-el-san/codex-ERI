@@ -1049,7 +1049,7 @@ fn extract_zipball_to_dir(bytes: &[u8], destination: &Path) -> Result<(), String
         let Some(relative_path) = entry.enclosed_name() else {
             return Err(format!(
                 "curated plugins zip entry `{}` escapes extraction root",
-                entry.name()
+                String::from_utf8_lossy(entry.name_raw())
             ));
         };
 
