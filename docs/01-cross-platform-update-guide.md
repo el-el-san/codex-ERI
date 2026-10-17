@@ -325,10 +325,9 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - Cargo audit が検出した脆弱性に対応し、`rustls` を 0.23.46、`zip` を 9.0.4 へ更新
   - zip 9 の `ZipFile` に追加された reader 型引数へ `core-plugins` の権限適用関数を追従
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証
-
-
 - Android aarch64 release build が成功（commit `326effa34`、run `38995391095`）
 - Cargo audit が成功（依存更新 commit `9dcb102cd`、run `38994308672`）
+- CodeQL が成功（commit `326effa34`、run `38995391127`）
 - ZIP の SHA-256 が GitHub artifact digest と一致することを確認
   - ZIP SHA-256: `af9c195e2abc51093324700f127ef7b387a4ad03f3d96f451cc3c6043db4d68d`
   - artifact: `artifacts/rust-v0.163.0/codex-android-aarch64-release.tar.gz`
