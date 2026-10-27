@@ -333,7 +333,23 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `Cargo.lock` の workspace version を 0.164.0 に更新
 - 監査で検出した問題に対応し、zstd 0.14.3、ctutils 0.4.6、tokio 1.54.1 へ更新
 - `crypto-bigint` 0.5.5 の RUSTSEC-2026-0387 は依存元の互換制約で修正版 0.7.6 に更新できず、監査結果に残る（除外設定は追加しない）
-- ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証する
+- ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証
+- Android aarch64 release build が成功（commit `aba02d7d9`、run `40509343205`）
+- 上流で削除された `Path` import をログインの環境検知処理用に復元
+- 全体の `cargo fmt --all -- --check`、`cargo metadata --no-deps --locked` を確認
+- Android CLI / exec / TUI から V8 / code-mode-host / MXC SDK に到達しないことと、vendored OpenSSL を確認
+- 上流ソースのコピー漏れがないことと、互換対応・依存修正の差分が20ファイルであることを確認
+- CodeQL が成功（commit `aba02d7d9`、run `40509343194`）
+- Cargo audit は run `40507278393` で未解決の `crypto-bigint` 1件を検出。既存の除外項目に追加はしていない
+- 成果物を `artifacts/rust-v0.164.0/codex-android-aarch64-release.tar.gz` に取得
+  - ZIP SHA-256: `bd9e88b54a5bcb3d95399844b06d0f3b6177014ea95403f66d7fa97cd307e2eb`（GitHub artifact digest と一致）
+  - tar.gz SHA-256: `5caf05ff6583b6722cbf9ca6010bb68fd6449e05bcb81f93c979dfd7e172afbc`
+- 3バイナリが Android API 28 向け ARM aarch64 ELF で、各 `--version` が 0.164.0 を返すことを確認
+- `daemon_auto_start` が既定で `false` であることと、`--no-daemon` / daemon 設定上書きなしでの
+  `codex` / `codex resume <ID>` / `codex fork <ID>` / `codex-tui` の対話起動、`/status` 表示、正常終了を確認
+  - 隔離した設定とローカル HTTP テスト用プロバイダーを使用し、固定応答で作成したセッション ID を resume / fork に使用
+  - 外部モデルへのプロンプト送信は行っていない
+- CI ログ、依存関係、ハッシュ、起動確認結果を `logs/rust-v0.164.0/` に保存
 
 ### 2026-10-17 更新内容（rust-v0.163.0）
 - 最新安定版 `rust-v0.163.0`（2026-10-15 UTC 公開）の `codex-rs` を同期
