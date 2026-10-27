@@ -323,6 +323,8 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - OAuth ブラウザ起動処理の移動先 `login/src/oauth_session_login.rs` に環境別処理を再適用
 - rustls 0.23.46 と ZIP 9 API 対応は上流実装を採用し、zip 9.0.4 を維持
 - `Cargo.lock` の workspace version を 0.164.0 に更新
+- 監査で検出した問題に対応し、zstd 0.14.3、ctutils 0.4.6、tokio 1.54.1 へ更新
+- `crypto-bigint` 0.5.5 の RUSTSEC-2026-0387 は依存元の互換制約で修正版 0.7.6 に更新できず、監査結果に残る（除外設定は追加しない）
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android ビルドを検証する
 
 ### 2026-10-17 更新内容（rust-v0.163.0）
