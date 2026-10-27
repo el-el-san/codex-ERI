@@ -198,6 +198,13 @@
   PTY 上で `codex` / `codex resume` / `codex fork` / `codex-tui` を
   `--no-daemon` なしで起動し、対話画面まで到達することを確認する
 
+### 3.12 Android では MXC SDK を依存グラフから除外する
+- 0.164.0 の `mxc-sdk` は実行エンジンが Windows/Linux/macOS のみ対応で、Android では内部参照がコンパイルできない
+- `mxc-sandbox/Cargo.toml` の通常の `mxc-sdk` 依存を Windows 向けに限定する
+- Windows 以外のポリシー回帰テスト用には非 Android の dev-dependency として保持する
+- `mxc-sandbox/src/lib.rs` のテスト用 `policy` モジュールと SDK を使うテストも非 Android に限定する
+- Android CLI / exec / TUI の依存グラフに `mxc-sdk` がないことを確認する
+
 ## 4. 実用的な差分確認コマンド
 
 上流と現状の差分が多い場合でも、まず「どのファイルが変更されたか」を把握するのが有効です。
@@ -322,6 +329,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
   Direct ツール強制、daemon 自動起動の既定無効、再帰上限を維持
 - OAuth ブラウザ起動処理の移動先 `login/src/oauth_session_login.rs` に環境別処理を再適用
 - rustls 0.23.46 と ZIP 9 API 対応は上流実装を採用し、zip 9.0.4 を維持
+- Android CI が検出した MXC SDK の非対応を修正し、Windows 用通常依存と非 Android 用テスト依存へ限定（§3.12）
 - `Cargo.lock` の workspace version を 0.164.0 に更新
 - 監査で検出した問題に対応し、zstd 0.14.3、ctutils 0.4.6、tokio 1.54.1 へ更新
 - `crypto-bigint` 0.5.5 の RUSTSEC-2026-0387 は依存元の互換制約で修正版 0.7.6 に更新できず、監査結果に残る（除外設定は追加しない）
