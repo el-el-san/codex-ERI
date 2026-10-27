@@ -17,6 +17,7 @@ use std::io::Write;
 use std::io::{self};
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
