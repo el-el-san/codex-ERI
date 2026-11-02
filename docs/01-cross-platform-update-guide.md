@@ -339,18 +339,19 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - Dependabot が検出した ZIP の GHSA-m665-v7pm-7grj に対応し、ZIP を 9.0.5 へ更新して Android CI を再実行
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android release build を検証
 
-- Android aarch64 release build が成功（commit `2986a3491`、run `41440589098`）。ビルドログにコンパイル警告・エラーがないことを確認
-- Cargo audit が成功（run `41440589114`）
-- CodeQL run `41440589090` は解析中に120分の実行上限で中断。解析対象を維持したまま `.github/workflows/codeql.yml` の上限を240分へ延長し、再実行
+- 2026-11-03 に ZIP 修正版の Android aarch64 release build 成功を確認（commit `deab3b92b`、run `41458742686`）。ビルドログにコンパイル警告・エラーがないことを確認
+- Cargo audit が成功（run `41458742065`）
+- CodeQL run `41440589090` は解析中に120分の実行上限で中断。解析対象を維持したまま `.github/workflows/codeql.yml` の上限を240分へ延長。ZIP 修正版の run `41458742240` で再実行中（最終確認時点）
 - `cargo fmt --all -- --check`、変更した認証・ロック処理の書式、`cargo metadata --no-deps --locked` を確認
 - Android CLI / exec / TUI から V8 / code-mode-host / MXC SDK に到達しないことと、vendored OpenSSL を確認
 - 上流ソースのコピー漏れがないことを確認
 - 成果物を `artifacts/rust-v0.166.0/codex-android-aarch64-release.tar.gz` に取得
-  - ZIP SHA-256: `f7357407790d5b885bed3c10e7bd68d8d91115fb8fffb745361858a4b18d6c1f`（GitHub artifact digest と一致）
-  - tar.gz SHA-256: `b5f842fdbd1135f1d0994a6eeea5df612d8d0ff2095157964d0e98cd8cd9f66a`
+  - ZIP SHA-256: `6195b432bdb354314445fa12db1bf651b443fdc1fb0d26ce8028aa821695fa27`（GitHub artifact digest と一致）
+  - tar.gz SHA-256: `2ee2ac2a252182c651d46c0bd334f5285b191c45a55bd3d90e4f74971816dc62`
 - 3バイナリが Android API 28 向け aarch64 ELF で、各 `--version` が 0.166.0 を返すことを確認
 - `daemon_auto_start` が既定で `false` であることと、`--no-daemon` や daemon 設定上書きなしでの CLI / resume / fork / TUI の対話起動、`/status` 表示、正常終了を確認
 - 隔離した設定とローカル固定応答プロバイダーで、Direct の `exec_command` が公開され、コマンドが終了コード 0 と期待した出力を返すことを確認
+- Dependabot の ZIP 重大アラート #34 が `fixed` になったことを確認
 - ダミー API キーと隔離した保存先で、認証の保存・状態確認・ログアウトが Android のファイルロックエラーなしで成功することを確認
 - 外部モデルへのプロンプト送信は行わず、CI ログ、依存関係、ハッシュ、実機確認結果を `logs/rust-v0.166.0/` に保存
 
