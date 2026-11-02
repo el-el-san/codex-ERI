@@ -19,11 +19,12 @@
 - モデルプロバイダーの OAuth ログインも `login/src/server.rs` の環境別処理を使用する
   - upstream 0.158.0 ではブラウザ起動箇所が `login/src/gateway_auth.rs` から
     `login/src/gateway_auth_login.rs` の `open_browser` に移動している
+  - upstream 0.164.0 以降の配置は `login/src/oauth_session_login.rs` の `open_browser`
   - 注: 現行上流では `login` と `core` の依存関係上、`login` から `codex-core` に直接依存できないため、`login` 側もローカル実装として保持する
 - 変更ファイル:
   - `login/Cargo.toml`（`webbrowser` 削除、`shlex` 追加）
   - `login/src/server.rs`（ブラウザ起動処理と環境検知をローカル実装へ差し替え）
-  - `login/src/gateway_auth_login.rs`（モデルプロバイダー OAuth でも同じブラウザ起動処理を使用）
+  - `login/src/oauth_session_login.rs`（モデルプロバイダー OAuth でも同じブラウザ起動処理を使用）
   - `rmcp-client/src/utils.rs`（`open_url` と環境検知関数を追加）
   - `rmcp-client/src/perform_oauth_login.rs`（ブラウザ起動処理を `open_url` 呼び出しへ差し替え）
   - `rmcp-client/Cargo.toml`（`webbrowser` 削除）
@@ -102,7 +103,7 @@
   - SSH/Container: 自動起動を回避し、URL を出力
   - macOS/Linux/Windows: それぞれ `open` / `xdg-open` / `cmd /c start`
 - `login/src/server.rs` のリダイレクト開始箇所（認可 URL を開く処理）で上記関数を使用すること
-- `login/src/gateway_auth_login.rs` の `open_browser` も同じ関数を使用し、
+- `login/src/oauth_session_login.rs` の `open_browser` も同じ関数を使用し、
   `OpenUrlStatus::Suppressed` と起動失敗時に手動で URL を開く案内を維持すること
 - MCP の OAuth ログイン（`rmcp-client/src/perform_oauth_login.rs`）も同様に適用すること
 
@@ -135,13 +136,14 @@
   - これにより `thread/start failed during TUI bootstrap` エラーが解消される
 
 - `rollout/src/writer_lock.rs`（旧`thread-store/src/local/writer_lock.rs`、0.147.0 で新設）の `file.lock()` / `file.try_lock()` も同様にAndroidで非対応
-  - `lock_coordination` 内の `file.lock()` と `acquire` 内の `file.try_lock()` を `#[cfg(not(target_os = "android"))]` で除外
+  - `lock_coordination` 内の `file.try_lock()` を使う待機ループと、`acquire` 内の `file.try_lock()` を `#[cfg(not(target_os = "android"))]` で除外
+  - Android 以外では coordination lock の30秒の待機期限を維持
   - `try_acquire_for_publication` も Android ではロック確認なしで通過させる
   - Android では `remove_stale_thread_locks` は stale 判定ができないため no-op とする
   - 未対策だと `thread/start failed during TUI bootstrap: ... .coordination.lock: lock() not supported` で起動不可になる
 
 - `rollout/src/maintenance.rs` の保守ロックも Android では `try_lock()` が非対応
-  - Android ではファイルを作成・保持するだけのガードとして扱い、ロック取得を省略する
+  - Android ではファイルを作成・保持するだけのガードとして扱い、ロック取得と `Drop` 内の `file.unlock()` を省略する
 
 - `login/src/auth/storage.rs` の認証保存時の `file.lock()` と、
   `login/src/oauth_session_storage.rs` の OAuth 用 `file.try_lock()` も Android では省略する。
@@ -335,6 +337,21 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 前版の依存修正を維持し、ZIP 9.0.4、zstd 0.14.3、ctutils 0.4.6、tokio 1.54.1 を使用。tonic 0.14.9 へ更新して旧 zstd の残存を解消
 - Cargo audit が検出した RUSTSEC-2026-0418 に対応し、libz-sys を 1.1.31 へ更新（監査の除外追加なし）
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android release build を検証
+
+- Android aarch64 release build が成功（commit `2986a3491`、run `41440589098`）。ビルドログにコンパイル警告・エラーがないことを確認
+- Cargo audit が成功（run `41440589114`）
+- CodeQL run `41440589090` は解析中に120分の実行上限で中断。解析対象を維持したまま `.github/workflows/codeql.yml` の上限を240分へ延長し、再実行
+- `cargo fmt --all -- --check`、変更した認証・ロック処理の書式、`cargo metadata --no-deps --locked` を確認
+- Android CLI / exec / TUI から V8 / code-mode-host / MXC SDK に到達しないことと、vendored OpenSSL を確認
+- 上流ソースのコピー漏れがないことを確認
+- 成果物を `artifacts/rust-v0.166.0/codex-android-aarch64-release.tar.gz` に取得
+  - ZIP SHA-256: `f7357407790d5b885bed3c10e7bd68d8d91115fb8fffb745361858a4b18d6c1f`（GitHub artifact digest と一致）
+  - tar.gz SHA-256: `b5f842fdbd1135f1d0994a6eeea5df612d8d0ff2095157964d0e98cd8cd9f66a`
+- 3バイナリが Android API 28 向け aarch64 ELF で、各 `--version` が 0.166.0 を返すことを確認
+- `daemon_auto_start` が既定で `false` であることと、`--no-daemon` や daemon 設定上書きなしでの CLI / resume / fork / TUI の対話起動、`/status` 表示、正常終了を確認
+- 隔離した設定とローカル固定応答プロバイダーで、Direct の `exec_command` が公開され、コマンドが終了コード 0 と期待した出力を返すことを確認
+- ダミー API キーと隔離した保存先で、認証の保存・状態確認・ログアウトが Android のファイルロックエラーなしで成功することを確認
+- 外部モデルへのプロンプト送信は行わず、CI ログ、依存関係、ハッシュ、実機確認結果を `logs/rust-v0.166.0/` に保存
 
 ### 2026-10-27 更新内容（rust-v0.164.0）
 - 最新安定版 `rust-v0.164.0`（2026-10-23 UTC 公開）の `codex-rs` を同期
