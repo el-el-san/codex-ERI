@@ -332,6 +332,8 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - TLS vendoring、ブラウザ起動、Termux 環境変数保持、Android のファイルロック回避、Direct ツール強制、daemon 自動起動の既定無効、再帰上限、MXC SDK の除外を維持
 - 認証保存に追加されたファイルロックと OAuth 用のファイルロックを Android では省略し、非対応エラーを回避
 - rollout の coordination lock に追加された待機タイムアウトと maintenance guard の明示的な unlock を取り込み、Android では非対応のロック操作を省略
+- 前版の依存修正を維持し、ZIP 9.0.4、zstd 0.14.3、ctutils 0.4.6、tokio 1.54.1 を使用。tonic 0.14.9 へ更新して旧 zstd の残存を解消
+- Cargo audit が検出した RUSTSEC-2026-0418 に対応し、libz-sys を 1.1.31 へ更新（監査の除外追加なし）
 - ローカルで `cargo build` は実施せず、GitHub Actions で Android release build を検証
 
 ### 2026-10-27 更新内容（rust-v0.164.0）
