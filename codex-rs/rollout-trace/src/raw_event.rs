@@ -23,7 +23,7 @@ use serde_json::Value;
 pub type RawEventSeq = u64;
 
 /// Current raw event envelope schema version.
-pub(crate) const RAW_TRACE_EVENT_SCHEMA_VERSION: u32 = 1;
+pub(crate) const RAW_TRACE_EVENT_SCHEMA_VERSION: u32 = 2;
 
 /// One append-only raw trace event.
 ///
@@ -84,6 +84,10 @@ pub enum RawTraceEventPayload {
         thread_id: AgentThreadId,
         status: RolloutStatus,
     },
+    /// An evicted runtime was reloaded for a thread already recorded in this bundle.
+    ThreadResumed {
+        thread_id: AgentThreadId,
+    },
     CodexTurnStarted {
         codex_turn_id: CodexTurnId,
         thread_id: AgentThreadId,
@@ -91,6 +95,11 @@ pub enum RawTraceEventPayload {
     CodexTurnEnded {
         codex_turn_id: CodexTurnId,
         status: ExecutionStatus,
+    },
+    /// The harness appended this Responses item to its history. This is not
+    /// evidence of its rendered content, which may be truncated before sampling.
+    HistoryItemAccepted {
+        item_id: String,
     },
     InferenceStarted {
         inference_call_id: InferenceCallId,
@@ -151,6 +160,8 @@ pub enum RawTraceEventPayload {
     },
     ToolCallRuntimeStarted {
         tool_call_id: ToolCallId,
+        /// Executed handler, which may differ from the requested callable.
+        kind: ToolCallKind,
         /// Runtime/protocol observation for how Codex began executing the tool.
         runtime_payload: RawPayloadRef,
     },
@@ -243,8 +254,10 @@ impl RawTraceEventPayload {
             RawTraceEventPayload::RolloutStarted { .. }
             | RawTraceEventPayload::RolloutEnded { .. }
             | RawTraceEventPayload::ThreadEnded { .. }
+            | RawTraceEventPayload::ThreadResumed { .. }
             | RawTraceEventPayload::CodexTurnStarted { .. }
             | RawTraceEventPayload::CodexTurnEnded { .. }
+            | RawTraceEventPayload::HistoryItemAccepted { .. }
             | RawTraceEventPayload::CompactionRequestFailed { .. }
             | RawTraceEventPayload::CodeCellStarted { .. }
             | RawTraceEventPayload::McpToolCallCorrelationAssigned { .. }

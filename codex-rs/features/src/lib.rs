@@ -28,6 +28,7 @@ pub use feature_configs::GuardianV2ConfigToml;
 pub use feature_configs::GuardianV2ReviewScopeConfigToml;
 pub use feature_configs::GuardianV2TranscriptConfigToml;
 pub use feature_configs::GuardianV2TranscriptSource;
+pub use feature_configs::GuardianV3ConfigToml;
 pub use feature_configs::MultiAgentV2ConfigToml;
 pub use feature_configs::NetworkProxyConfigToml;
 pub use feature_configs::NetworkProxyDomainPermissionToml;
@@ -120,6 +121,8 @@ pub enum Feature {
 
     /// Automatically start the shared local daemon for eligible interactive launches.
     DaemonAutoStart,
+    /// Allow the TUI to discover and select among multiple conversation backends.
+    TuiMultiBackend,
     /// Enable negotiated zstd compression for app-server WebSocket and UDS connections.
     AppServerWebSocketCompression,
 
@@ -131,6 +134,8 @@ pub enum Feature {
     MultiEnvCopyFile,
     /// Send per-content-entry classifications in internal Responses metadata.
     ContentItemKinds,
+    /// Render client-supplied untrusted context as standalone named tool outputs.
+    UntrustedAsToolOutput,
     /// Record model-attempted tool calls in internal Responses metadata.
     ExecutedToolCallMetadata,
     /// Enable JavaScript code mode backed by the standalone host process.
@@ -147,7 +152,7 @@ pub enum Feature {
     CodeModePrewarm,
     /// Terminate active code mode cells when their turn is interrupted.
     CodeModeInterrupt,
-    /// Put each tool's description before its namespace description in Code Mode.
+    /// Removed compatibility flag for Code Mode tool description ordering.
     CodeModeToolDescriptionFirst,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
     CodeModeOnly,
@@ -200,6 +205,8 @@ pub enum Feature {
     CwdRelativeTurnDiffs,
     /// Enable runtime metrics snapshots via a manual reader.
     RuntimeMetrics,
+    /// Capture internal direct-tool dependency paths for turn attribution.
+    CriticalPathTiming,
     /// Enable startup memory extraction and file-backed memory consolidation.
     MemoryTool,
     /// Enable importing project-scoped memory from external agents.
@@ -262,6 +269,8 @@ pub enum Feature {
     Mcp20260728,
     /// Honor ordinary MCP server tool-list notifications within a turn.
     McpToolListChanged,
+    /// Discover and share eligible local stdio connections across chats.
+    McpConnectionSharing,
     /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
     CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
@@ -278,6 +287,8 @@ pub enum Feature {
     DeferredToolWorldState,
     /// Track top-level tool definitions in world state and emit incremental context updates.
     IncrementalTools,
+    /// Preserve inherited tool declarations in MCP-disabled prediction forks.
+    PredictionPreserveParentTools,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
     /// Enable discoverable tool suggestions for apps.
@@ -286,6 +297,8 @@ pub enum Feature {
     RecommendedPlugins,
     /// Enable plugins.
     Plugins,
+    /// Use concise developer hints for explicitly selected plugins.
+    SimplifiedSelectionHints,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
     ExecutorCapabilityDiscovery,
     /// Acquire V2 executor inventories without publishing or activating their capabilities.
@@ -342,6 +355,9 @@ pub enum Feature {
     ComputerUse,
     /// Enable the PS-backed remote plugin catalog.
     RemotePlugin,
+    /// Prefetch the plugin directory, featured plugins, and recommendations at app-server startup.
+    /// Inventory-only hosts can disable this. Legacy suggestions read the cached directory.
+    PluginDiscoveryPrefetch,
     /// Enable remote plugin sharing flows.
     PluginSharing,
     /// Removed compatibility flag retained as a no-op.
@@ -364,8 +380,12 @@ pub enum Feature {
     OutputTokenReplay,
     /// Allow prompting and installing missing MCP dependencies.
     SkillMcpDependencyInstall,
+    /// Omit descriptions from the model-visible available-skills catalog.
+    OmitSkillDescriptions,
     /// Run cheap skill-search methods in shadow mode and emit experiment metrics.
     SkillSearch,
+    /// Append skill additions and edits within a cumulative context budget.
+    SkillCatalogDeltas,
     /// Removed compatibility flag for deleted skill env var dependency prompting.
     SkillEnvVarDependencyPrompt,
     /// Enable the unified mention popup used by default in the TUI.
@@ -378,6 +398,8 @@ pub enum Feature {
     SendMessageToUserAsync,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Forward private reviewer items and interruptions to raw-event observers.
+    GuardianRecordedItems,
     /// Removed compatibility flag for always-on thread-owned Guardian context.
     GuardianThreadContext,
     /// Reuse encrypted parent compaction when restarting Guardian review sessions.
@@ -385,6 +407,8 @@ pub enum Feature {
     GuardianReuseParentCompaction,
     /// Limit worker Guardian root evidence to preceding root communication windows.
     GuardianRootHandoffContext,
+    /// Review state-changing MAv2 calls and preserve native calls in Guardian history.
+    GuardianNativeMultiAgentHistory,
     /// Include completed node_repl or cua_repl Code Mode responses in Guardian reviews.
     GuardianEnhancedNodeReplTranscripts,
     /// Include completed node_repl or cua_repl Code Mode response images in Guardian reviews.
@@ -397,6 +421,8 @@ pub enum Feature {
     GuardianV2,
     /// Run Decisions alongside Guardian V2 for measurement without changing approvals.
     GuardianV2DecisionsComparison,
+    /// Enable Guardian V3 integrations.
+    GuardianV3,
     /// Removed compatibility flag for the unused Guardian extension prototype.
     GuardianExt,
     /// Enable persisted thread goals and automatic goal continuation.
@@ -896,6 +922,8 @@ pub struct FeaturesToml {
     )]
     pub guardianv2: Option<FeatureToml<GuardianV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardianv3: Option<FeatureToml<GuardianV3ConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<FeatureToml<TokenBudgetConfigToml>>,
@@ -957,6 +985,9 @@ impl FeaturesToml {
             && let Some(enabled) = config.thread_context
         {
             entries.insert(Feature::GuardianThreadContext.key().to_string(), enabled);
+        }
+        if let Some(enabled) = self.guardianv3.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::GuardianV3.key().to_string(), enabled);
         }
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
@@ -1057,6 +1088,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         // Android distributes standalone binaries without a managed daemon package.
         default_enabled: !cfg!(target_os = "android"),
+    },
+    FeatureSpec {
+        id: Feature::TuiMultiBackend,
+        key: "tui_multi_backend",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::AppServerWebSocketCompression,
@@ -1184,6 +1221,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::UntrustedAsToolOutput,
+        key: "untrusted_as_tool_output",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ExecutedToolCallMetadata,
         key: "executed_tool_call_metadata",
         stage: Stage::UnderDevelopment,
@@ -1240,7 +1283,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodeModeToolDescriptionFirst,
         key: "code_mode_tool_description_first",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1306,6 +1349,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RuntimeMetrics,
         key: "runtime_metrics",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CriticalPathTiming,
+        key: "critical_path_timing",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1602,6 +1651,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::McpConnectionSharing,
+        key: "mcp_connection_sharing",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodexAppsMcp20260728,
         key: "codex_apps_mcp_2026_07_28",
         stage: Stage::UnderDevelopment,
@@ -1650,6 +1705,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::PredictionPreserveParentTools,
+        key: "prediction_preserve_parent_tools",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::NonPrefixedMcpToolNames,
         key: "non_prefixed_mcp_tool_names",
         stage: Stage::UnderDevelopment,
@@ -1678,6 +1739,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "plugins",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SimplifiedSelectionHints,
+        key: "simplified_selection_hints",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::ExecutorCapabilityDiscovery,
@@ -1776,6 +1843,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::PluginDiscoveryPrefetch,
+        key: "plugin_discovery_prefetch",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::PluginSharing,
         key: "plugin_sharing",
         stage: Stage::Stable,
@@ -1842,10 +1915,22 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::OmitSkillDescriptions,
+        key: "omit_skill_descriptions",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::SkillSearch,
         key: "skill_search",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::SkillCatalogDeltas,
+        key: "skill_catalog_deltas",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::SkillEnvVarDependencyPrompt,
@@ -1896,6 +1981,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::GuardianRecordedItems,
+        key: "guardian_recorded_items",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::GuardianThreadContext,
         key: "guardianv2.thread_context",
         stage: Stage::Removed,
@@ -1910,6 +2001,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianRootHandoffContext,
         key: "guardian_root_handoff_context",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::GuardianNativeMultiAgentHistory,
+        key: "guardian_native_multi_agent_history",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1950,6 +2047,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::GuardianV3,
+        key: "guardianv3",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::GuardianExt,
         key: "guardian_ext",
         stage: Stage::Removed,
@@ -1982,8 +2085,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ReasoningEffortOverride,
         key: "reasoning_effort_override",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CurrentTimeReminder,

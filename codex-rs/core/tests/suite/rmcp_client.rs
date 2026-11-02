@@ -867,6 +867,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
         .environment_ready(
             &selection,
             EnvironmentConfig {
+                environment_hooks: Default::default(),
                 allow_login_shell: true,
                 workspace_roots: selection.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(
@@ -984,6 +985,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
     wait_for_mcp_server(&fixture.codex, "environment_policy").await?;
     let selection = fixture.codex.environment_selections().await.remove(0);
     let mut config = EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell: fixture.config.permissions.allow_login_shell,
         workspace_roots: selection.workspace_roots.clone(),
         permission_profile: PermissionProfileSnapshot::legacy(
@@ -2246,6 +2248,8 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
     codex_skills_extension::install(&mut extensions, |config: &Config| {
         codex_skills_extension::SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
+            catalog_deltas_enabled: config.features.enabled(Feature::SkillCatalogDeltas),
+            omit_descriptions: false,
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: config.bundled_skills_enabled(),
             cloud_skill_enabled: config.cloud_skill_enabled,
@@ -2617,6 +2621,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
             .environment_ready(
                 &selection,
                 EnvironmentConfig {
+                    environment_hooks: Default::default(),
                     allow_login_shell: fixture.config.permissions.allow_login_shell,
                     workspace_roots: workspace_roots.clone(),
                     permission_profile: PermissionProfileSnapshot::legacy(

@@ -368,7 +368,6 @@ pub struct TurnContext {
     pub(crate) windows_sandbox_level: WindowsSandboxLevel,
     pub(crate) available_models: Vec<ModelPreset>,
     pub(crate) final_output_json_schema: Option<Value>,
-    pub(crate) dynamic_tools: Arc<[DynamicToolSpec]>,
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
@@ -452,7 +451,6 @@ impl TurnContext {
             #[allow(deprecated)]
             cwd: self.cwd.clone(),
             final_output_json_schema: None,
-            dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_state,
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
@@ -864,7 +862,6 @@ impl TurnContext {
             windows_sandbox_level: self.windows_sandbox_level,
             available_models,
             final_output_json_schema: self.final_output_json_schema.clone(),
-            dynamic_tools: self.dynamic_tools.clone(),
             turn_metadata_state: self.turn_metadata_state.clone(),
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
@@ -1149,7 +1146,6 @@ impl Session {
             windows_sandbox_level: session_configuration.windows_sandbox_level,
             available_models,
             final_output_json_schema: None,
-            dynamic_tools: session_configuration.dynamic_tools.clone(),
             turn_metadata_state,
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
@@ -1482,6 +1478,17 @@ impl Session {
         options: NewTurnContextOptions,
     ) -> Arc<TurnContext> {
         let session_configuration = self.default_turn_configuration().await;
+        self.new_turn_with_configuration(sub_id, session_configuration, options)
+            .await
+    }
+
+    /// Builds new work from the exact configuration selected by turn admission.
+    pub(crate) async fn new_turn_with_configuration(
+        &self,
+        sub_id: String,
+        session_configuration: SessionConfiguration,
+        options: NewTurnContextOptions,
+    ) -> Arc<TurnContext> {
         let turn_environments = self
             .activate_turn_environments(&session_configuration)
             .await;

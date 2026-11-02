@@ -3,11 +3,13 @@
 
 use std::fs::File;
 use std::fs::OpenOptions;
+#[cfg(not(target_os = "android"))]
 use std::fs::TryLockError;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
 use std::time::Duration;
 
 use codex_keyring_store::KeyringStore;
@@ -29,6 +31,7 @@ pub(super) async fn lock_credentials(codex_home: &Path) -> io::Result<File> {
         .create(true)
         .truncate(false)
         .open(path)?;
+    #[cfg(not(target_os = "android"))]
     tokio::time::timeout(Duration::from_secs(/*secs*/ 60), async {
         loop {
             match file.try_lock() {

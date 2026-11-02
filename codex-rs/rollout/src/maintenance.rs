@@ -15,9 +15,22 @@ use std::path::Path;
 
 const ROLLOUT_MAINTENANCE_LOCK: &str = "rollout-maintenance.lock";
 
+#[cfg(test)]
+#[path = "maintenance_tests.rs"]
+mod tests;
+
 /// Holds exclusive ownership of operations that replace local rollout files.
 pub struct RolloutMaintenanceGuard {
-    _file: File,
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    file: File,
+}
+
+impl Drop for RolloutMaintenanceGuard {
+    fn drop(&mut self) {
+        // Release the lock even if a child inherited the file before exec.
+        #[cfg(not(target_os = "android"))]
+        let _ = self.file.unlock();
+    }
 }
 
 /// Try to exclude rollout compression and migration for one Codex home.
@@ -36,7 +49,7 @@ pub fn try_acquire_rollout_maintenance_lock(
     #[cfg(not(target_os = "android"))]
     {
         match file.try_lock() {
-            Ok(()) => Ok(Some(RolloutMaintenanceGuard { _file: file })),
+            Ok(()) => Ok(Some(RolloutMaintenanceGuard { file })),
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(error)) => Err(error),
         }
@@ -44,6 +57,6 @@ pub fn try_acquire_rollout_maintenance_lock(
 
     #[cfg(target_os = "android")]
     {
-        Ok(Some(RolloutMaintenanceGuard { _file: file }))
+        Ok(Some(RolloutMaintenanceGuard { file }))
     }
 }

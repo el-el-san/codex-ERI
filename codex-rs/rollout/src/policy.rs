@@ -45,6 +45,7 @@ pub fn persisted_rollout_item(
         | RolloutItem::WorldState(_)
         | RolloutItem::RetainedContext(_)
         | RolloutItem::SecurityRiskScore(_)
+        | RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::SessionMeta(_) => Some(Cow::Borrowed(item)),
     }
 }
@@ -183,6 +184,7 @@ fn persisted_event_msg(
         | EventMsg::ModelVerification(_)
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
+        | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)

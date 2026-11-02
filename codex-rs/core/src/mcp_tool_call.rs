@@ -290,6 +290,7 @@ pub(crate) async fn handle_mcp_tool_call(
         &metadata,
         prepared_call.config(),
         prepared_call.permission_profile(),
+        prepared_call.server_environment_id(),
         approval_policy,
     )
     .await
@@ -488,7 +489,7 @@ async fn handle_approved_mcp_tool_call(
     let mut request_error_code = None;
     let result = async {
         let result = async {
-            let mut result = prepared_call
+            let result = prepared_call
                 .call_with_preparation(/*requested_timeout*/ None, || async {
                     if let McpToolApprovalApplication::Apply { decision, policy } =
                         &approval_application
@@ -571,7 +572,14 @@ async fn handle_approved_mcp_tool_call(
                 .map_err(|error| {
                     request_error_code = codex_rmcp_client::request_error_code(&error);
                     format!("tool call error: {error:?}")
-                })?;
+                });
+            // Keep the backend response intact, before callbacks or model/UI limits can change it.
+            sess.services.rollout_thread_trace.record_mcp_tool_result(
+                &turn_context.sub_id,
+                call_id,
+                &result,
+            );
+            let mut result = result?;
             crate::tools::record_confirmed_code_mode_send(
                 sess,
                 &turn_context.sub_id,
@@ -1515,6 +1523,7 @@ async fn maybe_request_mcp_tool_approval(
     metadata: &McpToolApprovalMetadata,
     config: &codex_mcp::McpConfig,
     permission_profile: &PermissionProfile,
+    environment_id: &str,
     policy: McpToolApprovalPolicy,
 ) -> Option<McpToolApproval> {
     let turn_context = &step_context.turn;
@@ -1567,6 +1576,7 @@ async fn maybe_request_mcp_tool_approval(
 
     let action = ApprovalAction::McpToolCall {
         id: call_id.to_string(),
+        environment_id: environment_id.to_owned(),
         server: invocation.server.clone(),
         tool_name: invocation.tool.clone(),
         arguments: invocation.arguments.clone(),
@@ -2585,6 +2595,13 @@ async fn notify_mcp_tool_call_skip(
         .await;
     }
 
+    let result = Err(message);
+    // Skipped calls never reach the backend-result recorder.
+    sess.services.rollout_thread_trace.record_mcp_tool_result(
+        &turn_context.sub_id,
+        call_id,
+        &result,
+    );
     notify_mcp_tool_call_completed(
         sess,
         turn_context,
@@ -2592,10 +2609,10 @@ async fn notify_mcp_tool_call_skip(
         invocation,
         item_metadata,
         Duration::ZERO,
-        truncate_mcp_tool_result_for_event(&Err(message.clone())),
+        truncate_mcp_tool_result_for_event(&result),
     )
     .await;
-    Err(message)
+    result
 }
 
 #[cfg(test)]

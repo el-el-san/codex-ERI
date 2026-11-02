@@ -1,5 +1,5 @@
 //! Shared cross-process ownership for local thread writers and rollout publication.
-//! Thread lock-file creation and removal uses the existing home coordination lock.
+//! Thread lock-file creation and removal uses a bounded wait for the home coordination lock.
 
 use std::fs;
 use std::fs::File;
@@ -10,6 +10,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "android"))]
+use std::time::Duration;
+#[cfg(not(target_os = "android"))]
+use std::time::Instant;
 
 use codex_protocol::ThreadId;
 use tracing::warn;
@@ -128,11 +132,24 @@ impl WriterLockCoordinator {
             .truncate(false)
             .open(self.directory.join(COORDINATION_LOCK_FILE))?;
         #[cfg(not(target_os = "android"))]
-        file.lock().map_err(|err| {
-            io::Error::other(format!(
-                "failed to acquire thread writer coordination lock: {err}"
-            ))
-        })?;
+        {
+            let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
+            loop {
+                match file.try_lock() {
+                    Ok(()) => break,
+                    Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(/*millis*/ 50));
+                    }
+                    Err(fs::TryLockError::WouldBlock) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
+                        ));
+                    }
+                    Err(fs::TryLockError::Error(err)) => return Err(err),
+                }
+            }
+        }
         Ok(file)
     }
 

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_config::test_support::CloudConfigBundleFixture;
 use codex_config::types::ApprovalsReviewer;
 use codex_core::EnvironmentConfig;
 use codex_core::EnvironmentNetworkPolicy;
@@ -115,19 +116,33 @@ use tokio::io::AsyncWriteExt;
 const NETWORK_TEST_HOST: &str = "codex-network-test.invalid";
 const NETWORK_TEST_TARGET: &str = "http://codex-network-test.invalid:80";
 
+#[test_case("experimental_network"; "legacy_requirements")]
+#[test_case("network_proxy"; "proxy_requirements")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg_attr(
     not(target_os = "linux"),
     ignore = "requires the trusted Linux proxy bridge"
 )]
-async fn guardian_network_approval_preserves_action_and_outcome_routing() -> Result<()> {
+async fn guardian_network_approval_preserves_action_and_outcome_routing(
+    requirements_table: &str,
+) -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses the POSIX/Python network fixture");
     skip_if_host_windows!(Ok(()));
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
 
     let server = start_mock_server().await;
-    let test = managed_network_unified_exec_test(&server).await?;
+    let test = managed_network_unified_exec_builder(&[])?
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
+                "[{requirements_table}]\nenabled = true\nallow_local_binding = true\n"
+            )),
+        )
+        .build_with_remote_and_local_env(&server)
+        .await?;
+    assert!(test.config.managed_network_requirements_enabled());
+    assert!(test.config.permissions.network.is_some());
+    assert!(test.session_configured.network_proxy.is_some());
     let first_call_id = "guardian-network-approved";
     let second_call_id = "guardian-network-denied";
     let first_command = network_fetch_args(LOCAL_ENVIRONMENT_ID)["cmd"]
@@ -1166,7 +1181,7 @@ async fn user_network_approval_once_session_and_denial_semantics() -> Result<()>
     assert_eq!(approval.cwd, test.config.cwd.clone().into());
     assert_eq!(
         approval.reason.as_deref(),
-        Some("codex-network-test.invalid is not in the allowed_domains")
+        Some("Network access to codex-network-test.invalid requires approval")
     );
     test.codex
         .submit(Op::ExecApproval {
@@ -1802,6 +1817,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback(
             .environment_ready(
                 &selection,
                 EnvironmentConfig {
+                    environment_hooks: Default::default(),
                     allow_login_shell: test.config.permissions.allow_login_shell,
                     workspace_roots: selection.workspace_roots.clone(),
                     permission_profile: PermissionProfileSnapshot::legacy(
@@ -2779,6 +2795,7 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
                     PermissionProfile::from_runtime_permissions(&filesystem, network);
             }
             let owner_config = EnvironmentConfig {
+                environment_hooks: Default::default(),
                 allow_login_shell: test.config.permissions.allow_login_shell,
                 workspace_roots: remote.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(permission_profile),
@@ -2796,6 +2813,7 @@ async fn owner_network_policy_follows_the_selected_remote_command() -> Result<()
             };
             let mut primary = local(test.cwd.path().abs());
             primary.config = EnvironmentConfigState::Ready(EnvironmentConfig {
+                environment_hooks: Default::default(),
                 workspace_roots: primary.workspace_roots.clone(),
                 permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
                 network_policy: None,
@@ -3001,6 +3019,7 @@ async fn escalated_owner_network_terminal_requires_stdin_approval(
     let mut proxy = NetworkProxyConfig::default();
     proxy.set_allowed_domains(vec!["owner-only.invalid".to_string()]);
     remote.config = EnvironmentConfigState::Ready(EnvironmentConfig {
+        environment_hooks: Default::default(),
         allow_login_shell: test.config.permissions.allow_login_shell,
         workspace_roots: remote.workspace_roots.clone(),
         permission_profile: PermissionProfileSnapshot::legacy(

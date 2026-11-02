@@ -57,6 +57,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_successful_turn;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::from_slice;
@@ -437,14 +438,6 @@ async fn wait_for_agent_message(codex: &CodexThread, text: &str) {
 
 async fn wait_for_turn_complete(codex: &CodexThread) {
     wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-}
-
-async fn wait_for_successful_turn(codex: &CodexThread) {
-    let event = wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    assert!(
-        matches!(&event, EventMsg::TurnComplete(completed) if completed.error.is_none()),
-        "turn failed: {event:?}"
-    );
 }
 
 async fn wait_for_sleep_item_started(codex: &CodexThread, call_id: &str, duration_ms: u64) {
@@ -1152,19 +1145,22 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
     server.shutdown().await;
 }
 
+#[test_case("first answer"; "visible_final")]
+#[test_case(""; "empty_final")]
+#[test_case(" \n\t"; "whitespace_final")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn queued_inter_agent_mail_does_not_restart_after_final_answer() {
+async fn queued_inter_agent_mail_does_not_restart_after_final_answer(final_answer: &str) {
     let first_chunks = vec![
         chunk(ev_response_created("resp-1")),
         chunk(ev_message_item_added("msg-1", "")),
-        chunk(ev_output_text_delta("first answer")),
+        chunk(ev_output_text_delta(final_answer)),
         chunk(json!({
             "type": "response.output_item.done",
             "item": {
                 "type": "message",
                 "role": "assistant",
                 "id": "msg-1",
-                "content": [{"type": "output_text", "text": "first answer"}],
+                "content": [{"type": "output_text", "text": final_answer}],
                 "phase": "final_answer",
             }
         })),

@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use crate::auth::AuthDotJson;
 use crate::auth::AuthKeyringBackendKind;
+use crate::auth::WorkspaceLogin;
 use crate::auth::save_auth;
 use crate::callback_params::LIFE_SCIENCES_OAUTH_STATE_SUFFIX;
 use crate::callback_params::LoginCallbackResult;
@@ -94,6 +95,7 @@ pub struct ServerOptions {
     pub port: u16,
     pub open_browser: bool,
     pub force_state: Option<String>,
+    pub workspace_login: Option<WorkspaceLogin>,
     pub forced_chatgpt_workspace_id: Option<Vec<String>>,
     pub codex_streamlined_login: bool,
     pub login_success_page: LoginSuccessPage,
@@ -119,6 +121,7 @@ impl ServerOptions {
             port: DEFAULT_PORT,
             open_browser: true,
             force_state: None,
+            workspace_login: None,
             forced_chatgpt_workspace_id,
             codex_streamlined_login: false,
             login_success_page: LoginSuccessPage::default(),
@@ -396,6 +399,7 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
         &pkce,
         &state,
         opts.forced_chatgpt_workspace_id.as_deref(),
+        opts.workspace_login.as_ref(),
     )?;
 
     if opts.open_browser {
@@ -787,6 +791,7 @@ fn build_authorize_url(
     pkce: &PkceCodes,
     state: &str,
     forced_chatgpt_workspace_ids: Option<&[String]>,
+    workspace_login: Option<&WorkspaceLogin>,
 ) -> io::Result<String> {
     let originator = originator().value;
     let workspace_ids = forced_chatgpt_workspace_ids.map(|ids| ids.join(","));
@@ -797,6 +802,15 @@ fn build_authorize_url(
     ];
     if let Some(workspace_ids) = workspace_ids.as_deref() {
         extra_parameters.push(("allowed_workspace_id", workspace_ids));
+    }
+    if let Some(login) = workspace_login {
+        extra_parameters.push(("current_workspace_id", &login.workspace_id));
+        if let Some(email) = &login.email {
+            extra_parameters.push(("login_hint", email));
+        }
+        if let Some(connection) = &login.connection {
+            extra_parameters.push(("connection", connection));
+        }
     }
     build_authorization_url(AuthorizationRequest {
         endpoint: &format!("{issuer}/oauth/authorize"),
@@ -1037,6 +1051,7 @@ pub(crate) async fn persist_tokens_async(
     let id_token = exchanged.id_token.clone();
     let access_token = exchanged.access_token.clone();
     let refresh_token = exchanged.refresh_token.clone();
+    let workspace_login = opts.workspace_login.clone();
     let provenance = AccountOAuthProvenance {
         issuer: opts.issuer.clone(),
         client_id: opts.client_id.clone(),
@@ -1071,6 +1086,9 @@ pub(crate) async fn persist_tokens_async(
                 bedrock_api_key: None,
                 bedrock_access_keys: None,
             };
+            if let Some(login) = workspace_login {
+                return login.save(auth);
+            }
             save_auth(
                 &codex_home,
                 &auth,

@@ -143,6 +143,10 @@
 - `rollout/src/maintenance.rs` の保守ロックも Android では `try_lock()` が非対応
   - Android ではファイルを作成・保持するだけのガードとして扱い、ロック取得を省略する
 
+- `login/src/auth/storage.rs` の認証保存時の `file.lock()` と、
+  `login/src/oauth_session_storage.rs` の OAuth 用 `file.try_lock()` も Android では省略する。
+  認証保存のプロセス内 Mutex と、ファイル作成・保持は維持する。
+
 ### 3.7 Androidビルドでの警告抑止（clipboard_paste）
 - `tui/src/clipboard_paste.rs` で Androidビルド時に `unused import` / `dead_code` が出る場合は以下を再適用
   - `tempfile::Builder` の import を `#[cfg(not(target_os = "android"))]` で限定
@@ -322,6 +326,13 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-11-02 更新内容（rust-v0.166.0）
+- 最新安定版 `rust-v0.166.0`（2026-10-29 UTC 公開）の `codex-rs` を同期
+- TLS vendoring、ブラウザ起動、Termux 環境変数保持、Android のファイルロック回避、Direct ツール強制、daemon 自動起動の既定無効、再帰上限、MXC SDK の除外を維持
+- 認証保存に追加されたファイルロックと OAuth 用のファイルロックを Android では省略し、非対応エラーを回避
+- rollout の coordination lock に追加された待機タイムアウトと maintenance guard の明示的な unlock を取り込み、Android では非対応のロック操作を省略
+- ローカルで `cargo build` は実施せず、GitHub Actions で Android release build を検証
 
 ### 2026-10-27 更新内容（rust-v0.164.0）
 - 最新安定版 `rust-v0.164.0`（2026-10-23 UTC 公開）の `codex-rs` を同期

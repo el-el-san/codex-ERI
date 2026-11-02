@@ -49,6 +49,8 @@ async fn catalog_permission_message_loaded_from_remote_models_is_sent(
             on_request_auto_review: None,
             never: None,
             unless_trusted: None,
+            granular: None,
+            ..Default::default()
         }),
         collaboration_modes: None,
         auto_review: None,
@@ -57,6 +59,7 @@ async fn catalog_permission_message_loaded_from_remote_models_is_sent(
             workspace_write: None,
             read_only: Some("remote catalog permissions: {{ network_access }}".to_string()),
             approved_prefixes: Some(prefix_template.to_string()),
+            ..PermissionMessages::default()
         }),
         multi_agent: None,
         token_budget: None,
