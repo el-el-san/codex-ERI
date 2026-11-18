@@ -345,7 +345,7 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt --all -- --check` と `cargo metadata --no-deps --locked` を確認。上流ファイルのコピー漏れ・追跡漏れはなし
 - Android CLI / exec / TUI の依存グラフに V8 / code-mode-host / MXC SDK がないことと、vendored OpenSSL の依存を確認
 - Cargo audit の再実行（run `44290978221`）で libz-sys / QUIC / rustix の指摘が解消。Hickory DNS の6件と chrono の保守終了警告が残り、監査は失敗のまま
-- CodeQL（run `44290978497`）は最終確認時点で解析中
+- CodeQL が成功（commit `6e9c04b48`、run `44290978497`）
 - 成果物を `artifacts/rust-v0.170.0/codex-android-aarch64-release.tar.gz` に取得
   - ZIP SHA-256: `b9f496d007224e8ae9485164c01927a9ecb8b7aa7e3d5fc4209acf27f6db22ce`（GitHub artifact digest と一致）
   - tar.gz SHA-256: `a3ce1c318b3a7a990f12e2bf526512231232093c8687f6477a8d9e4893ca83b7`
