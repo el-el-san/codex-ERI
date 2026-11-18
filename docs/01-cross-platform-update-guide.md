@@ -340,6 +340,20 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 
 - Cargo audit が検出した問題に対応し、quinn-proto 0.11.19、quinn-udp 0.5.16 / 0.6.3、rustix 1.1.6 へ更新
 - Hickory DNS 0.25 系の DNSSEC に関する6件（RUSTSEC-2026-0530 / 0531 / 0532 / 0549 / 0550 / 0551）と chrono の保守終了（RUSTSEC-2026-0543）は互換性のある修正版がなく、監査の除外を追加せず記録する
+- Android aarch64 release build が成功（commit `6e9c04b48`、run `44290978231`）。CLI / exec と単体 TUI の両ビルドが完了
+- ビルドログのコンパイルエラーはなし。上流の非推奨 API・未使用依存・マクロ末尾セミコロン、および Android Direct ガードの到達不能コードなどの警告は残る
+- `cargo fmt --all -- --check` と `cargo metadata --no-deps --locked` を確認。上流ファイルのコピー漏れ・追跡漏れはなし
+- Android CLI / exec / TUI の依存グラフに V8 / code-mode-host / MXC SDK がないことと、vendored OpenSSL の依存を確認
+- Cargo audit の再実行（run `44290978221`）で libz-sys / QUIC / rustix の指摘が解消。Hickory DNS の6件と chrono の保守終了警告が残り、監査は失敗のまま
+- CodeQL（run `44290978497`）は最終確認時点で解析中
+- 成果物を `artifacts/rust-v0.170.0/codex-android-aarch64-release.tar.gz` に取得
+  - ZIP SHA-256: `b9f496d007224e8ae9485164c01927a9ecb8b7aa7e3d5fc4209acf27f6db22ce`（GitHub artifact digest と一致）
+  - tar.gz SHA-256: `a3ce1c318b3a7a990f12e2bf526512231232093c8687f6477a8d9e4893ca83b7`
+- 3バイナリが Android aarch64 ELF で、各 `--version` が 0.170.0 を返すことを確認
+- ダミー API キーと隔離した保存先で、認証保存・状態確認・ログアウトがファイルロックエラーなしで成功
+- ローカル固定応答プロバイダーを使用し、Direct の `exec_command` が公開され、コマンドが終了コード 0 と期待した出力を返すことを確認
+- `daemon_auto_start` の既定が `false` であることと、`--no-daemon` / daemon 設定上書きなしでの CLI / resume / fork / 単体 TUI の対話起動、`/status` 表示、正常終了を確認
+- CI ログ、依存情報、ハッシュ、実機確認結果を `logs/rust-v0.170.0/` に保存。外部モデルへのプロンプト送信は行っていない
 
 ### 2026-11-02 更新内容（rust-v0.166.0）
 - 最新安定版 `rust-v0.166.0`（2026-10-29 UTC 公開）の `codex-rs` を同期
