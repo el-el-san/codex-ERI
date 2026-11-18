@@ -278,6 +278,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     use codex_app_server_protocol::ThreadListResponse;
     use codex_app_server_protocol::ThreadQueueListParams;
     use codex_app_server_protocol::ThreadQueueListResponse;
+    use codex_app_server_protocol::ThreadReadParams;
+    use codex_app_server_protocol::ThreadReadResponse;
     use codex_app_server_protocol::ThreadSetNameParams;
     use codex_app_server_protocol::ThreadSetNameResponse;
     use codex_app_server_protocol::ThreadStartParams;
@@ -335,6 +337,7 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
 
     let endpoint = format!("unix://{}", socket_path.as_path().display());
     let mut app = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+        required_human_approval: false,
         endpoint: RemoteAppServerEndpoint::UnixSocket { socket_path },
         client_name: "queue-e2e-test".to_string(),
         client_version: "0.1.0".to_string(),
@@ -471,6 +474,8 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
                 .request_typed(ClientRequest::ThreadList {
                     request_id: RequestId::Integer(4),
                     params: ThreadListParams {
+                        include_attached_threads: false,
+                        current_account_only: false,
                         excluded_thread_ids: None,
                         attached_to_thread_id: None,
                         cursor: None,
@@ -539,6 +544,34 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
                     .to_string()
                     .contains(cold_message)
             );
+            // The mock receives the request before the resumed turn finishes. Deletion
+            // requires an idle thread, and archiving removed our original subscription.
+            timeout(Duration::from_secs(30), async {
+                loop {
+                    let read: ThreadReadResponse = app
+                        .request_typed(ClientRequest::ThreadRead {
+                            request_id: RequestId::Integer(5),
+                            params: ThreadReadParams {
+                                thread_id: thread_id.clone(),
+                                include_turns: true,
+                            },
+                        })
+                        .await?;
+                    if let Some(last) = read.thread.turns.last()
+                        && last.id != completed.turn.id
+                        && last.status == TurnStatus::Completed
+                        && matches!(
+                            read.thread.status,
+                            ThreadStatus::Idle | ThreadStatus::NotLoaded
+                        )
+                    {
+                        return anyhow::Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .context("resumed queued turn did not finish before deletion")??;
         }
     }
     Ok(())

@@ -9,6 +9,7 @@ mod source;
 pub(crate) use paragraph::HyperlinkParagraph;
 pub(crate) use paragraph::HyperlinkRows;
 pub(crate) use paragraph::HyperlinkText;
+pub(crate) use paragraph::mark_hyperlink_cells;
 pub(crate) use source::LineWrapPolicy;
 pub(crate) use source::LogicalLineSource;
 
@@ -50,7 +51,7 @@ pub(crate) struct TerminalHyperlink {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DestinationKind {
     Web,
-    /// A generated visualization or a capability-validated spoken workspace artifact.
+    /// A generated visualization, validated workspace artifact, or locally viewed image.
     TrustedFile,
 }
 
@@ -111,6 +112,39 @@ impl TerminalHyperlink {
         debug_assert_eq!(destination.scheme(), "file");
         self.destination = destination.to_string();
         self.destination_kind = DestinationKind::TrustedFile;
+    }
+
+    /// A viewed image can live outside the workspace. Only link a local regular file whose
+    /// resolved extension opens as an image (a symlink named screenshot.png may target a script).
+    pub(crate) fn viewed_image(columns: Range<usize>, path: &Path) -> Option<Self> {
+        let url = Url::from_file_path(path).ok()?;
+        if url.host().is_some() || image::ImageFormat::from_path(path).is_err() {
+            return None;
+        }
+        // A Windows junction can lead to a UNC share. Check parents before following any of them.
+        #[cfg(windows)]
+        for ancestor in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if ancestor.symlink_metadata().ok()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return None;
+            }
+        }
+        let target = path.canonicalize().ok()?;
+        let url = Url::from_file_path(&target).ok()?;
+        if url.host().is_some()
+            || image::ImageFormat::from_path(&target).is_err()
+            || !target.is_file()
+        {
+            return None;
+        }
+        Some(Self {
+            columns,
+            destination: url.into(),
+            destination_kind: DestinationKind::TrustedFile,
+        })
     }
 
     pub(crate) fn trusted_workspace_file(
@@ -176,6 +210,13 @@ pub(crate) fn lines_with_sources_eq(left: &[HyperlinkLine], right: &[HyperlinkLi
             .eq(right.iter().map(|line| &line.source))
 }
 
+pub(crate) fn source_span_width(span: &Span<'_>) -> usize {
+    span.content
+        .graphemes(/*is_extended*/ true)
+        .map(display_width)
+        .sum()
+}
+
 impl HyperlinkLine {
     pub(crate) fn new(line: Line<'static>) -> Self {
         Self {
@@ -189,14 +230,30 @@ impl HyperlinkLine {
         line_width(&self.line)
     }
 
+    /// The transcript expands tabs after wrapping. Keep their source columns until then.
+    pub(crate) fn source_width(&self) -> usize {
+        self.line.iter().map(source_span_width).sum()
+    }
+
     pub(crate) fn push_span(&mut self, span: Span<'static>, destination: Option<&str>) {
+        if let Some(destination) = destination.and_then(web_destination) {
+            self.push_linked_span(span, self.source_width(), destination);
+        } else {
+            self.source = None;
+            self.line.push_span(span);
+        }
+    }
+
+    pub(crate) fn push_linked_span(
+        &mut self,
+        span: Span<'static>,
+        start: usize,
+        destination: String,
+    ) {
         self.source = None;
-        let start = self.width();
-        let end = start + display_width(span.content.as_ref());
+        let end = start + source_span_width(&span);
         self.line.push_span(span);
-        if end > start
-            && let Some(destination) = destination.and_then(web_destination)
-        {
+        if end > start {
             self.hyperlinks
                 .push(TerminalHyperlink::web(start..end, destination));
         }
@@ -425,24 +482,31 @@ pub(crate) fn remap_source_wrapped_line(
             let end = start + display_width(&text[range.clone()]);
             source_byte = range.end;
             source_column = end;
-            let hyperlinks = source
-                .hyperlinks
-                .iter()
-                .filter_map(|link| {
-                    let first = link.columns.start.max(start);
-                    let last = link.columns.end.min(end);
-                    (first < last).then(|| {
-                        link.with_columns(
-                            prefix_columns + first - start..prefix_columns + last - start,
-                        )
-                    })
-                })
-                .collect();
+            let hyperlinks =
+                project_hyperlink_columns(&source.hyperlinks, start..end, prefix_columns);
             HyperlinkLine {
                 line,
                 hyperlinks,
                 source: Some(logical.wrapped(range, wrapped.prefix_bytes)),
             }
+        })
+        .collect()
+}
+
+/// Translate links intersecting a source fragment into columns on the displayed row.
+pub(crate) fn project_hyperlink_columns(
+    links: &[TerminalHyperlink],
+    source: Range<usize>,
+    prefix: usize,
+) -> Vec<TerminalHyperlink> {
+    links
+        .iter()
+        .filter_map(|link| {
+            let first = link.columns.start.max(source.start);
+            let last = link.columns.end.min(source.end);
+            (first < last).then(|| {
+                link.with_columns(prefix + first - source.start..prefix + last - source.start)
+            })
         })
         .collect()
 }

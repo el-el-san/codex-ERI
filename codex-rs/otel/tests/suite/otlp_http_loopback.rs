@@ -28,6 +28,9 @@ use tracing_subscriber::layer::SubscriberExt;
 
 static TRACE_CONTEXT_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
+#[path = "otel_headers_helper.rs"]
+mod otel_headers_helper;
+
 struct CapturedRequest {
     path: String,
     content_type: Option<String>,
@@ -397,6 +400,7 @@ fn otlp_http_exporter_sends_logs_to_collector()
     });
 
     let otel = OtelProvider::try_new(&OtelSettings {
+        headers_helper: None,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         environment: "test".to_string(),
         service_name: "codex-cli".to_string(),
@@ -457,6 +461,7 @@ fn otlp_http_exporter_sends_logs_to_collector()
 #[test]
 fn otel_provider_rejects_header_unsafe_configured_tracestate() {
     let result = OtelProvider::try_new(&OtelSettings {
+        headers_helper: None,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         environment: "test".to_string(),
         service_name: "codex-cli".to_string(),
@@ -523,6 +528,7 @@ fn otlp_http_exporter_sends_traces_to_collector()
     });
 
     let otel = OtelProvider::try_new(&OtelSettings {
+        headers_helper: None,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         environment: "test".to_string(),
         service_name: "codex-cli".to_string(),
@@ -640,12 +646,38 @@ async fn otlp_http_exporter_sends_traces_to_collector_with_bounded_shutdown_in_t
     let addr = listener.local_addr().expect("local_addr");
     listener.set_nonblocking(true).expect("set_nonblocking");
 
+    let otel = OtelProvider::try_new(&OtelSettings {
+        headers_helper: None,
+        http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+        environment: "test".to_string(),
+        service_name: "codex-cli".to_string(),
+        service_version: env!("CARGO_PKG_VERSION").to_string(),
+        codex_home: PathBuf::from("."),
+        exporter: OtelExporter::None,
+        trace_exporter: OtelExporter::OtlpHttp {
+            endpoint: format!("http://{addr}/v1/traces"),
+            headers: HashMap::new(),
+            protocol: OtelHttpProtocol::Json,
+            tls: None,
+        },
+        metrics_exporter: OtelExporter::None,
+        runtime_metrics: false,
+        span_attributes: HashMap::new(),
+        tracestate: BTreeMap::new(),
+    })?
+    .expect("otel provider");
     let (tx, rx) = mpsc::channel::<Vec<CapturedRequest>>();
+    let (stop_tx, stop_rx) = mpsc::channel();
     let server = thread::spawn(move || {
         let mut captured = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
 
         while Instant::now() < deadline {
+            match stop_rx.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let result = read_http_request(&mut stream);
@@ -667,26 +699,6 @@ async fn otlp_http_exporter_sends_traces_to_collector_with_bounded_shutdown_in_t
 
         let _ = tx.send(captured);
     });
-
-    let otel = OtelProvider::try_new(&OtelSettings {
-        http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
-        environment: "test".to_string(),
-        service_name: "codex-cli".to_string(),
-        service_version: env!("CARGO_PKG_VERSION").to_string(),
-        codex_home: PathBuf::from("."),
-        exporter: OtelExporter::None,
-        trace_exporter: OtelExporter::OtlpHttp {
-            endpoint: format!("http://{addr}/v1/traces"),
-            headers: HashMap::new(),
-            protocol: OtelHttpProtocol::Json,
-            tls: None,
-        },
-        metrics_exporter: OtelExporter::None,
-        runtime_metrics: false,
-        span_attributes: HashMap::new(),
-        tracestate: BTreeMap::new(),
-    })?
-    .expect("otel provider");
     let tracing_layer = otel.tracing_layer().expect("tracing layer");
     let subscriber = tracing_subscriber::registry().with(tracing_layer);
 
@@ -701,12 +713,14 @@ async fn otlp_http_exporter_sends_traces_to_collector_with_bounded_shutdown_in_t
         let _guard = span.enter();
         tracing::info!("trace loopback event from tokio runtime");
     });
-    tokio::task::block_in_place(|| {
+    let shutdown_result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current()
             .block_on(otel.shutdown_with_timeout(Duration::from_secs(/*secs*/ 2)))
-    })?;
+    });
 
+    let _ = stop_tx.send(());
     server.join().expect("server join");
+    shutdown_result?;
     let captured = rx.recv_timeout(Duration::from_secs(1)).expect("captured");
 
     let request = captured
@@ -763,6 +777,7 @@ fn otlp_http_exporter_times_out_when_collector_stalls_during_bounded_shutdown() 
         .expect("build tokio runtime");
     let (result, elapsed) = runtime.block_on(async move {
         let otel = OtelProvider::try_new(&OtelSettings {
+            headers_helper: None,
             http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             environment: "test".to_string(),
             service_name: "codex-cli".to_string(),
@@ -863,6 +878,7 @@ fn otlp_http_exporter_sends_traces_to_collector_in_current_thread_tokio_runtime(
 
         let result = runtime.block_on(async move {
             let otel = OtelProvider::try_new(&OtelSettings {
+                headers_helper: None,
                 http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
                 environment: "test".to_string(),
                 service_name: "codex-cli".to_string(),

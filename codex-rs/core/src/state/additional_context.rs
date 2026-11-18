@@ -6,9 +6,16 @@ use crate::context::AdditionalContextDeveloperFragment;
 use crate::context::AdditionalContextToolOutput;
 use crate::context::AdditionalContextUserFragment;
 use crate::context::ContextualUserFragment;
-use codex_protocol::models::ResponseItem;
+use codex_context_fragments::MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS;
+use codex_history::CodexHarnessMetadata;
+use codex_history::ResponseItemEnvelope;
+use codex_otel::ADDITIONAL_CONTEXT_COUNT_METRIC;
+use codex_otel::ADDITIONAL_CONTEXT_VALUE_BYTES_BUCKETS;
+use codex_otel::ADDITIONAL_CONTEXT_VALUE_BYTES_METRIC;
+use codex_otel::SessionTelemetry;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind;
+use codex_utils_string::truncate_middle_with_token_budget;
 
 pub(crate) enum AdditionalContextFormat {
     Messages,
@@ -45,7 +52,22 @@ impl AdditionalContextStore {
         &mut self,
         values: BTreeMap<String, AdditionalContextEntry>,
         format: AdditionalContextFormat,
-    ) -> Vec<ResponseItem> {
+        telemetry: &SessionTelemetry,
+    ) -> Vec<ResponseItemEnvelope> {
+        self.values.retain(|key, _| values.contains_key(key));
+        self.extend(values, format, telemetry)
+    }
+
+    /// Adds a producer's updates without dropping unrelated client context.
+    pub(crate) fn extend(
+        &mut self,
+        values: BTreeMap<String, AdditionalContextEntry>,
+        format: AdditionalContextFormat,
+        telemetry: &SessionTelemetry,
+    ) -> Vec<ResponseItemEnvelope> {
+        for entry in values.values() {
+            Self::record_metrics(entry, telemetry);
+        }
         let values =
             values
                 .into_iter()
@@ -73,18 +95,57 @@ impl AdditionalContextStore {
             .iter()
             .filter(|(key, value)| self.values.get(*key) != Some(*value))
             .map(|(key, entry)| match entry {
-                StoredAdditionalContext::ToolOutput(output) => output.clone().into(),
-                StoredAdditionalContext::Message(entry) => match entry.kind {
-                    AdditionalContextKind::Untrusted => ContextualUserFragment::into(
-                        AdditionalContextUserFragment::new(key.clone(), entry.value.clone()),
-                    ),
-                    AdditionalContextKind::Application => ContextualUserFragment::into(
-                        AdditionalContextDeveloperFragment::new(key.clone(), entry.value.clone()),
-                    ),
+                StoredAdditionalContext::ToolOutput(output) => ResponseItemEnvelope {
+                    item: output.clone().into(),
+                    metadata: Some(CodexHarnessMetadata {
+                        additional_context_tool_output: true,
+                        ..Default::default()
+                    }),
                 },
+                StoredAdditionalContext::Message(entry) => {
+                    ResponseItemEnvelope::new(match entry.kind {
+                        AdditionalContextKind::Untrusted => ContextualUserFragment::into(
+                            AdditionalContextUserFragment::new(key.clone(), entry.value.clone()),
+                        ),
+                        AdditionalContextKind::Application => {
+                            ContextualUserFragment::into(AdditionalContextDeveloperFragment::new(
+                                key.clone(),
+                                entry.value.clone(),
+                            ))
+                        }
+                    })
+                }
             })
             .collect();
-        self.values = values;
+        self.values.extend(values);
         fragments
+    }
+
+    fn record_metrics(entry: &AdditionalContextEntry, telemetry: &SessionTelemetry) {
+        let (bounded_value, original_tokens) =
+            truncate_middle_with_token_budget(&entry.value, MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS);
+        let kind = match entry.kind {
+            AdditionalContextKind::Untrusted => "untrusted",
+            AdditionalContextKind::Application => "application",
+        };
+        let truncated = original_tokens.is_some().to_string();
+        let mut tags = vec![("kind", kind), ("truncated", truncated.as_str())];
+        if let Some(name) = entry.name.as_deref() {
+            tags.push(("name", name));
+        }
+        telemetry.counter(ADDITIONAL_CONTEXT_COUNT_METRIC, /*inc*/ 1, &tags);
+        for (stage, bytes) in [
+            ("before", entry.value.len()),
+            ("after", bounded_value.len()),
+        ] {
+            let mut size_tags = tags.clone();
+            size_tags.push(("stage", stage));
+            telemetry.histogram_with_boundaries(
+                ADDITIONAL_CONTEXT_VALUE_BYTES_METRIC,
+                i64::try_from(bytes).unwrap_or(i64::MAX),
+                ADDITIONAL_CONTEXT_VALUE_BYTES_BUCKETS.as_slice(),
+                &size_tags,
+            );
+        }
     }
 }

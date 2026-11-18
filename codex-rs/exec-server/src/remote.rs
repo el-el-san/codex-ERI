@@ -81,6 +81,7 @@ pub enum RemoteEnvironmentTransport {
 enum RegistryAuthMode {
     Legacy,
     ExecutorCredential,
+    ChatgptToken,
 }
 
 #[derive(Clone)]
@@ -180,16 +181,12 @@ impl EnvironmentRegistryClient {
             security_profile: NOISE_RELAY_SECURITY_PROFILE.to_string(),
             executor_public_key: executor_public_key.clone(),
         };
-        let (response, executor_credential) = timeout_at(
-            deadline,
-            self.send_authenticated(Request::new(Method::POST, url).with_json(&body)),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(ExecServerError::EnvironmentRegistryRequest(
-                codex_http_client::RouteAwareRequestError::Timeout,
-            ))
-        })?;
+        let (response, executor_credential) = self
+            .send_authenticated(
+                Request::new(Method::POST, url).with_json(&body),
+                Some(deadline),
+            )
+            .await?;
         let status = response.status();
         // Read diagnostics within the same attempt budget, preserving a known error status.
         let response: EnvironmentRegistryRegistrationResponse = timeout_at(deadline, async {
@@ -264,7 +261,10 @@ impl EnvironmentRegistryClient {
         let response: EnvironmentRegistryConnectResponse =
             timeout_at(tokio::time::Instant::now() + self.connect_timeout, async {
                 let (response, _) = self
-                    .send_authenticated(Request::new(Method::POST, url).with_json(&body))
+                    .send_authenticated(
+                        Request::new(Method::POST, url).with_json(&body),
+                        /*deadline*/ None,
+                    )
                     .await?;
                 self.parse_json_response(response).await
             })
@@ -307,21 +307,18 @@ impl EnvironmentRegistryClient {
             .auth_provider
             .apply_auth_headers(HeaderMap::new())
             .await
-            .map_err(|error| {
-                ExecServerError::EnvironmentRegistryAuth(format!(
-                    "failed to resolve environment registry authentication: {error}"
-                ))
-            })?;
-        let executor_credential = if self.auth_mode == RegistryAuthMode::ExecutorCredential {
-            // Scoped mode sends exactly one bearer and never accompanying account credentials.
-            let token = (headers.len() == 1)
+            .map_err(auth::registry_auth_error)?;
+        let scoped = self.auth_mode == RegistryAuthMode::ExecutorCredential;
+        let credential = if self.auth_mode != RegistryAuthMode::Legacy {
+            // Scoped credentials must be the only header. ChatGPT also carries its account ID.
+            let token = (!scoped || headers.len() == 1)
                 .then(|| headers.get(AUTHORIZATION))
                 .flatten()
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .filter(|token| {
                     !token.is_empty()
-                        && token.len() <= 16 * 1024
+                        && (!scoped || token.len() <= 16 * 1024)
                         && token.bytes().all(|byte| byte.is_ascii_graphic())
                 })
                 .ok_or_else(|| {
@@ -338,12 +335,14 @@ impl EnvironmentRegistryClient {
             if let Some(authorization) = headers.get_mut(AUTHORIZATION) {
                 authorization.set_sensitive(true);
             }
-            direct::require_tls_or_loopback(&self.base_url, "https")?;
+            if scoped {
+                direct::require_tls_or_loopback(&self.base_url, "https")?;
+            }
             Some(credential)
         } else {
             None
         };
-        Ok((headers, executor_credential))
+        Ok((headers, credential))
     }
 
     fn http_for_auth(&self) -> &RouteAwareClientPool {
@@ -425,16 +424,16 @@ impl HarnessKeyValidator for RegistryHarnessKeyValidator {
                 })?,
             );
         }
-        let (response, executor_credential) = self.client.send_authenticated(request).await?;
+        let (response, executor_credential) = self
+            .client
+            .send_authenticated(request, /*deadline*/ None)
+            .await?;
         let status = response.status();
         if !status.is_success() {
             // The request contains the short-lived authorization. Do not include
             // a response body that might echo it in logs or error chains.
-            if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-                return Err(ExecServerError::EnvironmentRegistryAuth(format!(
-                    "environment registry harness key validation authentication failed ({status})"
-                )));
-            }
+            // Preserve the trusted HTTP status: a 401 rejects this executor's
+            // credentials; a 403 can reject a stale harness registration/grant.
             return Err(ExecServerError::EnvironmentRegistryHttp {
                 status,
                 code: None,
@@ -569,6 +568,41 @@ impl AuthProvider for StaticBearerAuthProvider {
     }
 }
 
+/// Return stdin after protecting the credential pipe and process memory on Linux.
+pub fn credential_stdin() -> std::io::Result<std::io::Stdin> {
+    #[cfg(target_os = "linux")]
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)?;
+    Ok(std::io::stdin())
+}
+
+/// Read a single newline-terminated registration bearer from a parent-owned pipe.
+pub fn registration_auth_from_stdin() -> std::io::Result<SharedAuthProvider> {
+    use std::io::BufRead;
+    use std::io::Read;
+
+    let mut token = String::new();
+    credential_stdin()?
+        .lock()
+        .take(16 * 1024)
+        .read_line(&mut token)?;
+    if token.pop() != Some('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected a newline-terminated registration bearer of at most 16 KiB",
+        ));
+    }
+    if token.ends_with('\r') {
+        token.pop();
+    }
+    if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid registration bearer",
+        ));
+    }
+    static_bearer_auth_provider(token, /*chatgpt_account_id*/ None).map_err(std::io::Error::other)
+}
+
 fn static_bearer_auth_provider(
     bearer_token: String,
     chatgpt_account_id: Option<String>,
@@ -685,6 +719,12 @@ impl RemoteEnvironmentConfig {
         direct::require_tls_or_loopback(&self.base_url, "https")?;
         self.auth_mode = RegistryAuthMode::ExecutorCredential;
         Ok(self)
+    }
+
+    /// Omit the bearer from registry diagnostics while retaining the account header.
+    pub fn with_registry_bearer_redaction(mut self) -> Self {
+        self.auth_mode = RegistryAuthMode::ChatgptToken;
+        self
     }
 
     pub fn with_telemetry(mut self, telemetry: ExecServerTelemetry) -> Self {
@@ -1431,6 +1471,15 @@ mod tests {
 
     #[tokio::test]
     async fn executor_credential_is_never_returned_in_registry_diagnostics() {
+        assert_registry_diagnostics_omit_bearer(RegistryAuthMode::ExecutorCredential).await;
+    }
+
+    #[tokio::test]
+    async fn chatgpt_token_is_never_returned_in_registry_diagnostics() {
+        assert_registry_diagnostics_omit_bearer(RegistryAuthMode::ChatgptToken).await;
+    }
+
+    async fn assert_registry_diagnostics_omit_bearer(mode: RegistryAuthMode) {
         const TOKEN: &str = "synthetic-scoped-registry-secret";
         struct ExecutorAuth;
         impl AuthProvider for ExecutorAuth {
@@ -1486,7 +1535,7 @@ mod tests {
                 .await;
             let mut client = EnvironmentRegistryClient::new(server.uri(), Arc::new(ExecutorAuth))
                 .expect("registry client");
-            client.auth_mode = RegistryAuthMode::ExecutorCredential;
+            client.auth_mode = mode;
             let public_key = NoiseChannelIdentity::generate()
                 .expect("identity")
                 .public_key();

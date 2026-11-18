@@ -143,6 +143,7 @@ pub(crate) struct TextElementSnapshot {
 /// will appear to restore stale text from the user's perspective.
 #[derive(Debug)]
 pub(crate) struct TextArea {
+    prefix_insertion_revision: u64,
     text: String,
     single_line: bool,
     cursor_pos: usize,
@@ -179,7 +180,7 @@ struct WrapCache {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct TextAreaState {
     /// Index into wrapped lines of the first visible line.
-    pub(in crate::bottom_pane) scroll: u16,
+    pub(in crate::bottom_pane) scroll: usize,
     /// Caret at the time of manual scrolling. A changed caret resumes following automatically.
     manual_cursor: Option<usize>,
 }
@@ -216,6 +217,7 @@ impl TextArea {
         let defaults = RuntimeKeymap::defaults();
         Self {
             text: String::new(),
+            prefix_insertion_revision: 0,
             single_line: false,
             cursor_pos: 0,
             mouse_selection: None,
@@ -470,12 +472,20 @@ impl TextArea {
         &self.text
     }
 
+    /// Changes when an edit inserts text at the beginning, but not when deletion exposes text.
+    pub(super) fn prefix_insertion_revision(&self) -> u64 {
+        self.prefix_insertion_revision
+    }
+
     pub fn insert_str_at(&mut self, pos: usize, text: &str) {
         let filtered = self.filter_line_breaks(text);
         let text = filtered.as_ref();
         self.mouse_selection = None;
         self.clear_vim_replace_recovery();
         let pos = self.clamp_pos_for_insertion(pos);
+        if pos == 0 && !text.is_empty() {
+            self.prefix_insertion_revision = self.prefix_insertion_revision.wrapping_add(1);
+        }
         self.text.insert_str(pos, text);
         self.wrap_cache.replace(None);
         if pos <= self.cursor_pos {
@@ -510,6 +520,9 @@ impl TextArea {
         }
         let diff = inserted_len as isize - removed_len as isize;
 
+        if start == 0 && !text.is_empty() {
+            self.prefix_insertion_revision = self.prefix_insertion_revision.wrapping_add(1);
+        }
         self.text.replace_range(range, text);
         self.wrap_cache.replace(None);
         self.preferred_col = None;
@@ -544,10 +557,14 @@ impl TextArea {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
+        u16::try_from(self.row_count(width)).unwrap_or(u16::MAX)
+    }
+
+    pub(super) fn row_count(&self, width: u16) -> usize {
         if self.single_line {
             return 1;
         }
-        self.wrapped_lines(width).len() as u16
+        self.wrapped_lines(width).len()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -570,7 +587,7 @@ impl TextArea {
         let lines = self.wrapped_lines(area.width);
         let effective_scroll = self.effective_scroll(area, &lines, state);
         let (i, col) = wrapping::cursor_position(&self.text, &lines, area.width, self.cursor_pos)?;
-        let screen_row = i.checked_sub(usize::from(effective_scroll))?;
+        let screen_row = i.checked_sub(effective_scroll)?;
         (screen_row < usize::from(area.height))
             .then(|| (area.x + col as u16, area.y + screen_row as u16))
     }
@@ -771,9 +788,10 @@ impl TextArea {
                 return;
             }
             self.insert_str(&c.to_string());
+        } else {
+            tracing::debug!(kind = ?event.kind, modifiers = ?event.modifiers, "Unhandled key event in TextArea");
         }
 
-        tracing::debug!("Unhandled key event in TextArea: {:?}", event);
         self.mouse_selection = None;
     }
 
@@ -2169,17 +2187,17 @@ impl TextArea {
     ///
     /// - Cursor is on screen unless the user scrolled away without moving it.
     /// - No scrolling if content fits in the area.
-    fn effective_scroll(&self, area: Rect, lines: &[Range<usize>], state: TextAreaState) -> u16 {
-        let total_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-        if area.height >= total_lines {
+    fn effective_scroll(&self, area: Rect, lines: &[Range<usize>], state: TextAreaState) -> usize {
+        let height = usize::from(area.height);
+        if height >= lines.len() {
             return 0;
         }
 
         let cursor_line_idx =
             wrapping::cursor_position(&self.text, lines, area.width, self.cursor_pos)
-                .map_or(0, |(row, _)| row) as u16;
+                .map_or(0, |(row, _)| row);
 
-        let max_scroll = total_lines.saturating_sub(area.height);
+        let max_scroll = lines.len() - height;
         let mut scroll = state.scroll.min(max_scroll);
         if state.manual_cursor == Some(self.cursor_pos) {
             return scroll;
@@ -2188,10 +2206,20 @@ impl TextArea {
         // Ensure cursor is visible within [scroll, scroll + area_height)
         if cursor_line_idx < scroll {
             scroll = cursor_line_idx;
-        } else if cursor_line_idx >= scroll + area.height {
-            scroll = cursor_line_idx + 1 - area.height;
+        } else if cursor_line_idx >= scroll + height {
+            scroll = cursor_line_idx + 1 - height;
         }
         scroll
+    }
+
+    fn visible_rows(
+        &self,
+        area: Rect,
+        lines: &[Range<usize>],
+        state: &mut TextAreaState,
+    ) -> Range<usize> {
+        state.scroll = self.effective_scroll(area, lines, *state);
+        state.scroll..(state.scroll + usize::from(area.height)).min(lines.len())
     }
 }
 
@@ -2233,12 +2261,8 @@ impl StatefulWidgetRef for &TextArea {
             return;
         }
         let lines = self.wrapped_lines(area.width);
-        let scroll = self.effective_scroll(area, &lines, *state);
-        state.scroll = scroll;
-
-        let start = scroll as usize;
-        let end = (scroll + area.height).min(lines.len() as u16) as usize;
-        self.render_lines(area, buf, &lines, start..end, Style::default(), &[]);
+        let visible = self.visible_rows(area, &lines, state);
+        self.render_lines(area, buf, &lines, visible, Style::default(), &[]);
     }
 }
 
@@ -2252,12 +2276,8 @@ impl TextArea {
     ) {
         self.rendered_area.set(area);
         let lines = self.wrapped_lines(area.width);
-        let scroll = self.effective_scroll(area, &lines, *state);
-        state.scroll = scroll;
-
-        let start = scroll as usize;
-        let end = (scroll + area.height).min(lines.len() as u16) as usize;
-        self.render_lines_masked(area, buf, &lines, start..end, mask_char);
+        let visible = self.visible_rows(area, &lines, state);
+        self.render_lines_masked(area, buf, &lines, visible, mask_char);
     }
 
     /// Render the textarea with `base_style` plus additional render-only highlight ranges.
@@ -2274,12 +2294,8 @@ impl TextArea {
     ) {
         self.rendered_area.set(area);
         let lines = self.wrapped_lines(area.width);
-        let scroll = self.effective_scroll(area, &lines, *state);
-        state.scroll = scroll;
-
-        let start = scroll as usize;
-        let end = (scroll + area.height).min(lines.len() as u16) as usize;
-        self.render_lines(area, buf, &lines, start..end, base_style, highlights);
+        let visible = self.visible_rows(area, &lines, state);
+        self.render_lines(area, buf, &lines, visible, base_style, highlights);
     }
 
     /// Renders visible text and styled overlays without writing outside the textarea viewport.
@@ -3845,7 +3861,7 @@ mod tests {
         ratatui::widgets::StatefulWidgetRef::render_ref(&(&t), small_area, &mut buf, &mut state);
         // After render, state.scroll should be adjusted so cursor row fits
         let effective_lines = t.desired_height(small_area.width);
-        assert!(state.scroll < effective_lines);
+        assert!(state.scroll < usize::from(effective_lines));
     }
 
     #[test]
@@ -4349,6 +4365,28 @@ mod tests {
     }
 
     #[test]
+    fn tall_draft_height_saturates_at_the_terminal_limit() {
+        let text = "\n".repeat(usize::from(u16::MAX)) + "x";
+        let mut textarea = ta_with(&text);
+        textarea.set_cursor(text.len());
+        let area = Rect::new(
+            /*x*/ 0, /*y*/ 0, /*width*/ 32, /*height*/ 2,
+        );
+        let mut buf = Buffer::empty(area);
+        let mut state = TextAreaState::default();
+        textarea.render_ref_styled_with_highlights(
+            area,
+            &mut buf,
+            &mut state,
+            Style::default(),
+            &[],
+        );
+        assert_eq!(textarea.desired_height(area.width), u16::MAX);
+        assert_eq!(buf[(0, 1)].symbol(), "x");
+        assert_eq!(textarea.cursor_pos_with_state(area, state), Some((1, 1)));
+    }
+
+    #[test]
     fn cursor_pos_with_state_basic_and_scroll_behaviors() {
         // Case 1: No wrapping needed, height fits — scroll ignored, y maps directly.
         let mut t = ta_with("hello world");
@@ -4389,7 +4427,7 @@ mod tests {
         t.set_cursor(/*pos*/ 1);
         let area = Rect::new(0, 0, wrap_width, 3);
         let state = TextAreaState {
-            scroll: lines.saturating_mul(2),
+            scroll: usize::from(lines) * 2,
             ..Default::default()
         };
         let (_x, y) = t.cursor_pos_with_state(area, state).unwrap();

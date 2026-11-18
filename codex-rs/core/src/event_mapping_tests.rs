@@ -9,6 +9,7 @@ use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::WebSearchItem;
 use codex_protocol::items::build_hook_prompt_message;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::ImageReference;
@@ -245,7 +246,9 @@ fn skips_local_audio_label_text() {
         content: vec![
             ContentItem::InputText { text: label },
             ContentItem::InputAudio {
-                audio_url: audio_url.clone(),
+                audio: AudioReference::Inline {
+                    audio_url: audio_url.clone(),
+                },
             },
             ContentItem::InputText {
                 text: "</audio>".to_string(),
@@ -265,7 +268,9 @@ fn skips_local_audio_label_text() {
             assert_eq!(
                 user.content,
                 vec![
-                    UserInput::Audio { audio_url },
+                    UserInput::Audio {
+                        audio: AudioReference::Inline { audio_url }
+                    },
                     UserInput::Text {
                         text: user_text,
                         text_elements: Vec::new(),
@@ -447,10 +452,13 @@ fn skips_user_instructions_and_env() {
 
 #[test]
 fn parses_hook_prompt_message_as_distinct_turn_item() {
-    let item = build_hook_prompt_message(&[HookPromptFragment::from_single_hook(
-        "Retry with exactly the phrase meow meow meow.",
-        "hook-run-1",
-    )])
+    let item = build_hook_prompt_message(
+        &[HookPromptFragment::from_single_hook(
+            "Retry with exactly the phrase meow meow meow.",
+            "hook-run-1",
+        )],
+        &codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
+    )
     .expect("hook prompt message");
 
     let turn_item = parse_turn_item(&item).expect("expected hook prompt turn item");

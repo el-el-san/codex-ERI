@@ -12,9 +12,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CodeModeOutputTruncation;
+use codex_code_mode_protocol::CodeModeSession;
+use codex_code_mode_protocol::CodeModeSessionOptions;
+use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::grpc as proto;
 use codex_code_mode_protocol::grpc::code_mode_host_server::CodeModeHost;
+use codex_code_mode_protocol::host::LEGACY_MAX_PENDING_DELEGATE_CALLS;
+use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_protocol::protocol::W3cTraceContext;
 use futures::Stream;
 use futures::StreamExt;
@@ -74,8 +80,35 @@ impl GrpcCodeModeHost {
         request: proto::OpenSessionRequest,
     ) -> Result<Response<GrpcStream<proto::SessionEvent>>, Status> {
         let _permit = self.state.request_permit()?;
+        let max_pending_delegate_calls = request
+            .max_pending_delegate_calls
+            .map(|limit| limit as usize)
+            .unwrap_or(LEGACY_MAX_PENDING_DELEGATE_CALLS)
+            .min(MAX_PENDING_DELEGATE_CALLS);
+        if max_pending_delegate_calls == 0 {
+            return Err(Status::invalid_argument(
+                "callback capacity must be positive",
+            ));
+        }
         let limits = conversions::session_limits(request.cell_execution_limits)?;
-        Ok(Response::new(self.state.open_session(limits)?))
+        let output_truncation = match request
+            .output_truncation
+            .map(proto::OutputTruncation::try_from)
+            .transpose()
+            .map_err(|_| Status::invalid_argument("unknown code-mode output truncation mode"))?
+        {
+            None | Some(proto::OutputTruncation::Unspecified | proto::OutputTruncation::Client) => {
+                CodeModeOutputTruncation::Client
+            }
+            Some(proto::OutputTruncation::Server) => CodeModeOutputTruncation::Server,
+        };
+        Ok(Response::new(self.state.open_session(
+            CodeModeSessionOptions {
+                cell_execution_limits: limits,
+                output_truncation,
+            },
+            max_pending_delegate_calls,
+        )?))
     }
 
     #[tracing::instrument(
@@ -242,11 +275,15 @@ impl GrpcCodeModeHost {
         validation::identifier(&request.cell_id, "cell ID")?;
         validation::identifier(&request.wait_id, "wait ID")?;
         let _permit = self.state.request_permit()?;
+        let max_output_tokens = conversions::observation_budget(
+            request.max_output_tokens,
+            session.runtime.output_truncation(),
+        )?;
         let registration = WaitRegistration::new(Arc::clone(&session), request.wait_id)?;
         let request = WaitRequest {
             cell_id: CellId::new(request.cell_id),
             yield_time_ms: request.yield_time_ms,
-            max_output_tokens: None,
+            max_output_tokens,
         };
         let outcome = tokio::select! {
             biased;
@@ -301,7 +338,16 @@ impl GrpcCodeModeHost {
         let session = self.state.session(&request.session_id)?;
         validation::identifier(&request.cell_id, "cell ID")?;
         let _permit = self.state.request_permit()?;
-        let outcome = session.terminate(CellId::new(request.cell_id)).await?;
+        let max_output_tokens = conversions::observation_budget(
+            request.max_output_tokens,
+            session.runtime.output_truncation(),
+        )?;
+        let outcome = session
+            .terminate(TerminateRequest {
+                cell_id: CellId::new(request.cell_id),
+                max_output_tokens,
+            })
+            .await?;
         let outcome = outcome.with_code_mode_host_duration(received_at.elapsed());
         conversions::wait_response(outcome).map_err(|error| Status::internal(error.to_string()))
     }
@@ -500,3 +546,7 @@ mod tests;
 #[cfg(test)]
 #[path = "robustness_tests.rs"]
 mod robustness_tests;
+
+#[cfg(test)]
+#[path = "capacity_tests.rs"]
+mod capacity_tests;

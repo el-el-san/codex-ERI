@@ -227,6 +227,15 @@ async fn direct_and_routed_clients_build_equivalent_requests() {
 
 #[tokio::test]
 async fn request_failures_classify_real_untrusted_certificate_handshakes() {
+    assert_untrusted_certificate_classified(HttpClientBuilder::new()).await;
+}
+
+#[tokio::test]
+async fn request_failures_classify_real_untrusted_rustls_certificate_handshakes() {
+    assert_untrusted_certificate_classified(HttpClientBuilder::new().with_rustls_tls()).await;
+}
+
+async fn assert_untrusted_certificate_classified(client_builder: HttpClientBuilder) {
     codex_utils_rustls_provider::ensure_rustls_crypto_provider();
     let certificate = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .expect("self-signed certificate should generate");
@@ -252,9 +261,10 @@ async fn request_failures_classify_real_untrusted_certificate_handshakes() {
             .expect("TLS server connection should be created");
         let _ = connection.complete_io(&mut stream);
     });
-    let pool = RouteAwareClientPool::new_without_request_logging(
+    let pool = RouteAwareClientPool::with_builder(
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         ClientRouteClass::Api,
+        client_builder.without_request_logging(),
     );
 
     let mut request = reqwest::Request::new(
@@ -367,7 +377,12 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
             .expect("invalid CA fixture should be written");
 
         for ca_env in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
-            for policy_name in ["reqwest-default", "respect-system-proxy"] {
+            for policy_name in [
+                "reqwest-default",
+                "respect-system-proxy",
+                "strict-reqwest-default",
+                "strict-direct",
+            ] {
                 let output = std::process::Command::new(
                     std::env::current_exe().expect("test executable should be available"),
                 )
@@ -393,18 +408,24 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
     };
 
     let outbound_proxy_policy = match policy_name.as_str() {
-        "reqwest-default" => OutboundProxyPolicy::ReqwestDefault,
+        "reqwest-default" | "strict-reqwest-default" | "strict-direct" => {
+            OutboundProxyPolicy::ReqwestDefault
+        }
         "respect-system-proxy" => OutboundProxyPolicy::RespectSystemProxy,
         _ => panic!("unexpected test proxy policy: {policy_name}"),
     };
     let pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
         HttpClientFactory::new(outbound_proxy_policy),
         ClientRouteClass::Other,
-    )
-    .with_legacy_custom_ca_fallback();
+    );
+    let pool = match policy_name.as_str() {
+        "strict-reqwest-default" => pool,
+        "strict-direct" => pool.with_direct_proxy(),
+        _ => pool.with_legacy_custom_ca_fallback(),
+    };
 
-    match outbound_proxy_policy {
-        OutboundProxyPolicy::ReqwestDefault => {
+    match policy_name.as_str() {
+        "reqwest-default" => {
             let (address, server) = spawn_response_server(vec![
                 "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(),
             ]);
@@ -418,13 +439,19 @@ async fn legacy_custom_ca_fallback_is_limited_to_reqwest_default() {
             let requests = server.join().expect("response server should finish");
             assert_eq!(requests.len(), 1);
         }
-        OutboundProxyPolicy::RespectSystemProxy => {
+        _ => {
             let error = pool
                 .client_for_url_with_resolver("http://127.0.0.1/update", |_| async {
-                    Ok(OutboundProxyRoute::Direct)
+                    if policy_name == "strict-direct" {
+                        Err(io::Error::other(
+                            "direct routing must not need proxy discovery",
+                        ))
+                    } else {
+                        Ok(OutboundProxyRoute::Direct)
+                    }
                 })
                 .await
-                .expect_err("system-proxy routes should reject invalid custom CAs");
+                .expect_err("strict routes should reject invalid custom CAs");
 
             assert!(matches!(error, RouteAwareClientPoolError::Build(_)));
         }

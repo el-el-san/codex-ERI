@@ -1,5 +1,6 @@
 //! Shared cross-process ownership for local thread writers and rollout publication.
-//! Thread lock-file creation and removal uses a bounded wait for the home coordination lock.
+//! Opening a thread lock file uses a bounded wait for home coordination. Cleanup
+//! removes the file only if it can acquire exclusive coordination immediately.
 
 use std::fs;
 use std::fs::File;
@@ -8,7 +9,9 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
 use std::sync::atomic::AtomicBool;
+#[cfg(not(target_os = "android"))]
 use std::sync::atomic::Ordering;
 #[cfg(not(target_os = "android"))]
 use std::time::Duration;
@@ -24,6 +27,7 @@ const COORDINATION_LOCK_FILE: &str = ".coordination.lock";
 /// Coordinates writer ownership within one Codex home.
 pub struct WriterLockCoordinator {
     directory: PathBuf,
+    #[cfg(not(target_os = "android"))]
     cleanup_attempted: AtomicBool,
 }
 
@@ -39,18 +43,32 @@ impl WriterLockCoordinator {
     pub fn new(codex_home: &Path) -> Self {
         Self {
             directory: codex_home.join(WRITER_LOCK_DIR),
+            #[cfg(not(target_os = "android"))]
             cleanup_attempted: AtomicBool::new(false),
         }
     }
 
     /// Acquires exclusive writer ownership, returning `WouldBlock` for an active writer.
     pub fn acquire(self: &Arc<Self>, thread_id: ThreadId) -> io::Result<WriterLockGuard> {
-        let _coordination_lock = self.lock_coordination()?;
-        if !self.cleanup_attempted.swap(true, Ordering::Relaxed)
-            && let Err(err) = self.remove_stale_thread_locks()
+        let file = self.open_coordination()?;
+        #[cfg(not(target_os = "android"))]
         {
-            warn!("failed to clean up stale thread writer locks: {err}");
+            // Never queue a directory sweep behind another writer. Removal remains exclusive.
+            let have_exclusive = !self.cleanup_attempted.swap(true, Ordering::Relaxed)
+                && match file.try_lock() {
+                    Ok(()) => true,
+                    Err(fs::TryLockError::WouldBlock) => false,
+                    Err(fs::TryLockError::Error(err)) => return Err(err),
+                };
+            if have_exclusive {
+                if let Err(err) = self.remove_stale_thread_locks() {
+                    warn!("failed to clean up stale thread writer locks: {err}");
+                }
+            } else {
+                Self::wait_for_coordination(|| file.try_lock_shared())?;
+            }
         }
+        let _coordination_lock = file;
 
         let path = self.directory.join(format!("{thread_id}.lock"));
         let file = OpenOptions::new()
@@ -123,103 +141,116 @@ impl WriterLockCoordinator {
         }
     }
 
-    fn lock_coordination(&self) -> io::Result<File> {
+    fn open_coordination(&self) -> io::Result<File> {
         fs::create_dir_all(&self.directory)?;
-        let file = OpenOptions::new()
+        OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(self.directory.join(COORDINATION_LOCK_FILE))?;
+            .open(self.directory.join(COORDINATION_LOCK_FILE))
+    }
+
+    fn lock_coordination(&self) -> io::Result<File> {
+        let file = self.open_coordination()?;
         #[cfg(not(target_os = "android"))]
-        {
-            let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
-            loop {
-                match file.try_lock() {
-                    Ok(()) => break,
-                    Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(/*millis*/ 50));
-                    }
-                    Err(fs::TryLockError::WouldBlock) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
-                        ));
-                    }
-                    Err(fs::TryLockError::Error(err)) => return Err(err),
-                }
-            }
-        }
+        Self::wait_for_coordination(|| file.try_lock())?;
         Ok(file)
     }
 
-    fn remove_stale_thread_locks(&self) -> io::Result<()> {
-        #[cfg(target_os = "android")]
-        {
-            return Ok(());
+    #[cfg(not(target_os = "android"))]
+    fn wait_for_coordination(
+        try_lock: impl Fn() -> Result<(), fs::TryLockError>,
+    ) -> io::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(/*secs*/ 30);
+        loop {
+            match try_lock() {
+                Ok(()) => return Ok(()),
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(/*millis*/ 50));
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
+                    ));
+                }
+                Err(fs::TryLockError::Error(err)) => return Err(err),
+            }
         }
+    }
 
-        #[cfg(not(target_os = "android"))]
-        {
-            for entry in fs::read_dir(&self.directory)? {
-                let entry = entry?;
-                let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
-                    continue;
-                };
-                let Some(thread_id) = file_name.strip_suffix(".lock") else {
-                    continue;
-                };
-                if ThreadId::from_string(thread_id).is_err() {
+    #[cfg(not(target_os = "android"))]
+    fn remove_stale_thread_locks(&self) -> io::Result<()> {
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(thread_id) = file_name.strip_suffix(".lock") else {
+                continue;
+            };
+            if ThreadId::from_string(thread_id).is_err() {
+                continue;
+            }
+
+            let path = entry.path();
+            let file = match OpenOptions::new().read(true).write(true).open(&path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    warn!(
+                        "failed to inspect thread writer lock {}: {err}",
+                        path.display()
+                    );
                     continue;
                 }
-
-                let path = entry.path();
-                let file = match OpenOptions::new().read(true).write(true).open(&path) {
-                    Ok(file) => file,
-                    Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-                    Err(err) => {
+            };
+            match file.try_lock() {
+                Ok(()) => {
+                    drop(file);
+                    if let Err(err) = fs::remove_file(&path)
+                        && err.kind() != io::ErrorKind::NotFound
+                    {
                         warn!(
-                            "failed to inspect thread writer lock {}: {err}",
-                            path.display()
-                        );
-                        continue;
-                    }
-                };
-                match file.try_lock() {
-                    Ok(()) => {
-                        drop(file);
-                        if let Err(err) = fs::remove_file(&path)
-                            && err.kind() != io::ErrorKind::NotFound
-                        {
-                            warn!(
-                                "failed to remove stale thread writer lock {}: {err}",
-                                path.display()
-                            );
-                        }
-                    }
-                    Err(std::fs::TryLockError::WouldBlock) => {}
-                    Err(std::fs::TryLockError::Error(err)) => {
-                        warn!(
-                            "failed to inspect thread writer lock {}: {err}",
+                            "failed to remove stale thread writer lock {}: {err}",
                             path.display()
                         );
                     }
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Err(std::fs::TryLockError::Error(err)) => {
+                    warn!(
+                        "failed to inspect thread writer lock {}: {err}",
+                        path.display()
+                    );
                 }
             }
-            Ok(())
         }
+        Ok(())
     }
 }
 
 impl Drop for WriterLockGuard {
     fn drop(&mut self) {
-        let coordination_lock = match self.coordinator.lock_coordination() {
+        let coordination_lock = match self.coordinator.open_coordination() {
             Ok(lock) => lock,
             Err(err) => {
                 warn!("failed to coordinate thread writer lock cleanup: {err}");
                 return;
             }
         };
+
+        #[cfg(not(target_os = "android"))]
+        match coordination_lock.try_lock() {
+            Ok(()) => {}
+            // Leave the file for the next writer. Dropping the guard still closes it.
+            Err(fs::TryLockError::WouldBlock) => return,
+            Err(fs::TryLockError::Error(err)) => {
+                warn!("failed to coordinate thread writer lock cleanup: {err}");
+                return;
+            }
+        }
 
         // Close the writer lock before deleting it so cleanup works on Windows too.
         drop(self.file.take());

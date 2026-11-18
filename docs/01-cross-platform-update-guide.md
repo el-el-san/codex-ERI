@@ -131,12 +131,13 @@
 - `arg0/src/lib.rs` で `File::try_lock()` がAndroidのファイルシステムで非対応のためエラーになる
 - `prepend_path_entry_for_codex_aliases` 内と `try_lock_dir` 内の `try_lock()` 呼び出しを `#[cfg(not(target_os = "android"))]` で除外
 - Android版では `try_lock_dir` はロック確認なしで常に `Some(lock_file)` を返す
-- `core/src/installation_id.rs` で `file.lock()` (Rust std の `File::lock`) がAndroidで `lock() not supported` エラーになる
-  - `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
+- `runtime-agent-instance/src/installation_id.rs`（0.170.0 で `core` から移動）で `file.lock()` (Rust std の `File::lock`) がAndroidで `lock() not supported` エラーになる
+  - `file.lock_shared()?;` / `file.unlock()?;` / `file.lock()?;` を `#[cfg(not(target_os = "android"))]` で除外
   - これにより `thread/start failed during TUI bootstrap` エラーが解消される
 
 - `rollout/src/writer_lock.rs`（旧`thread-store/src/local/writer_lock.rs`、0.147.0 で新設）の `file.lock()` / `file.try_lock()` も同様にAndroidで非対応
   - `lock_coordination` 内の `file.try_lock()` を使う待機ループと、`acquire` 内の `file.try_lock()` を `#[cfg(not(target_os = "android"))]` で除外
+  - `acquire` の共有ロックと `Drop` の即時ロックも Android では除外
   - Android 以外では coordination lock の30秒の待機期限を維持
   - `try_acquire_for_publication` も Android ではロック確認なしで通過させる
   - Android では `remove_stale_thread_locks` は stale 判定ができないため no-op とする
@@ -328,6 +329,14 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `cargo fmt` / `cargo metadata` だけでは再現しないため、Android release build で確認する
 
 ## 7. 最近の更新履歴
+
+### 2026-11-18 更新内容（rust-v0.170.0）
+- 最新安定版 `rust-v0.170.0`（2026-11-18 UTC 公開）の `codex-rs` を同期
+- TLS vendoring、環境別ブラウザ起動、Termux 環境変数保持、Android Direct ツール強制、daemon 自動起動の既定無効、再帰上限、MXC SDK の除外を維持
+- installation ID の移動先 `runtime-agent-instance/src/installation_id.rs` で共有・排他ロックと unlock を Android では省略
+- rollout の上流で追加された共有 coordination lock と Drop 時のロックも Android では省略し、非 Android の待機・排他制御を維持
+- ZIP 9.0.5、ctutils 0.4.6、libz-sys 1.1.31、tokio 1.54.1、tonic 0.14.9 を維持し、zstd は 0.14.4 へ更新
+- ローカルの `cargo build` は実施せず、GitHub Actions で Android release build を検証する
 
 ### 2026-11-02 更新内容（rust-v0.166.0）
 - 最新安定版 `rust-v0.166.0`（2026-10-29 UTC 公開）の `codex-rs` を同期

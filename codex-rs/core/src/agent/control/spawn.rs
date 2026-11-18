@@ -5,12 +5,14 @@ use super::spawn_telemetry::SpawnMeasurements;
 use super::spawn_telemetry::record_spawn_success;
 use super::*;
 use crate::agent::child_config::build_agent_resume_config;
+use crate::agent::helper_daybreak;
 use crate::agent::history::load_agent_model_context;
 use crate::agent::history::prepare_forked_history;
 use crate::agent::role::apply_role_to_config;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::SpawnAgentOptions;
+use crate::agent::types::SpawnProgramSource;
 use crate::agents_md_manager::SessionInstructions;
 use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
@@ -87,14 +89,24 @@ pub(in crate::agent) async fn fresh_child_history_and_tools(
         ThreadHistoryMode::Paginated
     )
     .then_some(ThreadHistoryMode::Paginated);
-    let tools = if version == MultiAgentVersion::V2
+    (
+        history_mode,
+        inherited_dynamic_tools(parent, config, version).await,
+    )
+}
+
+pub(in crate::agent) async fn inherited_dynamic_tools(
+    parent: &CodexThread,
+    config: &Config,
+    version: MultiAgentVersion,
+) -> Vec<DynamicToolSpec> {
+    if version == MultiAgentVersion::V2
         && config.features.enabled(Feature::MultiAgentV2DynamicTools)
     {
         parent.session.dynamic_tools().await.to_vec()
     } else {
         Vec::new()
-    };
-    (history_mode, tools)
+    }
 }
 
 impl LocalAgentControl {
@@ -254,7 +266,7 @@ impl LocalAgentControl {
         if owner_thread_id.is_none()
             && let Ok(thread) = state.get_thread(thread_id).await
         {
-            return self.runtime.pin_v2_residency(&state, &thread).await;
+            return self.runtime.pin_v2_residency(&thread).await;
         }
         if self
             .runtime
@@ -265,9 +277,21 @@ impl LocalAgentControl {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
         let evicted_environments = self.runtime.registry.evicted_environments(thread_id);
+        if owner_thread_id.is_none()
+            && let Some(evicted) = &evicted_environments
+        {
+            // Preserve the worker's permissions while keeping the current wake configuration.
+            config.permissions = evicted.config.permissions.clone();
+            config.approvals_reviewer = evicted.config.approvals_reviewer;
+            config.requested_approvals_reviewer = evicted.config.requested_approvals_reviewer;
+        }
         let mut environment_selections = evicted_environments
             .as_ref()
             .map(|environments| environments.selections.clone());
+        let independent_service_tier = evicted_environments
+            .as_ref()
+            .filter(|evicted| evicted.has_independent_service_tier)
+            .map(|evicted| evicted.config.service_tier.clone());
         let evicted_environments = evicted_environments.map(|environments| environments.bindings);
 
         let stored_thread = state
@@ -311,7 +335,7 @@ impl LocalAgentControl {
             }
             if let Ok(thread) = state.get_thread(thread_id).await {
                 self.validate_loaded_v2_child(&thread, parent_thread_id)?;
-                return self.runtime.pin_v2_residency(&state, &thread).await;
+                return self.runtime.pin_v2_residency(&thread).await;
             }
         }
         let parent = if let Some(parent) = parent {
@@ -366,7 +390,7 @@ impl LocalAgentControl {
                     CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
                 })?;
         }
-        config.service_tier = self.root_service_tier();
+        config.service_tier = independent_service_tier.unwrap_or_else(|| self.root_service_tier());
         if let Some(model) = stored_model {
             config.model = Some(model);
         }
@@ -448,7 +472,7 @@ impl LocalAgentControl {
                     if child_config.permission_profile == owner_config.permission_profile {
                         continue;
                     }
-                    if owner_environment.environment.is_remote() {
+                    if owner_environment.environment().is_remote() {
                         return Err(invalid_environment(
                             "permissions changed on a remote executor",
                         ));
@@ -572,9 +596,7 @@ impl LocalAgentControl {
                 // Finish registration even if the sender is cancelled while acquiring its pin.
                 tokio::spawn(async move {
                     let _membership = membership;
-                    let residency_pin = runtime
-                        .pin_v2_residency(&state, &reloaded_thread.thread)
-                        .await?;
+                    let residency_pin = runtime.pin_v2_residency(&reloaded_thread.thread).await?;
                     runtime.registry.clear_evicted_environments(thread_id);
                     residency_slot.commit(reloaded_thread.thread_id);
                     // Register before listeners can forward events from the resumed thread.
@@ -599,7 +621,7 @@ impl LocalAgentControl {
                     }
                     self.runtime.registry.clear_evicted_environments(thread_id);
                     drop(residency_slot);
-                    return self.runtime.pin_v2_residency(&state, &thread).await;
+                    return self.runtime.pin_v2_residency(&thread).await;
                 }
                 Err(err)
             }
@@ -725,6 +747,89 @@ impl LocalAgentControl {
             disabled_plugin_ids,
             ..StartThreadOptions::new(config.clone())
         };
+        let mut cyber_access_program = options.cyber_access_program;
+        let mut inherited_program_to_resolve = None;
+        if let Some(parent_id) = session_source
+            .as_ref()
+            .and_then(SessionSource::parent_thread_id)
+            && let Ok(parent) = state.get_thread(parent_id).await
+        {
+            let turn = match options.parent_turn_id.as_deref() {
+                Some(id) => parent.session.turn_context_for_sub_id(id).await,
+                None => None,
+            };
+            let spawn_owner = helper_daybreak::eligible_owner(&parent.session);
+            if options.cyber_access_program_source == SpawnProgramSource::ParentTurn
+                && let Some(resolution) = turn.as_ref().and_then(|turn| {
+                    turn.extension_data
+                        .get::<helper_daybreak::turn::SavedProgramResolution>()
+                })
+            {
+                resolution
+                    .validate()
+                    .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
+                // Carry the saved choice. The child resolves it for its own model and account.
+                cyber_access_program = None;
+            }
+            if config.features.enabled(Feature::DaybreakProgramPropagation)
+                && let Some(enrollment) = parent
+                    .thread_extension_data()
+                    .get::<helper_daybreak::Enrollment>()
+                && parent
+                    .session
+                    .get_config()
+                    .await
+                    .features
+                    .enabled(Feature::DaybreakProgramPropagation)
+            {
+                start_options
+                    .thread_extension_init
+                    .insert(helper_daybreak::Enrollment::NativeHelper);
+                if let Some(turn) = turn {
+                    let propagate_program = spawn_owner.is_some()
+                        && turn.config.model_provider_id
+                            == codex_model_provider_info::OPENAI_PROVIDER_ID
+                        && codex_model_provider::provider_uses_first_party_auth_path(
+                            turn.provider.info(),
+                        )
+                        && config.model_provider_id
+                            == codex_model_provider_info::OPENAI_PROVIDER_ID
+                        && config
+                            .model_provider
+                            .supports_cyber_access_programs(&config.model_provider_id)
+                        && codex_model_provider::provider_uses_first_party_auth_path(
+                            &config.model_provider,
+                        );
+                    if propagate_program
+                        && options.cyber_access_program_source == SpawnProgramSource::ParentTurn
+                    {
+                        inherited_program_to_resolve = cyber_access_program;
+                    }
+                    if let Some(intent) = helper_daybreak::spawning_intent(
+                        &parent.session,
+                        &turn,
+                        &enrollment,
+                        spawn_owner.as_ref(),
+                    )
+                    .await
+                    {
+                        // A read failure must not become an immutable default on a live child.
+                        if propagate_program
+                            && (options.cyber_access_program.is_none()
+                                || options.cyber_access_program_source
+                                    == SpawnProgramSource::ParentTurn)
+                            && let Err(error) = &intent.choice
+                        {
+                            return Err(CodexErr::InvalidRequest(error.clone())
+                                .with_agent_context(AgentErrorContext::ChildStartup));
+                        }
+                        if intent.choice.is_ok() {
+                            start_options.thread_extension_init.insert(intent);
+                        }
+                    }
+                }
+            }
+        }
         let fork_context = match (session_source, options.fork_mode.as_ref()) {
             (Some(session_source), Some(_)) => {
                 let fork_context_started_at = Instant::now();
@@ -753,6 +858,33 @@ impl LocalAgentControl {
             }
             (None, _) => None,
         };
+        // Fork startup can persist copied history before returning a live child.
+        // Publish its deletion relationship before any child storage is created.
+        let child_thread_id = self.runtime.generate_thread_id();
+        if state.threads.read().await.contains_key(&child_thread_id) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "thread {child_thread_id} is already running",
+            ))
+            .with_agent_context(AgentErrorContext::ChildStartup));
+        }
+        start_options.reserved_thread_id = Some(child_thread_id);
+        let mut pending_spawn = PendingSpawn::new(
+            Arc::clone(&state),
+            child_thread_id,
+            membership,
+            SpawnOwner::Local,
+        );
+        let edge_write_started_at = Instant::now();
+        let control = self.clone();
+        let source = notification_source.clone();
+        let ephemeral = config.ephemeral;
+        pending_spawn.set_edge_write(tokio::spawn(async move {
+            control
+                .persist_thread_spawn_edge_for_source(ephemeral, child_thread_id, source.as_ref())
+                .await
+        }));
+        pending_spawn.wait_for_edge().await?;
+        let edge_write = edge_write_started_at.elapsed();
         let child_create_started_at = Instant::now();
         let new_thread = state
             .spawn_child_thread(
@@ -765,13 +897,6 @@ impl LocalAgentControl {
             .map_err(|err| err.with_agent_context(AgentErrorContext::ChildStartup))?;
         let child_create = child_create_started_at.elapsed();
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        let mut pending_spawn = PendingSpawn::new(
-            Arc::clone(&state),
-            new_thread.thread_id,
-            membership,
-            SpawnOwner::Local,
-        );
-
         if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         })) = notification_source.as_ref()
@@ -796,29 +921,11 @@ impl LocalAgentControl {
                 .await;
         }
 
-        let control = self.clone();
-        let child = Arc::clone(&new_thread.thread);
-        let child_thread_id = new_thread.thread_id;
-        let source = notification_source.clone();
-        pending_spawn.set_edge_write(tokio::spawn(async move {
-            control
-                .persist_thread_spawn_edge_for_source(
-                    child.as_ref(),
-                    child_thread_id,
-                    source.as_ref(),
-                )
-                .await;
-        }));
         let durability_wait_started_at = Instant::now();
         if options.fork_mode.is_some() {
-            tokio::join!(
-                new_thread.thread.ensure_rollout_materialized(),
-                pending_spawn.wait_for_edge(),
-            );
-        } else {
-            pending_spawn.wait_for_edge().await;
+            new_thread.thread.ensure_rollout_materialized().await;
         }
-        let durability_wait = durability_wait_started_at.elapsed();
+        let durability_wait = edge_write + durability_wait_started_at.elapsed();
 
         // Capture startup settings before the child can publish metadata for a later turn.
         let spawn_config = if multi_agent_version == MultiAgentVersion::V2 {
@@ -827,11 +934,31 @@ impl LocalAgentControl {
             None
         };
 
+        if let Some(inherited) = inherited_program_to_resolve
+            && inherited != codex_protocol::turn_input::CyberAccessProgram::Standard
+            && let Some(model) = new_thread
+                .thread
+                .thread_extension_data()
+                .get::<codex_protocol::openai_models::ModelInfo>()
+            && model
+                .available_access_programs
+                .as_ref()
+                .is_some_and(|programs| !programs.cyber.contains(&inherited))
+        {
+            // Preserve the parent's turn override, adapting Blue/Red to the child model.
+            // The separately captured saved choice remains the default for later turns.
+            cyber_access_program = helper_daybreak::turn::select_program(
+                &model,
+                codex_protocol::openai_models::SavedDaybreakChoice::On,
+            )
+            .map_err(CodexErr::InvalidRequest)?
+            .or(Some(inherited));
+        }
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
             root_turn_id: options.root_turn_id,
-            cyber_access_program: options.cyber_access_program,
+            cyber_access_program,
             ..Default::default()
         };
         let input_admission_started_at = Instant::now();
@@ -1093,12 +1220,13 @@ impl LocalAgentControl {
                 agent_metadata.agent_path.clone(),
             );
         }
-        self.persist_thread_spawn_edge_for_source(
-            resumed_thread.thread.as_ref(),
-            resumed_thread.thread_id,
-            Some(&notification_source),
-        )
-        .await;
+        let _ = self
+            .persist_thread_spawn_edge_for_source(
+                resumed_thread.thread.config_snapshot().await.ephemeral,
+                resumed_thread.thread_id,
+                Some(&notification_source),
+            )
+            .await;
 
         Ok((resumed_thread.thread_id, multi_agent_version))
     }

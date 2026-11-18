@@ -18,6 +18,7 @@ use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::ModelAccessPrograms;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
@@ -565,6 +566,9 @@ async fn injected_cache_write_error_does_not_fail_remote_refresh() {
         .await;
 
     assert_eq!(catalog.models, remote_models);
+    manager
+        .ensure_initialized(DEFAULT_HTTP_CLIENT_FACTORY)
+        .await;
     assert_eq!(
         manager
             .model_catalog_with_origins(RefreshStrategy::InMemory, DEFAULT_HTTP_CLIENT_FACTORY)
@@ -572,12 +576,33 @@ async fn injected_cache_write_error_does_not_fail_remote_refresh() {
         remote_models
             .into_iter()
             .map(|model| CatalogModel {
-                model,
+                model: model.into(),
                 origin: ModelOrigin::Provider,
             })
             .collect::<Vec<_>>()
     );
     assert_eq!(endpoint.fetch_count(), 1);
+}
+
+#[tokio::test]
+async fn initialization_retains_loaded_catalogs_including_empty_responses() {
+    for models in [
+        Vec::new(),
+        vec![remote_model("remote", "Remote", /*priority*/ 0)],
+    ] {
+        let endpoint = TestModelsEndpoint::new(vec![models.clone()]);
+        let manager =
+            OpenAiModelsManager::new_without_cache(endpoint.clone(), /*auth_manager*/ None)
+                .with_provider_catalog();
+        manager
+            .ensure_initialized(DEFAULT_HTTP_CLIENT_FACTORY)
+            .await;
+        manager
+            .ensure_initialized(DEFAULT_HTTP_CLIENT_FACTORY)
+            .await;
+        assert_eq!(manager.get_remote_models().await, models);
+        assert_eq!(endpoint.fetch_count(), 1);
+    }
 }
 
 #[tokio::test]
@@ -768,9 +793,12 @@ async fn dynamic_manager_preserves_requested_model_when_fallback_is_allowed() {
 }
 
 #[tokio::test]
-async fn get_model_info_tracks_fallback_usage() {
+async fn get_model_info_tracks_metadata_origin() {
     let codex_home = tempdir().expect("temp dir");
-    let config = ModelsManagerConfig::default();
+    let config = ModelsManagerConfig {
+        base_instructions: Some("Custom instructions".to_string()),
+        ..Default::default()
+    };
     let manager = openai_manager_for_tests(
         codex_home.path().to_path_buf(),
         TestModelsEndpoint::new(Vec::new()),
@@ -784,14 +812,21 @@ async fn get_model_info_tracks_fallback_usage() {
         .clone();
 
     let known = manager.get_model_info(known_slug.as_str(), &config).await;
-    assert!(!known.used_fallback_model_metadata);
+    assert_eq!(known.origin, ModelOrigin::Bundled);
     assert_eq!(known.slug, known_slug);
 
     let unknown = manager
         .get_model_info("model-that-does-not-exist", &config)
         .await;
-    assert!(unknown.used_fallback_model_metadata);
+    assert_eq!(unknown.origin, ModelOrigin::Synthetic);
     assert_eq!(unknown.slug, "model-that-does-not-exist");
+    assert_eq!(
+        unknown
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref()),
+        config.base_instructions.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -835,16 +870,14 @@ async fn get_model_info_uses_custom_catalog() {
     assert_eq!(model_info.display_name, "Overlay");
     assert_eq!(model_info.context_window, Some(272_000));
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 
     let config = ModelsManagerConfig {
         model_context_window: Some(128_000),
         ..Default::default()
     };
-    let expected = ModelInfo {
-        context_window: Some(128_000),
-        ..model_info
-    };
+    let mut expected = model_info;
+    expected.context_window = Some(128_000);
     assert_eq!(
         manager
             .get_model_info("gpt-overlay-experiment", &config)
@@ -867,7 +900,7 @@ async fn get_model_info_matches_namespaced_suffix() {
 
     assert_eq!(model_info.slug, namespaced_model);
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -882,7 +915,7 @@ async fn get_model_info_matches_hyphenated_provider_namespace_suffix() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -905,7 +938,7 @@ async fn get_model_info_rejects_multi_segment_namespace_suffix_matching() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -1037,7 +1070,7 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -1137,7 +1170,10 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
             manager
                 .get_model_info(unknown, &ModelsManagerConfig::default())
                 .await,
-            model_info::model_info_from_slug(unknown)
+            CatalogModel {
+                model: model_info::model_info_from_slug(unknown).into(),
+                origin: ModelOrigin::Synthetic
+            }
         );
     }
 }
@@ -1188,6 +1224,7 @@ async fn authoritative_catalog_access_rejection_invalidates_cache_until_refresh_
                     .await,
                 ModelsResponse::default()
             );
+            assert!(manager.refreshed_model_catalog().is_none());
         }
         let restarted =
             OpenAiModelsManager::new_with_cache(cache, endpoint, /*auth_manager*/ None)
@@ -1255,6 +1292,8 @@ async fn authoritative_catalog_refresh_failure_preserves_snapshot_and_freshness(
         let initial = manager
             .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
             .await;
+        let updates = manager.model_catalog_updates().unwrap();
+        let refreshed = manager.refreshed_model_catalog();
         let initial_info = manager
             .get_model_info("provider-model", &ModelsManagerConfig::default())
             .await;
@@ -1273,6 +1312,11 @@ async fn authoritative_catalog_refresh_failure_preserves_snapshot_and_freshness(
         );
         assert_eq!(manager.remote_models.read().await.entry, stored[0]);
         assert_eq!(cache.stored_entries(), stored);
+        assert!(
+            !updates.has_changed().unwrap(),
+            "failed fetch must not publish a refreshed catalog"
+        );
+        assert_eq!(manager.refreshed_model_catalog(), refreshed);
 
         let restarted = OpenAiModelsManager::new_with_cache(
             cache.clone(),

@@ -206,7 +206,6 @@ impl ChatWidget {
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {
             self.set_status_line(/*status_line*/ None);
-            self.set_status_line_hyperlink(/*url*/ None);
             return;
         }
 
@@ -217,17 +216,13 @@ impl ChatWidget {
             }
         }
 
-        self.set_status_line(status_line_from_segments(
+        let line = status_line_from_segments(
             segments,
             self.local_settings.tui.status_line_use_colors,
             self.thread_id,
-        ));
-        let hyperlink_url = selections
-            .status_line_items
-            .contains(&StatusLineItem::PullRequestNumber)
-            .then(|| self.status_line_pull_request_url())
-            .flatten();
-        self.set_status_line_hyperlink(hyperlink_url);
+            self.status_line_pull_request_url(),
+        );
+        self.set_status_line(line.map(Into::into));
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -330,7 +325,6 @@ impl ChatWidget {
             ProgramStatus::Blocked(kind)
         } else if self.bottom_pane.is_task_running()
             || self.is_user_turn_pending_or_running()
-            || !self.unified_exec_processes.is_empty()
             || (self.status_state.program_status_after_turn == ProgramStatus::Done
                 && self
                     .current_goal_status
@@ -729,7 +723,10 @@ impl ChatWidget {
     pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
-            StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
+            StatusLineItem::ModelWithReasoning => {
+                let service_tier = self.processing_tier_display_name().map(str::to_lowercase);
+                Some(self.model_with_reasoning_display_name(service_tier.as_deref()))
+            }
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::Profile => {
                 let layer = self.config.config_layer_stack.get_active_user_layer()?;
@@ -852,11 +849,11 @@ impl ChatWidget {
         }
     }
 
-    fn status_line_pull_request_url(&self) -> Option<String> {
+    pub(super) fn status_line_pull_request_url(&self) -> Option<&str> {
         self.status_line_git_summary
             .as_ref()
             .and_then(|summary| summary.pull_request.as_ref())
-            .map(|pull_request| pull_request.url.clone())
+            .map(|pull_request| pull_request.url.as_str())
     }
 
     pub(super) fn status_surface_preview_value_for_item(
@@ -976,7 +973,7 @@ impl ChatWidget {
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::ModelWithReasoning => Some(Self::truncate_terminal_title_part(
-                self.model_with_reasoning_display_name(),
+                self.model_with_reasoning_display_name(self.processing_tier_display_name()),
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::Reasoning => Some(Self::truncate_terminal_title_part(
@@ -992,10 +989,9 @@ impl ChatWidget {
         Self::status_line_reasoning_effort_label(effort.as_ref())
     }
 
-    fn model_with_reasoning_display_name(&self) -> String {
+    fn model_with_reasoning_display_name(&self, service_tier: Option<&str>) -> String {
         let label = self.reasoning_display_name();
-        let service_tier_label = self
-            .processing_tier_display_name()
+        let service_tier_label = service_tier
             .map(|tier| format!(" {tier}"))
             .unwrap_or_default();
         format!("{} {label}{service_tier_label}", self.model_display_name())

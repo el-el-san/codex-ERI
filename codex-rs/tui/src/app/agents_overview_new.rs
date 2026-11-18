@@ -114,9 +114,14 @@ impl App {
             }
             return Ok(AppRunControl::Continue);
         }
-        let Some((config, remote_cwd)) = self
-            .agents_overview_session_config(tui, app_server, cwd, startup_draft.as_deref_mut())
-            .await
+        // Keep folder consent and config loading off the session-start stack frame.
+        let Some((config, remote_cwd)) = Box::pin(self.agents_overview_session_config(
+            tui,
+            app_server,
+            cwd,
+            startup_draft.as_deref_mut(),
+        ))
+        .await
         else {
             if let Some((_, checkout)) = &managed_worktree {
                 self.agents_overview_retained_worktree_error(
@@ -162,6 +167,7 @@ impl App {
                 /*session_start_source*/ None,
                 remote_cwd.as_deref(),
                 selected_profile.as_ref(),
+                self.backend_preference_context.local_cwd.as_deref(),
             )),
         )
         .await;
@@ -215,6 +221,8 @@ impl App {
                 return Ok(AppRunControl::Continue);
             }
         }
+        self.backend_registry
+            .register_started(app_server.backend_id(), &started)?;
         self.agents_overview
             .blank_sessions
             .insert(thread_id, started.clone());

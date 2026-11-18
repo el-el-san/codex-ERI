@@ -43,6 +43,13 @@ async fn foreign_backend_selection_cannot_resume_same_id_or_unarchive() -> Resul
         SessionSelection::Resume(target.clone()),
     )
     .await?;
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok()).any(|event| matches!(
+            event,
+            AppEvent::ResumeBackendSession(routed)
+                if routed.backend_id == target.backend_id && routed.thread_id == target.thread_id
+        ))
+    );
     app.resume_target_session(&mut tui, &mut server, target.clone())
         .await?;
     assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
@@ -62,7 +69,6 @@ async fn foreign_backend_selection_cannot_resume_same_id_or_unarchive() -> Resul
         .collect();
     insta::assert_snapshot!(errors.join("\n"), @r###"
     ■ This session belongs to a different backend. Open the session picker again.
-    ■ This session belongs to a different backend. Open the session picker again.
     "###);
     for action in [
         SessionStartAction::Resume(
@@ -77,7 +83,6 @@ async fn foreign_backend_selection_cannot_resume_same_id_or_unarchive() -> Resul
                 config: &app.config,
                 local_settings: &app.local_settings,
             },
-            &AppServerTarget::Embedded,
             &target,
             action,
             Err(color_eyre::eyre::eyre!(
@@ -97,6 +102,23 @@ async fn foreign_backend_selection_cannot_resume_same_id_or_unarchive() -> Resul
         requests.lock().unwrap().is_empty(),
         "a foreign selection must cause zero requests"
     );
+
+    let collision = ThreadId::new();
+    assert!(app.backend_registry.observe(origin.backend_id(), collision));
+    let target = SessionTarget {
+        backend_id: server.backend_id(),
+        thread_id: collision,
+        cwd: None,
+        ..target
+    };
+    app.resume_target_session(&mut tui, &mut server, target)
+        .await?;
+    assert_eq!(app.current_displayed_thread_id(), Some(thread_id));
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "keep this draft"
+    );
+    assert!(requests.lock().unwrap().is_empty());
     origin.shutdown().await?;
     server.shutdown().await?;
     proxy.await??;
@@ -209,9 +231,14 @@ async fn auxiliary_picker_connection_preserves_backend_selection() -> Result<()>
         /*git_info*/ None,
     )
     .expect("saved rollout");
-    let target = crate::lookup_session_target_with_app_server(&mut picker, &app.config, &id)
-        .await?
-        .expect("picker target");
+    let target = crate::lookup_session_target_with_app_server(
+        crate::resume_picker::SessionPickerAction::Resume,
+        &mut picker,
+        &app.config,
+        &id,
+    )
+    .await?
+    .expect("picker target");
     assert_eq!(target.backend_id, consumer.backend_id());
     crate::legacy_core::config::set_project_trust_level(
         app.config.codex_home.as_path(),
@@ -301,8 +328,10 @@ async fn prepared_resume_cannot_activate_through_another_backend() -> Result<()>
             blocks_direct_input: false,
             task_tools_available: true,
         },
+        restored_blank_session: false,
         read_only: false,
         history_notice: None,
+        provider_error: None,
     };
     requests.lock().unwrap().clear();
     while events.try_recv().is_ok() {}

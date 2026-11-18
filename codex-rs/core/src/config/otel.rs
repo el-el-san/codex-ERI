@@ -27,7 +27,10 @@ pub(crate) fn resolve_config(
     let tracestate = resolve_tracestate(config.tracestate, startup_warnings);
 
     OtelConfig {
+        headers_helper: config.headers_helper,
+        headers_helper_refresh_interval_ms: config.headers_helper_refresh_interval_ms,
         tool_result: config.tool_result.unwrap_or_default(),
+        log_sse_deltas: config.log_sse_deltas.unwrap_or(true),
         log_user_prompt,
         log_agent_responses: config.log_agent_responses.unwrap_or(false),
         log_guardian_assessments: config.log_guardian_assessments.unwrap_or(false),

@@ -717,6 +717,7 @@ async fn config_requirements_read_redacts_otel_exporter_headers(
         r#"[otel]
 tool_result = { max_bytes = 1024 }
 log_user_prompt = false
+log_sse_deltas = false
 log_agent_responses = true
 log_guardian_assessments = false
 environment = "managed"
@@ -736,6 +737,7 @@ tracestate = { managed = { tenant = "enterprise" } }"#
         json!({
             "tool_result": { "max_bytes": 1024 },
             "log_user_prompt": false,
+            "log_sse_deltas": false,
             "log_agent_responses": true,
             "log_guardian_assessments": false,
             "environment": "managed",
@@ -897,7 +899,7 @@ sandbox_mode = "workspace-write"
             .all(|origin| !matches!(&origin.name, ConfigLayerSource::PackagedDefaults { .. }))
     );
     let layers = layers.expect("layers present");
-    assert_layers_user_then_optional_system(&layers, user_file)?;
+    assert_config_layers(&layers, user_file, /*managed_file*/ None);
 
     Ok(())
 }
@@ -968,7 +970,7 @@ allowed_domains = ["example.com"]
         }
     );
     let layers = layers.expect("layers present");
-    assert_layers_user_then_optional_system(&layers, user_file)?;
+    assert_config_layers(&layers, user_file, /*managed_file*/ None);
 
     Ok(())
 }
@@ -1392,6 +1394,11 @@ enabled = true
 omit_tools_from = []
 
 [apps.app_with_empty_links.links]
+
+[plugins."sample@test".apps.app1]
+enabled = true
+[plugins."sample@test".apps.app1.tools.list]
+enabled = false
 "#,
     )?;
     let codex_home_path = codex_home.path().canonicalize()?;
@@ -1446,7 +1453,7 @@ omit_tools_from = []
                         open_world_enabled: None,
                         default_tools_approval_mode: Some(AppToolApproval::Prompt),
                         default_tools_enabled: None,
-                        tools: None,
+                        tools: Some(serde_json::from_value(json!({"list": {"enabled": false}}))?),
                         links: Some(AppLinksConfig {
                             links: std::collections::HashMap::from([
                                 (
@@ -1559,7 +1566,11 @@ omit_tools_from = []
     );
 
     let layers = layers.expect("layers present");
-    assert_layers_user_then_optional_system(&layers, user_file)?;
+    assert_eq!(
+        origins["apps.app1.tools.list.enabled"],
+        origins["plugins.sample@test.apps.app1.tools.list.enabled"],
+    );
+    assert_config_layers(&layers, user_file, /*managed_file*/ None);
 
     Ok(())
 }
@@ -1843,7 +1854,7 @@ writable_roots = [{}]
     );
 
     let layers = layers.expect("layers present");
-    assert_layers_managed_user_then_optional_system(&layers, managed_file, user_file)?;
+    assert_config_layers(&layers, user_file, Some(managed_file));
 
     Ok(())
 }
@@ -2864,59 +2875,48 @@ async fn config_batch_write_updates_multiple_desktop_settings() -> Result<()> {
     Ok(())
 }
 
-fn assert_layers_user_then_optional_system(
+fn assert_config_layers(
     layers: &[codex_app_server_protocol::ConfigLayer],
     user_file: AbsolutePathBuf,
-) -> Result<()> {
-    let mut first_index = 0;
-    if matches!(
+    managed_file: Option<AbsolutePathBuf>,
+) {
+    let layers = if matches!(
         layers.first().map(|layer| &layer.name),
         Some(ConfigLayerSource::LegacyManagedConfigTomlFromMdm)
     ) {
-        first_index = 1;
-    }
-    assert_eq!(layers.len(), first_index + 2);
+        &layers[1..]
+    } else {
+        layers
+    };
+    let layers = if let Some(file) = managed_file {
+        let (managed, remaining) = layers.split_first().expect("managed config layer");
+        assert_eq!(
+            managed.name,
+            ConfigLayerSource::LegacyManagedConfigTomlFromFile { file }
+        );
+        remaining
+    } else {
+        layers
+    };
+    let [flags, user, system] = layers else {
+        panic!("expected session flags, user, and system layers, got {layers:?}");
+    };
+    assert_eq!(flags.name, ConfigLayerSource::SessionFlags);
     assert_eq!(
-        layers[first_index].name,
+        flags.config,
+        json!({
+            "features": {
+                "tool_suggest": false,
+                "recommended_plugins": false,
+            },
+        })
+    );
+    assert_eq!(
+        user.name,
         ConfigLayerSource::User {
             file: user_file,
             profile: None
         }
     );
-    assert!(matches!(
-        layers[first_index + 1].name,
-        ConfigLayerSource::System { .. }
-    ));
-    Ok(())
-}
-
-fn assert_layers_managed_user_then_optional_system(
-    layers: &[codex_app_server_protocol::ConfigLayer],
-    managed_file: AbsolutePathBuf,
-    user_file: AbsolutePathBuf,
-) -> Result<()> {
-    let mut first_index = 0;
-    if matches!(
-        layers.first().map(|layer| &layer.name),
-        Some(ConfigLayerSource::LegacyManagedConfigTomlFromMdm)
-    ) {
-        first_index = 1;
-    }
-    assert_eq!(layers.len(), first_index + 3);
-    assert_eq!(
-        layers[first_index].name,
-        ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
-    );
-    assert_eq!(
-        layers[first_index + 1].name,
-        ConfigLayerSource::User {
-            file: user_file,
-            profile: None
-        }
-    );
-    assert!(matches!(
-        layers[first_index + 2].name,
-        ConfigLayerSource::System { .. }
-    ));
-    Ok(())
+    assert!(matches!(system.name, ConfigLayerSource::System { .. }));
 }

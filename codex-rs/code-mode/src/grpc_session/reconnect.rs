@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::atomic::Ordering;
 
+use codex_code_mode_protocol::CodeModeOutputTruncation;
 use codex_code_mode_protocol::CodeModeSession;
-use codex_code_mode_protocol::CodeModeSessionCellExecutionLimits;
 use codex_code_mode_protocol::CodeModeSessionDelegate;
+use codex_code_mode_protocol::CodeModeSessionOptions;
 use codex_code_mode_protocol::CodeModeSessionResultFuture;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::StartedCell;
@@ -18,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::GrpcCodeModeSession;
 use super::GrpcCodeModeSessionProvider;
+use super::GrpcSessionOpenError;
 use super::SHUTDOWN_ERROR;
 use super::generation;
 use super::generation::GenerationDelegate;
@@ -30,8 +33,11 @@ pub(super) struct ReconnectableSession {
 
 struct ReconnectInner {
     provider: GrpcCodeModeSessionProvider,
-    limits: CodeModeSessionCellExecutionLimits,
+    options: CodeModeSessionOptions,
     binding: Mutex<Option<SessionBinding>>,
+    // The negotiated mode belongs to the logical session, including after
+    // shutdown releases the binding. Never pin a mode from an unpublished open.
+    output_truncation: OnceLock<CodeModeOutputTruncation>,
     opening_permit: Semaphore,
     shutdown_requested: CancellationToken,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
@@ -46,13 +52,14 @@ struct SessionBinding {
 impl ReconnectableSession {
     pub(super) fn new(
         provider: GrpcCodeModeSessionProvider,
-        limits: CodeModeSessionCellExecutionLimits,
+        options: CodeModeSessionOptions,
     ) -> Self {
         Self {
             inner: Arc::new(ReconnectInner {
                 provider,
-                limits,
+                options,
                 binding: Mutex::new(None),
+                output_truncation: OnceLock::new(),
                 opening_permit: Semaphore::new(/*permits*/ 1),
                 shutdown_requested: CancellationToken::new(),
                 shutdown_result: Mutex::new(None),
@@ -60,12 +67,20 @@ impl ReconnectableSession {
         }
     }
 
-    pub(super) async fn initialize(&self) -> Result<(), String> {
+    pub(super) async fn initialize(&self) -> Result<(), GrpcSessionOpenError> {
         self.inner.get_or_open_binding().await.map(|_| ())
     }
 }
 
 impl CodeModeSession for ReconnectableSession {
+    fn output_truncation(&self) -> CodeModeOutputTruncation {
+        self.inner
+            .output_truncation
+            .get()
+            .copied()
+            .unwrap_or_default()
+    }
+
     fn execute<'a>(
         &'a self,
         request: ExecuteRequest,
@@ -137,7 +152,10 @@ impl Drop for ReconnectableSession {
 
 impl ReconnectInner {
     async fn binding_for_request(&self, generation: Option<u64>) -> Result<SessionBinding, String> {
-        let binding = self.get_or_open_binding().await?;
+        let binding = self
+            .get_or_open_binding()
+            .await
+            .map_err(|error| error.to_string())?;
         if generation != Some(binding.generation) {
             return Err(concat!(
                 "The exec runtime was replaced. Stored values and running cells were lost. ",
@@ -148,9 +166,9 @@ impl ReconnectInner {
         Ok(binding)
     }
 
-    async fn get_or_open_binding(&self) -> Result<SessionBinding, String> {
+    async fn get_or_open_binding(&self) -> Result<SessionBinding, GrpcSessionOpenError> {
         if self.shutdown_requested.is_cancelled() {
-            return Err(SHUTDOWN_ERROR.to_string());
+            return Err(SHUTDOWN_ERROR.into());
         }
         if let Some(binding) = self.live_binding() {
             return Ok(binding);
@@ -159,13 +177,13 @@ impl ReconnectInner {
         let _opening_permit = tokio::select! {
             biased;
             _ = self.shutdown_requested.cancelled() => {
-                return Err(SHUTDOWN_ERROR.to_string());
+                return Err(SHUTDOWN_ERROR.into());
             }
             permit = self.opening_permit.acquire() => permit
                 .map_err(|_| "gRPC code-mode session opening coordinator closed".to_string())?,
         };
         if self.shutdown_requested.is_cancelled() {
-            return Err(SHUTDOWN_ERROR.to_string());
+            return Err(SHUTDOWN_ERROR.into());
         }
         if let Some(binding) = self.live_binding() {
             return Ok(binding);
@@ -182,9 +200,9 @@ impl ReconnectInner {
         let session = tokio::select! {
             biased;
             _ = self.shutdown_requested.cancelled() => {
-                return Err(SHUTDOWN_ERROR.to_string());
+                return Err(SHUTDOWN_ERROR.into());
             }
-            session = self.provider.open_binding(self.limits.clone()) => session?,
+            session = self.provider.open_binding(&self.options, self.output_truncation.get().copied()) => session?,
         };
         let binding = SessionBinding {
             session,
@@ -196,12 +214,14 @@ impl ReconnectInner {
                 false
             } else {
                 *current = Some(binding.clone());
+                self.output_truncation
+                    .get_or_init(|| binding.session.output_truncation());
                 true
             }
         };
         if !published {
             let _ = wait_for_watch(binding.session.inner.request_shutdown()).await;
-            return Err(SHUTDOWN_ERROR.to_string());
+            return Err(SHUTDOWN_ERROR.into());
         }
         Ok(binding)
     }

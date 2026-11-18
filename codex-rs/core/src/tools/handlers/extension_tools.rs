@@ -66,6 +66,17 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
     {
         Box::pin(async move {
             let step = &invocation.step_context;
+            let _native_search = if invocation.tool_name.namespace.as_deref() == Some("web")
+                && invocation.tool_name.name == "run"
+            {
+                crate::model_search::SearchOwner::reserve_native_fallback(
+                    &step.extension_data,
+                    &invocation.session.services.thread_extension_data,
+                )
+                .map_err(|err| codex_tools::FunctionCallError::RespondToModel(err.to_string()))?
+            } else {
+                None
+            };
             let selected: Vec<_> = match &invocation.environments {
                 ToolEnvironments::Arguments(environments) => {
                     environments.iter().map(|(_, env)| env.as_ref()).collect()
@@ -432,6 +443,7 @@ mod tests {
             call_id: "call-extension".to_string(),
             tool_name: codex_tools::ToolName::plain("extension_echo"),
             source: ToolCallSource::Direct,
+            native_call: None,
             environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
@@ -533,6 +545,7 @@ mod tests {
                 cell_id: "cell-1".to_string(),
                 runtime_tool_call_id: "nested-call-1".to_string(),
             },
+            native_call: None,
             environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: json!({ "message": "hello" }).to_string(),
