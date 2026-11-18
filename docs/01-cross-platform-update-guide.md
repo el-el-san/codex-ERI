@@ -335,8 +335,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - TLS vendoring、環境別ブラウザ起動、Termux 環境変数保持、Android Direct ツール強制、daemon 自動起動の既定無効、再帰上限、MXC SDK の除外を維持
 - installation ID の移動先 `runtime-agent-instance/src/installation_id.rs` で共有・排他ロックと unlock を Android では省略
 - rollout の上流で追加された共有 coordination lock と Drop 時のロックも Android では省略し、非 Android の待機・排他制御を維持
-- ZIP 9.0.5、ctutils 0.4.6、libz-sys 1.1.31、tokio 1.54.1、tonic 0.14.9 を維持し、zstd は 0.14.4 へ更新
+- ZIP 9.0.5、ctutils 0.4.6、libz-sys 1.1.33、tokio 1.54.1、tonic 0.14.9 を維持し、zstd は 0.14.4 へ更新
 - ローカルの `cargo build` は実施せず、GitHub Actions で Android release build を検証する
+
+- Cargo audit が検出した問題に対応し、quinn-proto 0.11.19、quinn-udp 0.5.16 / 0.6.3、rustix 1.1.6 へ更新
+- Hickory DNS 0.25 系の DNSSEC に関する6件（RUSTSEC-2026-0530 / 0531 / 0532 / 0549 / 0550 / 0551）と chrono の保守終了（RUSTSEC-2026-0543）は互換性のある修正版がなく、監査の除外を追加せず記録する
 
 ### 2026-11-02 更新内容（rust-v0.166.0）
 - 最新安定版 `rust-v0.166.0`（2026-10-29 UTC 公開）の `codex-rs` を同期
