@@ -218,6 +218,14 @@ jobs:
               -p codex-tui --no-default-features
           fi
 
+      - name: Upload resolved lockfile
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-resolved-lockfile
+          path: codex-rs/Cargo.lock
+          retention-days: 7
+
       - name: Skip tests for Android ARM64 (cross-compilation)
         run: |
           echo "Skipping tests for Android ARM64 cross-compilation target"
