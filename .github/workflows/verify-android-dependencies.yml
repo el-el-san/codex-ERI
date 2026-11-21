@@ -1,0 +1,44 @@
+name: Verify Android dependencies
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+      - name: Resolve compatible security updates
+        run: |
+          cargo update -p zstd-safe@7.2.4
+          cargo update -p heapless@0.9.3
+          cargo metadata --no-deps --locked --format-version 1 > metadata.json
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check Android dependency graph
+        run: |
+          cargo tree --locked --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui > android-dependencies.txt
+          if grep -E '(^|[[:space:]])(v8|rusty_v8|codex-code-mode-host|mxc-sdk) v' android-dependencies.txt; then
+            exit 1
+          fi
+          cargo tree --locked --target aarch64-linux-android -i openssl-src -e features > android-openssl.txt
+      - name: Upload verification results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-dependency-verification
+          path: |
+            codex-rs/Cargo.lock
+            codex-rs/metadata.json
+            codex-rs/android-dependencies.txt
+            codex-rs/android-openssl.txt
+          retention-days: 7
