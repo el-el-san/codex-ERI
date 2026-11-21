@@ -24,11 +24,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check Android dependency graph
         run: |
-          cargo tree --locked --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui > android-dependencies.txt
+          cargo tree --color never --locked --target aarch64-linux-android -p codex-cli -p codex-exec -p codex-tui > android-dependencies.txt
           if grep -E '(^|[[:space:]])(v8|rusty_v8|codex-code-mode-host|mxc-sdk) v' android-dependencies.txt; then
             exit 1
           fi
-          cargo tree --locked --target aarch64-linux-android -i openssl-src -e features > android-openssl.txt
+          cargo tree --color never --locked --target aarch64-linux-android -i openssl-src -e features > android-openssl.txt
       - name: Upload verification results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

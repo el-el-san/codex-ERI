@@ -341,6 +341,21 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - `gpt-6.2-sol` は選択できても Responses Lite が論文検索入りの予約済み `web.run` スキーマを HTTP 400 で拒否することを実機で再現
 - 同モデルの Responses Lite に限り論文検索の公開を抑止し、通常検索とページ操作を維持。論文検索の項目だけを外した実 API 確認で応答成功
 - この互換性ガードを `ext/web-search/src/extension.rs` に再適用すること。他モデルと非 Lite の論文検索は維持
+- 回帰テストと最終の依存・整形検証が成功（run `44890709265`）
+- Android CLI / exec / TUI の release ビルドが成功（source commit `1a91ff72`、run `44889899538`）。CLI / exec は35分54秒、単体 TUI は27分18秒
+- ビルド時の Cargo.lock とリポジトリの内容は一致
+- 元の成果物 ZIP は約1.3 GB。ダウンロードが接続切断で中断したため、`Compact Android artifact` で同じビルドのシンボルを除いた軽量版を作成（run `44905286110`）
+- 軽量版 ZIP（365,198,252 bytes）を取得し、SHA-256 が GitHub artifact digest と一致
+  - ZIP: `5240a4ed0edb9ca7b4c4d15a9a46629b87f515bcaf5a9f8db5ec1112283cd867`
+  - tar.gz: `5a5bf563a3ae1dffe76aba925b9dc85c600f30c5d624595177703e51ad9fdec2`
+- 3本とも Android aarch64 ELF、`--version` は 0.171.0
+- 新バイナリで `gpt-6.2-sol` の通常の検索設定を維持して実 API に接続し、応答 `OK` と正常終了を確認
+- `--no-daemon` なしで CLI / resume / fork / 単体 TUI を PTY 上で起動し、`/status` 表示と正常終了を確認。ロック非対応・ローカルパッケージ不足のエラーなし
+- 既存3バイナリを `artifacts/local-backup/rust-v0.170.0/` に保存し、SHA-256 を記録
+- 取得した軽量版のハッシュを照合して `~/bin/codex` / `codex-exec` / `codex-tui` を置換。配置後も全て 0.171.0
+- 成果物は `artifacts/rust-v0.171.0/`、CI・モデル・PTY の検証ログは `logs/rust-v0.171.0/` に保存
+- CodeQL は初回がホストランナーとの通信断で失敗。失敗注釈を保存して再実行し、成功を確認（run `44889899499`、attempt 2）
+- 更新後の Cargo audit（run `44889899626`）は旧 `heapless` 0.7 / 0.8 の18件が残り失敗。監査除外は追加していない
 
 
 ### 2026-11-18 更新内容（rust-v0.170.0）
@@ -927,6 +942,14 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - **MCP環境変数**: `mcp-client/src/mcp_client.rs` の `DEFAULT_ENV_VARS` に Termux/Android 関連を追加
 
 ## 8. トラブルシューティング
+
+### 8.10 GPT-6.2 Sol は選択できるがメッセージ送信で失敗する
+- 症状: `Invalid Value: 'tools'. Function 'web.run' is reserved for use by this model and must match the configured schema.`（HTTP 400）
+- 2026-11-21 に現行バイナリ 0.170.0 と保存ログで再現。モデル一覧・認証・モデル選択の失敗ではない
+- `gpt-6.2-sol` のメタデータは `literature_search_query` を公開するが、Responses Lite の予約済み `web.run` スキーマはこの項目を拒否する
+- 対策: `ext/web-search/src/extension.rs` で同モデルの Responses Lite に限り論文検索を公開しない。通常の検索・ページ操作は維持する
+- 最小構成の実 API 呼び出しで、元のスキーマは HTTP 400、論文検索だけを除いたスキーマは応答 `OK` と正常終了を確認
+- 他モデルや非 Lite の論文検索を維持する回帰テストを `Verify Android dependencies` に含める
 
 ### 8.9 Android で "this CLI has no complete local package" と表示される
 - 症状: 0.158.0 への更新後、`codex` / `codex resume` / `codex fork` の
