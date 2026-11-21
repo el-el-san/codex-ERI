@@ -17,10 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt
-      - name: Resolve compatible security updates
+      - name: Validate lockfile
         run: |
-          cargo update -p zstd-safe@7.2.4
-          cargo update -p heapless@0.9.3
           cargo metadata --no-deps --locked --format-version 1 > metadata.json
       - name: Check formatting
         run: cargo fmt --all -- --check

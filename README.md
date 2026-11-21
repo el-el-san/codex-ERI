@@ -1,9 +1,9 @@
 <h1 align="center">Codex CLI (ERI fork)</h1>
 
 ## このリポジトリについて
-- OpenAI Rust 版 Codex CLI v0.159.2 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-09-30 の upstream rust-v0.159.2）。
+- OpenAI Rust 版 Codex CLI v0.171.0 をベースにしたクロスプラットフォームフォーク（最終同期: 2026-11-20 の upstream rust-v0.171.0）。
 - Termux / WSL / SSH / コンテナでもビルド・ログイン・MCP が破綻しないよう、必要最小限のパッチだけを維持します。
-- 主要ソースは `codex-rs/` 配下の Cargo ワークスペースで、Rust 1.95.0（`rust-toolchain.toml`）を前提としています。
+- 主要ソースは `codex-rs/` 配下の Cargo ワークスペースで、Rust 1.99.1（`rust-toolchain.toml`）を前提としています。
 
 ## 上流からの主な差分
 - TLS を自己完結化: `http-client` の `reqwest` に `native-tls-vendored` を付与し、Android/Termux などでのビルド成功率を改善。
@@ -14,7 +14,7 @@
   - SSH/コンテナ: 自動起動を抑止し、手動で開く案内を表示
   - Linux デスクトップ / macOS / Windows: 各 OS の標準コマンドとフォールバック（`BROWSER` / `xdg-open` / `gio open` / `sensible-browser` / Firefox/Chrome 系）
 - MCP サーバー起動時に Termux/Android の環境変数を保持（`rmcp-client` の `DEFAULT_ENV_VARS` を拡張）。
-- upstream 0.147.0 で code mode が外部ホストへ分離された構成に追従し、v0.159.2 でも維持。Android 用 CLI / exec / TUI の依存グラフには V8 を含めず、Android では code mode 系のツールモードを Direct tools へ切り替えます。
+- upstream 0.147.0 で code mode が外部ホストへ分離された構成に追従し、v0.171.0 でも維持。Android 用 CLI / exec / TUI の依存グラフには V8 を含めず、Android では code mode 系のツールモードを Direct tools へ切り替えます。
 - 詳細手順や再適用チェックリストは `docs/01-cross-platform-update-guide.md` を参照。上流確認手順は `docs/00-update-chk.md` にあります。
 
 ## リポジトリ構成
@@ -23,7 +23,7 @@
 - `artifacts/` … GitHub Actions から取得したビルド済みバイナリ（Git 管理外）
 
 ## ビルド & インストール
-前提: Rust 1.95.0（`rust-toolchain.toml` で固定）。TLS ライブラリは同梱するため追加の依存は不要です。
+前提: Rust 1.99.1（`rust-toolchain.toml` で固定）。TLS ライブラリは同梱するため追加の依存は不要です。
 
 ```bash
 cd codex-rs
@@ -57,7 +57,7 @@ codex apply                           # 直近の diff を git apply 相当で�
 - `--output-schema schema.json`（非対話 `codex exec` で最終レスポンスの JSON 形を指定）
 
 ## 設定
-- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.159.2 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
+- 既定パスは `~/.codex/config.toml`（`CODEX_HOME` で上書き可）。スキーマは upstream v0.171.0 と同じで、MCP の環境変数/HTTP ヘッダー設定も同スキーマです（環境変数の保持は `rmcp-client` 側で実装）。
 - ログは `~/.codex/log/` に保存されます。
 
 ## 環境別のログイン挙動

@@ -154,17 +154,25 @@ impl ToolContributor for WebSearchExtension {
                 external_web_access: Some(external_web_access_for_mode(*mode)),
                 ..config.settings.clone()
             },
-            supports_literature_search: step_store.get::<ModelInfo>().is_some_and(|model| {
-                model
-                    .experimental_supported_tools
-                    .iter()
-                    .any(|tool| tool == LITERATURE_SEARCH_QUERY)
-            }),
+            supports_literature_search: step_store
+                .get::<ModelInfo>()
+                .is_some_and(|model| supports_model_literature_search(&model)),
             originator: thread_store
                 .get::<ThreadOriginator>()
                 .map(|originator| originator.0.clone()),
         })]
     }
+}
+
+fn supports_model_literature_search(model: &ModelInfo) -> bool {
+    // GPT-6.2 Sol advertises literature search, but its Responses Lite endpoint
+    // rejects that field in the reserved web.run schema (HTTP 400). Keep the
+    // legacy search schema until the endpoint accepts the advertised capability.
+    !(model.use_responses_lite && model.slug == "gpt-6.2-sol")
+        && model
+            .experimental_supported_tools
+            .iter()
+            .any(|tool| tool == LITERATURE_SEARCH_QUERY)
 }
 
 pub fn install(registry: &mut ExtensionRegistryBuilder<Config>, auth_manager: Arc<AuthManager>) {
@@ -195,11 +203,45 @@ mod tests {
     use super::WebSearchExtensionConfig;
     use super::external_web_access_for_mode;
     use super::install;
+    use super::supports_model_literature_search;
+    use crate::schema::LITERATURE_SEARCH_QUERY;
+    use crate::schema::commands_schema;
     use crate::tool::RUN_TOOL_NAME;
     use crate::tool::WEB_NAMESPACE;
     use codex_api::ExternalWebAccess;
     use codex_api::ExternalWebAccessMode;
     use codex_protocol::config_types::WebSearchMode;
+    use codex_protocol::openai_models::ModelInfo;
+
+    #[test]
+    fn sol_lite_uses_accepted_web_schema_without_disabling_other_models() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../models-manager/models.json")).unwrap();
+        let mut model: ModelInfo = serde_json::from_value(
+            catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|model| model["slug"] == "gpt-6.2-sol")
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        model.experimental_supported_tools = vec![LITERATURE_SEARCH_QUERY.to_string()];
+        model.use_responses_lite = true;
+        let schema = commands_schema(supports_model_literature_search(&model));
+        assert!(schema["properties"].get(LITERATURE_SEARCH_QUERY).is_none());
+        assert!(schema["properties"].get("search_query").is_some());
+        assert!(schema["properties"].get("open").is_some());
+
+        model.slug = "gpt-6.2-astra".to_string();
+        assert!(supports_model_literature_search(&model));
+        model.slug = "gpt-6.2-sol".to_string();
+        model.use_responses_lite = false;
+        assert!(supports_model_literature_search(&model));
+        model.experimental_supported_tools.clear();
+        assert!(!supports_model_literature_search(&model));
+    }
 
     #[test]
     fn external_web_access_preserves_legacy_values_until_indexed() {

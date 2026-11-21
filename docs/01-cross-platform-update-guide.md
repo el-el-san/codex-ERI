@@ -336,6 +336,11 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
 - 分割された OAuth のログインロックと認証保存ロックの両方で Android の未対応ロックを省略
 - 既存のセキュリティ依存更新を維持。ローカルには Cargo がないため GitHub Actions でビルドを検証する
 - ビルド時に解決された Cargo.lock を成果物として保存し、リポジトリと照合する
+- 依存検証 run `44887786834` で整形、locked metadata、Android の V8 / MXC 除外と vendored OpenSSL を確認
+- `zstd-safe` 7.4.1 / 8.2.0、`heapless` 0.9.4 に更新。旧 heapless 0.7 / 0.8 は依存元の制約が残る
+- `gpt-6.2-sol` は選択できても Responses Lite が論文検索入りの予約済み `web.run` スキーマを HTTP 400 で拒否することを実機で再現
+- 同モデルの Responses Lite に限り論文検索の公開を抑止し、通常検索とページ操作を維持。論文検索の項目だけを外した実 API 確認で応答成功
+- この互換性ガードを `ext/web-search/src/extension.rs` に再適用すること。他モデルと非 Lite の論文検索は維持
 
 
 ### 2026-11-18 更新内容（rust-v0.170.0）
