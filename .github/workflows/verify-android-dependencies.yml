@@ -40,3 +40,20 @@ jobs:
             codex-rs/android-dependencies.txt
             codex-rs/android-openssl.txt
           retention-days: 7
+
+  web-schema-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Free space for native regression test
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+      - name: Test Sol web schema compatibility
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-web-search-extension sol_lite_uses_accepted_web_schema_without_disabling_other_models
